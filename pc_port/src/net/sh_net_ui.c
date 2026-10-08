@@ -85,6 +85,11 @@ static int    s_glReady;   /* 0 = untried, -1 = failed, 1 = ready */
 
 static struct { int x, y, w, h, cw, ch, free; } s_slot[NU_SLOT_MAX];
 static int s_slotCount;
+/* Set when an upload is refused because the atlas is full. The next Draw resets
+ * the atlas and rebuilds from scratch -- one frame's cost, always recovers --
+ * instead of silently dropping text forever (which made option values and rows
+ * vanish once the varied co-op/memo strings had filled all 192 slots). */
+static int s_atlasExhausted;
 static int s_atlasX, s_atlasY, s_atlasRowH;
 
 /* The mouse cursor is a fixed bitmap drawn every frame. It is uploaded ONCE into
@@ -287,6 +292,7 @@ static GLuint Nu_Upload(const unsigned char* rgba, int w, int h)
 
     if (s_slotCount >= NU_SLOT_MAX)
     {
+        s_atlasExhausted = 1;
         return 0;
     }
     if (s_atlasX + w + NU_ATLAS_PAD > NU_ATLAS_W)
@@ -297,6 +303,7 @@ static GLuint Nu_Upload(const unsigned char* rgba, int w, int h)
     }
     if (s_atlasY + h + NU_ATLAS_PAD > NU_ATLAS_H)
     {
+        s_atlasExhausted = 1;
         return 0;
     }
 
@@ -1392,6 +1399,16 @@ void ShNetUi_Draw(void)
     if (s_glReady != 1)
     {
         return;
+    }
+
+    /* Atlas ran dry last frame: reset it and drop every cached handle so this
+     * frame rebuilds from an empty atlas. Costs one frame, always recovers --
+     * the alternative was text silently vanishing for the rest of the session. */
+    if (s_atlasExhausted)
+    {
+        Nu_AtlasReset();
+        memset(s_cache, 0, sizeof(s_cache));
+        s_atlasExhausted = 0;
     }
 
     Nu_PumpEvents();

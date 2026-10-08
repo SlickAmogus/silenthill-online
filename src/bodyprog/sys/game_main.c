@@ -2342,6 +2342,12 @@ void MainLoop(void) // 0x80032EE0
                     (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickRight | ControllerFlag_DpadRight)) != 0,
                     (g_Controller0->clickedBtnFlags & (cc->enter | cc->action))  != 0,
                     (g_Controller0->clickedBtnFlags & (cc->cancel | cc->option)) != 0);
+                /* Carry the true held state to the next pad update (same fix as
+                 * the quick menu) so edges compute correctly -- zeroing held
+                 * alone made a held direction read as a fresh press every frame
+                 * and the composer raced at frame rate. */
+                s_pcQoHeldStash      = g_Controller0->heldBtnFlags;
+                s_pcQoHeldStashValid = 1;
                 g_Controller0->heldBtnFlags      = 0;
                 g_Controller0->clickedBtnFlags   = 0;
                 g_Controller0->releasedBtnFlags  = 0;
@@ -2367,6 +2373,10 @@ void MainLoop(void) // 0x80032EE0
                     (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickUp   | ControllerFlag_DpadUp))   != 0,
                     (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickDown | ControllerFlag_DpadDown)) != 0,
                     (clk & (cc->enter | cc->action)) != 0);
+                /* Carry true held to the next pad update so nav edges are right
+                 * (same fix as the quick menu) rather than a press every frame. */
+                s_pcQoHeldStash      = g_Controller0->heldBtnFlags;
+                s_pcQoHeldStashValid = 1;
                 g_Controller0->heldBtnFlags        = 0;
                 g_Controller0->clickedBtnFlags     = 0;
                 g_Controller0->releasedBtnFlags    = 0;

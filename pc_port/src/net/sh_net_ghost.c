@@ -536,7 +536,7 @@ static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name
     axisU.vy = (halfW * GsWSMATRIX.m[0][1]) >> 12;
     axisU.vz = (halfW * GsWSMATRIX.m[0][2]) >> 12;
     axisV.vx = 0;
-    axisV.vy = -halfH;
+    axisV.vy = halfH; /* quad's top corner uses -axisV, so +Y (world down) = upright */
     axisV.vz = 0;
 
     return ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
@@ -629,7 +629,7 @@ void ShNet_DrawWorld(GsOT* ot)
             axisU.vz = (GHOST_HALF_W * GsWSMATRIX.m[0][2]) >> 12;
 
             axisV.vx = 0;
-            axisV.vy = -GHOST_HALF_H; /* world up */
+            axisV.vy = GHOST_HALF_H; /* quad top uses -axisV; +Y (world down) = upright */
             axisV.vz = 0;
 
             ShNetG_GhostColor(g->playerId, &cr, &cg, &cb);
@@ -721,7 +721,7 @@ void ShNet_DrawWorld(GsOT* ot)
                 axisU.vy  = (GHOST_HALF_W * GsWSMATRIX.m[0][1]) >> 12;
                 axisU.vz  = (GHOST_HALF_W * GsWSMATRIX.m[0][2]) >> 12;
                 axisV.vx  = 0;
-                axisV.vy  = -GHOST_HALF_H;
+                axisV.vy  = GHOST_HALF_H; /* quad top uses -axisV; +Y (world down) = upright */
                 axisV.vz  = 0;
 
                 ShNetG_GhostColor((unsigned int)m->steamId, &cr, &cg, &cb);

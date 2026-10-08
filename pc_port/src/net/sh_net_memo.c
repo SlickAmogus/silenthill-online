@@ -361,15 +361,14 @@ void ShNetMemo_ComposerInput(int up, int down, int left, int right,
     {
         if (up)    s_phrase = (s_phrase + PHRASE_COUNT - 1) % PHRASE_COUNT;
         if (down)  s_phrase = (s_phrase + 1) % PHRASE_COUNT;
-        if (right) s_col    = 1;
-        if (left)  s_col    = 1; /* two columns: either way lands on the other */
+        if (right) s_col    = 1; /* into the word column (left is already leftmost) */
     }
     else
     {
         if (up)    s_word = (s_word + WORD_COUNT - 1) % WORD_COUNT;
         if (down)  s_word = (s_word + 1) % WORD_COUNT;
+        if (left)  s_col  = 0; /* back to the phrase column */
         if (right) ShNetMemo_WordGroupStep(1);
-        if (left)  ShNetMemo_WordGroupStep(-1);
     }
 
     if (confirm)

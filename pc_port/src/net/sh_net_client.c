@@ -657,6 +657,25 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         m.z       = ShnGetS32(p, &off);
         m.rotY    = ShnGetS16(p, &off);
 
+        /* The wire carries only ownerId; name the author from the roster the
+         * way ghosts are named, so a memo shows who left it instead of
+         * "Someone". Our own memos resolve to our name. */
+        if (m.ownerId == s_sh.selfId)
+        {
+            SDL_strlcpy(m.owner, s_name, SHNET_NAME_MAX);
+        }
+        else
+        {
+            for (j = 0; j < s_sh.peerCount; j++)
+            {
+                if (s_sh.peers[j].playerId == m.ownerId)
+                {
+                    SDL_strlcpy(m.owner, s_sh.peers[j].name, SHNET_NAME_MAX);
+                    break;
+                }
+            }
+        }
+
         for (j = 0; j < s_sh.memoCount; j++)
         {
             if (s_sh.memos[j].memoId == m.memoId)
