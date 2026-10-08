@@ -396,14 +396,21 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     s16            ret;
     int            slot;
 
-    if (charaId <= 0 || charaId >= Chara_Count)
+    /* A remote player whose character is not resident in this map -- a play-as
+     * skin, an NPC not loaded here, or the default id 0 that a plain Harry
+     * player publishes -- still gets a BODY, not a flat silhouette: fall back to
+     * Harry, who is always resident. (This is why co-op peers showed as outlines:
+     * the default charaId is 0, which the old <= 0 guard rejected outright.) */
+    if (charaId <= 0 || charaId >= Chara_Count ||
+        g_WorldGfxWork.registeredCharaModels[charaId] == NULL ||
+        g_WorldGfxWork.registeredCharaModels[charaId]->skeleton.bones_4 == NULL)
     {
-        return 0;
+        charaId = Chara_Harry;
     }
     cm = g_WorldGfxWork.registeredCharaModels[charaId];
     if (cm == NULL || cm->skeleton.bones_4 == NULL)
     {
-        return 0;
+        return 0; /* even Harry not resident yet (brief async-load window) */
     }
     /* Harry's animation is not in the pool: the player poses itself from the
      * base ANM at FS_BUFFER_0, so a Harry ghost reads the same header. */
