@@ -4577,6 +4577,12 @@ void func_8005AC50(s_MeshHeader* meshHdr, s_GteScratchData2* scratchData, GsOT_T
             }
 
             poly.gt3->code = ((prim->field_6.flags >> 15) * 2) | 0x34;
+#ifdef SH_PC_PORT
+            /* Co-op living-world ghost: force the whole body semi-transparent so
+             * it reads as a translucent presence. PsyCross blends a semiTrans
+             * prim as a whole (not per-texel), so this makes the model see-through. */
+            { extern int g_PcCharaTranslucent; if (g_PcCharaTranslucent) poly.gt3->code |= 2; }
+#endif
 
             *(s32*)&poly.gt3->u0 = *(s32*)&prim->field_0 + scratchData->u.s_1.field_8;
             *(s32*)&poly.gt3->u1 = *(s32*)&prim->field_4 & 0xFFFFFF;
@@ -4689,6 +4695,9 @@ void func_8005AC50(s_MeshHeader* meshHdr, s_GteScratchData2* scratchData, GsOT_T
             }
 
             poly.gt4->code = ((prim->field_6.flags >> 15) * 2) | 0x3C;
+#ifdef SH_PC_PORT
+            { extern int g_PcCharaTranslucent; if (g_PcCharaTranslucent) poly.gt4->code |= 2; }
+#endif
 
             *(s32*)&poly.gt4->u0 = *(s32*)&prim->field_0 + scratchData->u.s_1.field_8;
             *(s32*)&poly.gt4->u1 = *(s32*)&prim->field_4 & 0xFFFFFF;

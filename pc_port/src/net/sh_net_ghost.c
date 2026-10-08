@@ -387,6 +387,11 @@ static POLY_FT4* ShNetG_EmitFootprint(GsOT* ot, POLY_FT4* poly,
 #define GHOST_BONE_MAX 64
 #define SHNET_MAX_MODELS 16
 
+/* Set only while drawing a LIVING-WORLD ghost's body: the character prim builder
+ * (bodyprog_80055028.c) ORs in the semi-transparent bit, and PsyCross blends the
+ * whole body -> a translucent presence. Co-op partners leave it 0 (solid). */
+int g_PcCharaTranslucent = 0;
+
 static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, int animFrame)
 {
     static GsCOORDINATE2 s_coords[GHOST_BONE_MAX];
@@ -657,7 +662,9 @@ void ShNet_DrawWorld(GsOT* ot)
                      * model's own packets. */
                     unsigned char* before = (unsigned char*)poly;
                     GsOUT_PACKET_P = (PACKET*)poly;
+                    g_PcCharaTranslucent = 1; /* living-world bodies are translucent */
                     drewModel = ShNetG_TryDrawModel(g->charaId, gx, gy, gz, grot, (int)g->animFrame);
+                    g_PcCharaTranslucent = 0;
                     {
                         unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
                         poly     = (POLY_FT4*)after;
