@@ -415,6 +415,10 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     cm = g_WorldGfxWork.registeredCharaModels[charaId];
     if (cm == NULL || cm->skeleton.bones_4 == NULL)
     {
+        /* One-shot: names why a body dropped to the silhouette (diagnostic, not
+         * per-frame -- fires at most once a session). */
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost body->outline: chara %d model not resident", charaId); } }
         return 0; /* even Harry not resident yet (brief async-load window) */
     }
     /* Harry's animation is not in the pool: the player poses itself from the
@@ -434,6 +438,12 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     }
     if (anm == NULL || anm->boneCount <= 0 || anm->boneCount > GHOST_BONE_MAX)
     {
+        /* One-shot diagnostic. If this fires for a Harry ghost, FS_BUFFER_0 no
+         * longer holds HB_BASE.ANM (another load took the buffer) -> the ghost
+         * needs a stable anim copy, not this shared scratch. */
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost body->outline: chara %d anm invalid (boneCount=%d)",
+                   charaId, anm ? (int)anm->boneCount : -1); } }
         return 0;
     }
 
