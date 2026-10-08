@@ -2026,8 +2026,11 @@ void DbgOverlay_Update(void)
          * is sampled before the chat handler above consumes the Esc. The
          * controls panel also uses Escape to back out and to cancel a rebind. */
         extern int Pc_BindPanel_IsOpen(void);
+        /* The living-world "leave a message" composer also backs out on Escape;
+         * without this it both closed the box AND warm-reset to the title. */
+        extern int ShNetMemo_ComposerActive(void);
         if (cur_exit && !s_prev_exit && !g_PcConsoleInputActive && !g_PcQuickOptionsActive &&
-            !chatWasOpen && !Pc_BindPanel_IsOpen()) {
+            !chatWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive()) {
             /* The brightness screen owns the whole display (its calibration bar is
              * drawn outside the normal menu path), so warm-resetting out of it left
              * the bar on screen over the title. Back out to the options list the
@@ -2042,6 +2045,12 @@ void DbgOverlay_Update(void)
                 g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveBrightness;
             } else if (g_GameWork.gameState == GameState_MainMenu) {
                 exit(0);
+            } else if (g_PcConfig.onlineEnabled) {
+                /* Online: Escape must not warm-reset to the title. It is the
+                 * back-out key for the message box and other overlays, and
+                 * dropping out of a shared world on a stray Escape is hostile.
+                 * Exit to title from the pause / co-op menu instead. */
+                SH_DBG_ECHO("Escape: online -- exit to title from the menu");
             } else {
                 g_SysWork.sysFlags |= SysFlag_DoWarmReset;
                 SH_DBG_ECHO("Exiting to title...");

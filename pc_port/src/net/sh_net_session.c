@@ -58,6 +58,7 @@ static int Tp_Recv(unsigned long long* from, shn_u8* buf, int cap)
 #define SESSION_LINK_MS   8000
 #define SESSION_HELLO_MS  5000
 #define SESSION_POS_MS    100  /* co-op presence broadcast rate (~10 Hz) */
+#define SESSION_WORLD_MS  1000 /* host re-tells guests to boot, until they arrive */
 
 /* Requests, and the published copy. Both under s_lock. */
 static SDL_mutex* s_lock;
@@ -143,6 +144,7 @@ static int           s_itemInCount;
  * are sent. -1 = host is not in a game yet (lobby only). */
 static int           s_worldMapCur = -1;
 static int           s_worldSent[SHSESSION_MAX_MEMBERS];
+static unsigned int  s_lastWorldSendMs;
 
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
@@ -868,6 +870,7 @@ void ShSession_Tick(unsigned int nowMs)
     if (wantJoinServer)
     {
         if (s_enabled) ShSteam_LeaveLobby();
+        CoopUdp_Disconnect(); /* drop any prior transport (relay thread / world ride / socket) */
         s_backend = COOP_BACKEND_UDP;
         if (coopUseWorld && ShNet_WorldConnected()) CoopUdp_UseWorldLink();
         else                                        CoopUdp_SetServer(coopHost, (unsigned short)coopPort);
@@ -876,6 +879,7 @@ void ShSession_Tick(unsigned int nowMs)
     else if (wantHostServer)
     {
         if (s_enabled) ShSteam_LeaveLobby();
+        CoopUdp_Disconnect(); /* stop a prior This-PC relay / world ride before re-hosting */
         s_backend = COOP_BACKEND_UDP;
         if (coopListen)
         {
@@ -981,23 +985,25 @@ void ShSession_Tick(unsigned int nowMs)
         }
     }
 
-    /* Host -> guests: boot into the co-op map (reliable). The map is remembered
-     * (s_worldMapCur) and a fresh map change clears every member's sent-flag, so
-     * this one loop handles both the start broadcast AND a player who joins
-     * mid-game: anyone who has not yet been sent the current world gets it now. */
+    /* Host -> guests: boot into the co-op map. The relay path is best-effort
+     * (no reliable channel), so instead of sending once we RE-tell, on a 1s
+     * throttle, every member who has not yet reported being on the map
+     * (member.mapIdx, from their S_POS). This self-heals a dropped datagram and
+     * a second game started in the same process -- both of which otherwise left
+     * the guest stranded -- and stops for each guest the moment they arrive. */
     if (wantWorldMap >= 0 && wantWorldMap != s_worldMapCur)
     {
         s_worldMapCur = wantWorldMap;
-        memset(s_worldSent, 0, sizeof(s_worldSent));
         SH_DBG("[SESSION] co-op world is now map %d", s_worldMapCur);
     }
-    if (Tp_IsHost() && s_worldMapCur >= 0)
+    if (Tp_IsHost() && s_worldMapCur >= 0 && nowMs - s_lastWorldSendMs >= SESSION_WORLD_MS)
     {
+        s_lastWorldSendMs = nowMs;
         for (i = 0; i < s_memberCount; i++)
         {
             shn_u8 buf[SHNET_HDR_SIZE + 4];
             int    off = SHNET_HDR_SIZE;
-            if (s_members[i].steamId == Tp_SelfId() || s_worldSent[i])
+            if (s_members[i].steamId == Tp_SelfId() || s_members[i].mapIdx == s_worldMapCur)
             {
                 continue;
             }
@@ -1006,8 +1012,8 @@ void ShSession_Tick(unsigned int nowMs)
             ShnPutU16(buf, &off, 0);
             ShnPutHeader(buf, SHNET_MSG_S_WORLD, (shn_u16)(off - SHNET_HDR_SIZE), 0);
             Tp_Send(s_members[i].steamId, buf, off, 1);
-            s_worldSent[i] = 1;
-            SH_DBG("[SESSION] sent world (map %d) to %s", s_worldMapCur, s_members[i].name);
+            SH_DBG("[SESSION] world (map %d) -> %s (they report map %d)",
+                   s_worldMapCur, s_members[i].name, s_members[i].mapIdx);
         }
     }
 
