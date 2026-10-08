@@ -859,6 +859,42 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
     }
 }
 
+/* Live markers: push a just-placed memo to everyone else on that map now, so it
+ * appears without waiting for their next map-entry query. Reuses the MEMO_LIST
+ * wire (one entry); the client merges by memoId. */
+static void SrvPushMemo(const Memo* m)
+{
+    int i;
+    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    {
+        Client* o = &g_clients[i];
+        shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_MEMO_ENTRY];
+        int     bo = SHNET_HDR_SIZE;
+        if (!o->used || o->mapIdx != m->mapIdx || o->playerId == m->ownerId)
+        {
+            continue;
+        }
+        ShnPutU8(buf, &bo, (shn_u8)m->mapIdx);
+        ShnPutU8(buf, &bo, 0);
+        ShnPutU16(buf, &bo, 1); /* one entry */
+        ShnPutU32(buf, &bo, 0);
+        ShnPutU32(buf, &bo, m->memoId);
+        ShnPutU32(buf, &bo, m->ownerId);
+        ShnPutU8(buf, &bo, (shn_u8)m->kind);
+        ShnPutU8(buf, &bo, (shn_u8)m->mapIdx);
+        ShnPutS16(buf, &bo, m->rating);
+        ShnPutU16(buf, &bo, m->phraseA);
+        ShnPutU16(buf, &bo, m->wordA);
+        ShnPutU16(buf, &bo, m->phraseB);
+        ShnPutU16(buf, &bo, m->wordB);
+        ShnPutS32(buf, &bo, m->x);
+        ShnPutS32(buf, &bo, m->y);
+        ShnPutS32(buf, &bo, m->z);
+        ShnPutS16(buf, &bo, m->rotY);
+        SrvSendTo(o, buf, bo - SHNET_HDR_SIZE, SHNET_MSG_MEMO_LIST);
+    }
+}
+
 static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
 {
     int     off = 0;
@@ -974,6 +1010,8 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     ShnPutU32(ack, &ao, m.memoId);
     ShnPutU32(ack, &ao, (shn_u32)m.mapIdx);
     SrvSendTo(c, ack, ao - SHNET_HDR_SIZE, SHNET_MSG_MEMO_ACK);
+
+    SrvPushMemo(&m); /* live: everyone else on this map sees it now */
 
     SrvLog("  %s placed %s on map %d (id %u)", c->name,
            m.kind == SHNET_MARK_DEATH ? "a death marker" :
