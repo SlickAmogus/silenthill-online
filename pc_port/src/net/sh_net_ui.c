@@ -1464,9 +1464,14 @@ void ShNetUi_Draw(void)
         s_vpW = (float)vp[2];
         s_vpH = (float)vp[3];
     }
-    px = (int)(s_vpH * 0.022f);
-    if (px < 11) px = 11;
-    if (px > 34) px = 34;
+    /* Bigger by default than the original 0.022, and scaled by online_ui_scale
+     * (default 1.0) so a player can size the co-op/world overlay text to taste. */
+    {
+        float sc = (g_PcConfig.onlineUiScale > 0.25f) ? g_PcConfig.onlineUiScale : 1.0f;
+        px = (int)(s_vpH * 0.032f * sc);
+        if (px < 13) px = 13;
+        if (px > 72) px = 72;
+    }
 
     glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
     glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);

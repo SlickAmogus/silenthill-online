@@ -652,8 +652,10 @@ void ShNet_DrawWorld(GsOT* ot)
                 /* A full character model costs several KB of the shared packet
                  * arena, so cap how many draw as models per frame; the rest
                  * fall back to the cheap silhouette. */
-                if (g_PcConfig.onlineGhostModel && modelsDrawn < SHNET_MAX_MODELS &&
-                    !(g->flags & SHNET_PF_CUTSCENE))
+                /* Always attempt the (translucent) body, like co-op -- a stale
+                 * config's onlineGhostModel=0 must not force everyone back to
+                 * flat silhouettes. The cap + cutscene check still apply. */
+                if (modelsDrawn < SHNET_MAX_MODELS && !(g->flags & SHNET_PF_CUTSCENE))
                 {
                     /* func_80045534 allocates through GsOUT_PACKET_P, so commit
                      * the silhouette cursor into it first and read it back

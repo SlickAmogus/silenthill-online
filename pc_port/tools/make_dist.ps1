@@ -25,6 +25,7 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 # static libs, generated headers, the capture helper, and the disc images.
 $xf = @(
     "*.log", "SHOnlineBuild.zip", "*.zip",
+    "config.cfg",  # the tester's own config (server, binds, UI scale) -- never clobber it
     "build.ninja", ".ninja_deps", ".ninja_log",
     "CMakeCache.txt", "cmake_install.cmake",
     "*.a", "*.dll.a",

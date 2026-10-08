@@ -341,7 +341,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_HOST:       return 4; /* Invite, Start Game, Leave, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
-    case COOP_PAGE_INGAME:     return 6; /* Resume, Save, Save&Exit, Nameplates, Players, Leave */
+    case COOP_PAGE_INGAME:     return 7; /* Resume, Message, Save, Save&Exit, Nameplates, Players, Leave */
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
     default:                   return 1;
     }
@@ -412,11 +412,12 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
 
     case COOP_PAGE_INGAME:
         if (i == 0) snprintf(out, cap, "Resume");
-        else if (i == 1) snprintf(out, cap, "Save");
-        else if (i == 2) snprintf(out, cap, "Save & Exit");
-        else if (i == 3) snprintf(out, cap, "Nameplates:  %s",
+        else if (i == 1) snprintf(out, cap, "Leave a Message");
+        else if (i == 2) snprintf(out, cap, "Save");
+        else if (i == 3) snprintf(out, cap, "Save & Exit");
+        else if (i == 4) snprintf(out, cap, "Nameplates:  %s",
                                   g_PcConfig.onlineNameplates ? "On" : "Off");
-        else if (i == 4) snprintf(out, cap, "Players");
+        else if (i == 5) snprintf(out, cap, "Players");
         else snprintf(out, cap, "Leave to Title");
         break;
 
@@ -599,10 +600,16 @@ static void Coop_Confirm(void)
 
     case COOP_PAGE_INGAME:
         if (s_sel == 0)      { Pc_CoopMenu_Close(); }                       /* Resume */
-        else if (s_sel == 1) { Coop_DoSave(0); }                            /* Save */
-        else if (s_sel == 2) { Coop_DoSave(1); }                            /* Save & Exit */
-        else if (s_sel == 3) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
-        else if (s_sel == 4) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
+        else if (s_sel == 1)                                                /* Leave a Message */
+        {
+            extern void ShNetMemo_ComposerToggle(void);
+            Pc_CoopMenu_Close();         /* get the menu out of the way */
+            ShNetMemo_ComposerToggle();  /* open the living-world message composer */
+        }
+        else if (s_sel == 2) { Coop_DoSave(0); }                            /* Save */
+        else if (s_sel == 3) { Coop_DoSave(1); }                            /* Save & Exit */
+        else if (s_sel == 4) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
+        else if (s_sel == 5) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
         else
         {
             /* Leave to Title without saving. */
@@ -616,7 +623,7 @@ static void Coop_Confirm(void)
         /* Rows above Back are members; host-kick lands with the session kick
          * API. Back returns to the in-game root (the Players row). */
         s_page = COOP_PAGE_INGAME;
-        s_sel  = 4;
+        s_sel  = 5;
         break;
 
     case COOP_PAGE_JOIN:

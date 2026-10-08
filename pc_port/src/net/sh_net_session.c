@@ -125,6 +125,9 @@ static unsigned int    s_lastSeenMs[SHSESSION_MAX_MEMBERS];
 static unsigned int    s_pingSentMs[SHSESSION_MAX_MEMBERS];
 static unsigned int    s_lastPosMs;   /* last co-op pose broadcast */
 static int             s_worldReqIn = -1; /* a map the host told us to boot into */
+static int             s_declineWorld = 0; /* guest chose to leave: ignore the host's
+                                            * resent S_WORLD so it cannot drag them back,
+                                            * until they intentionally join/host again */
 static int             s_enabled;
 
 /* Co-op shared-item queues, both under s_lock. Out: local pickups waiting for the
@@ -669,8 +672,11 @@ static void ShSession_Receive(unsigned int now)
                 break;
             }
             m = (int)ShnGetU8(p, &o);
-            s_worldReqIn = (m == 0xFF) ? -1 : m;
-            SH_DBG("[SESSION] host says: boot into map %d", s_worldReqIn);
+            if (!s_declineWorld)
+            {
+                s_worldReqIn = (m == 0xFF) ? -1 : m;
+                SH_DBG("[SESSION] host says: boot into map %d", s_worldReqIn);
+            }
             break;
         }
         case SHNET_MSG_S_ITEM:
@@ -862,6 +868,17 @@ void ShSession_Tick(unsigned int nowMs)
         if (s_backend == COOP_BACKEND_UDP) CoopUdp_Leave();
         else if (s_enabled)                ShSteam_LeaveLobby();
         s_memberCount = 0;
+        /* Stop the host's resent S_WORLD from re-booting us after we chose to
+         * leave: drop any queued boot and ignore further ones until we rejoin. */
+        s_declineWorld = 1;
+        s_worldReqIn   = -1;
+        s_pub.worldReq = -1;
+    }
+
+    /* Any intentional host/join re-arms world-boot acceptance (see s_declineWorld). */
+    if (wantJoinServer || wantHostServer || wantJoin || wantHost)
+    {
+        s_declineWorld = 0;
     }
 
     /* Host/join routes the session onto a transport. A server choice switches to

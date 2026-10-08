@@ -443,6 +443,7 @@ typedef struct {
                                * instead of the silhouette, when that chara is resident
                                * (online_ghost_model); 0 = silhouette (default, proven) */
     int  onlineEvents;        /* 1 = show the server's join/leave/death feed (online_events) */
+    float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
     /* Steam co-op sessions. Independent of online_enabled: a player can run a
      * Steam session without a master server, or both at once. */
     int  onlineSteam;          /* 1 = bring up Steam for lobbies/invites (online_steam) */

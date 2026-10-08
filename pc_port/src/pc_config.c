@@ -63,6 +63,7 @@ s_PcConfig g_PcConfig = {
     .onlineNameplates = 1, /* names float over other players' heads */
     .onlineGhostModel = 1, /* living-world players draw as translucent bodies */
     .onlineEvents     = 1,
+    .onlineUiScale    = 1.0f,
     .onlineSteam           = 0,
     .onlineSteamAppId      = 480, /* Spacewar; see sh_net_steam.h */
     .onlineSteamMaxPlayers = 4,
@@ -766,6 +767,12 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_events") == 0)
         {
             g_PcConfig.onlineEvents = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_ui_scale") == 0)
+        {
+            g_PcConfig.onlineUiScale = (float)atof(value);
+            if (g_PcConfig.onlineUiScale < 0.5f) g_PcConfig.onlineUiScale = 0.5f;
+            if (g_PcConfig.onlineUiScale > 3.0f) g_PcConfig.onlineUiScale = 3.0f;
         }
         else if (strcmp(key, "online_steam") == 0)
         {
