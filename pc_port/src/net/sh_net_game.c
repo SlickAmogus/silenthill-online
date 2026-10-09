@@ -17,6 +17,7 @@
 #include "game.h"
 #include "bodyprog/bodyprog.h"
 #include "bodyprog/map/map.h"
+#include "bodyprog/screen/cutscene_border.h" /* CutsceneBorderState_None for the flag test */
 #include "bodyprog/items.h"        /* INV_ITEM_COUNT_MAX, s_InventoryItem */
 #include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup */
 #include "bodyprog/collision/collision.h" /* Collision_SurfaceGet: ground-snap a joining guest */
@@ -75,10 +76,12 @@ static int ShNetG_BuildFlags(void)
     {
         flags |= SHNET_PF_RUNNING;
     }
-    /* The border state is the game's own "a scene is playing" signal, and it
-     * is what the ghost renderer keys on: during a cutscene the player is
-     * standing somewhere the camera put them, not somewhere they walked. */
-    if (g_SysWork.cutsceneBorderState != 0)
+    /* "A scene is playing." The steady no-cutscene value of cutsceneBorderState
+     * is None (1), NOT 0 (0 is a one-frame teardown transient), so the old
+     * `!= 0` test marked EVERY gameplay frame as a cutscene. Use the engine's
+     * own idiom (game_sys_states.c). */
+    if ((g_SysWork.sysFlags & SysFlag_CutsceneActive) ||
+        g_SysWork.cutsceneBorderState != CutsceneBorderState_None)
     {
         flags |= SHNET_PF_CUTSCENE;
     }
