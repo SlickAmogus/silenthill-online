@@ -1358,16 +1358,11 @@ int ShNet_GhostInterp(int i, int* outX, int* outY, int* outZ, short* outRotY)
     }
     g = &s_gt.ghosts[i];
 
-    /* Only a real cutscene hides a player; someone paused in a menu is still
-     * physically standing in the world, so do NOT cull on MENU (that was making
-     * living-world players invisible to each other during ordinary play). */
-    if (g->flags & SHNET_PF_CUTSCENE)
-    {
-        { static int once = 0; if (!once) { once = 1;
-            SH_DBG("[NET] ghost %u culled: flags 0x%X (cutscene)", g->playerId, g->flags); } }
-        return 0;
-    }
-
+    /* Do NOT cull on CUTSCENE or MENU. Those bits proved unreliable -- a player
+     * running with a flashlight in the town was reported as flags 0x2F
+     * (CUTSCENE|MENU set), so culling on them made other players invisible
+     * during ordinary play. A player is drawn wherever their latest pose puts
+     * them; only a genuinely stale ghost (no updates) is dropped. */
     now = ShNetPlat_Millis();
     age = now - g->curMs;
     if (age > SHNET_GHOST_STALE_MS)

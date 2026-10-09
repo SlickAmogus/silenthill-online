@@ -681,7 +681,7 @@ void ShNet_DrawWorld(GsOT* ot)
                 /* Always attempt the (translucent) body, like co-op -- a stale
                  * config's onlineGhostModel=0 must not force everyone back to
                  * flat silhouettes. The cap + cutscene check still apply. */
-                if (modelsDrawn < SHNET_MAX_MODELS && !(g->flags & SHNET_PF_CUTSCENE))
+                if (modelsDrawn < SHNET_MAX_MODELS) /* CUTSCENE flag is unreliable; always draw the body */
                 {
                     /* func_80045534 allocates through GsOUT_PACKET_P, so commit
                      * the silhouette cursor into it first and read it back
@@ -775,7 +775,7 @@ void ShNet_DrawWorld(GsOT* ot)
                      * pose carries in charaId). The silhouette is only the
                      * fallback when the model cannot be drawn (assets not
                      * resident). */
-                    if (modelsDrawn < SHNET_MAX_MODELS && !(m->flags & SHNET_PF_CUTSCENE))
+                    if (modelsDrawn < SHNET_MAX_MODELS) /* CUTSCENE unreliable; always draw the body */
                     {
                         unsigned char* before = (unsigned char*)poly;
                         GsOUT_PACKET_P = (PACKET*)poly;
