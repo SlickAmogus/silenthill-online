@@ -106,6 +106,16 @@ static s_CharaFileInfo PoolChara_FileInfo(s32 id)
         fi.animFileIdx    = FILE_ANIM_PRS_ANM;
     }
 
+    /* Harry is pooled ONLY to give REMOTE players a clean hero model -- the real
+     * registeredCharaModels[Harry] is the local player's play-as skin. Force the
+     * HERO files; animFileIdx (HB_BASE) is never changed by play-as, so leave it
+     * (the ghost poses from FS_BUFFER_0 anyway). */
+    if (id == Chara_Harry)
+    {
+        fi.modelFileIdx   = FILE_CHARA_HERO_ILM;
+        fi.textureFileIdx = FILE_CHARA_HERO_TIM;
+    }
+
     return fi;
 }
 
@@ -365,6 +375,19 @@ void Pc_CharaPool_OnMapLoad(void)
         n += PoolChara_Load(id);
     }
 
+    /* The clean hero Harry for remote players. Loaded like any pool chara but
+     * NOT registered (Refresh only walks 2..43), so it never touches the local
+     * play-as Harry slot. File idxs are constant, so it loads once. */
+    {
+        PcPoolChara*    hp = &s_pool[Chara_Harry];
+        s_CharaFileInfo hf = PoolChara_FileInfo(Chara_Harry);
+        if (!(hp->loaded && hp->modelFileIdx == hf.modelFileIdx &&
+              hp->textureFileIdx == hf.textureFileIdx && hp->animFileIdx == hf.animFileIdx))
+        {
+            n += PoolChara_Load(Chara_Harry);
+        }
+    }
+
     if (n != 0)
     {
         SH_DBG("[POOL] %d chara asset set(s) loaded", n);
@@ -372,6 +395,13 @@ void Pc_CharaPool_OnMapLoad(void)
 
     s_poolReady = 1;
     Pc_CharaPool_Refresh();
+}
+
+/* The clean hero Harry model for drawing remote players, independent of the
+ * local play-as skin. NULL until the pool has loaded it (needs globalCharaPool). */
+s_CharaModel* Pc_CharaPool_HarryGhostModel(void)
+{
+    return s_pool[Chara_Harry].loaded ? &s_pool[Chara_Harry].model : NULL;
 }
 
 /* ---- chara_global.dll: AI update funcs for every portable monster ------- */

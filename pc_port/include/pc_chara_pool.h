@@ -35,6 +35,12 @@ void Pc_CharaGlobal_Backfill(void);
  * only because of the pool). */
 int Pc_CharaPool_IsPoolModel(int charaId);
 
+/* A clean hero-Harry model kept in the pool solely so REMOTE players (co-op /
+ * living-world ghosts) render as vanilla Harry regardless of the local play-as
+ * skin. NULL until loaded (needs global_chara_pool). */
+typedef struct _CharaModel s_CharaModel;
+s_CharaModel* Pc_CharaPool_HarryGhostModel(void);
+
 /* Per-npc-slot "debug spawn" flags: flagged slots skip the savegame
  * enemy-state bookkeeping on kill (their field_40 is an npc slot index, not
  * a spawn-table row). Set by the console SPAWN command; cleared when a

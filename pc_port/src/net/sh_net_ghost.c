@@ -43,6 +43,7 @@
 
 #include "hires_override.h"
 #include "pc_config.h"
+#include "pc_chara_pool.h" /* Pc_CharaPool_HarryGhostModel: clean Harry for remotes */
 #include "sh_net.h"
 #include "sh_net_art.h"
 #include "sh_net_ui.h"
@@ -399,51 +400,46 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     s_AnmHeader*   anm;
     SVECTOR        rot;
     s16            ret;
-    int            slot;
 
-    /* A remote player whose character is not resident in this map -- a play-as
-     * skin, an NPC not loaded here, or the default id 0 that a plain Harry
-     * player publishes -- still gets a BODY, not a flat silhouette: fall back to
-     * Harry, who is always resident. (This is why co-op peers showed as outlines:
-     * the default charaId is 0, which the old <= 0 guard rejected outright.) */
-    if (charaId <= 0 || charaId >= Chara_Count ||
-        g_WorldGfxWork.registeredCharaModels[charaId] == NULL ||
-        g_WorldGfxWork.registeredCharaModels[charaId]->skeleton.bones_4 == NULL)
+    /* Resolve the MODEL. A non-Harry skin comes from the global chara pool
+     * (registeredCharaModels[id], independent of the LOCAL play-as). Harry --
+     * and any id that is not resident -- comes from the pool's CLEAN hero copy,
+     * NOT registeredCharaModels[Harry], which is the local player's play-as skin
+     * (drawing a remote from it mirrored the local skin onto everyone). */
+    if (charaId > 0 && charaId < Chara_Count && charaId != Chara_Harry &&
+        g_WorldGfxWork.registeredCharaModels[charaId] != NULL &&
+        g_WorldGfxWork.registeredCharaModels[charaId]->skeleton.bones_4 != NULL)
     {
-        charaId = Chara_Harry;
-    }
-    cm = g_WorldGfxWork.registeredCharaModels[charaId];
-    if (cm == NULL || cm->skeleton.bones_4 == NULL)
-    {
-        /* One-shot: names why a body dropped to the silhouette (diagnostic, not
-         * per-frame -- fires at most once a session). */
-        { static int once = 0; if (!once) { once = 1;
-            SH_DBG("[NET] ghost body->outline: chara %d model not resident", charaId); } }
-        return 0; /* even Harry not resident yet (brief async-load window) */
-    }
-    /* Harry's animation is not in the pool: the player poses itself from the
-     * base ANM at FS_BUFFER_0, so a Harry ghost reads the same header. */
-    if (charaId == Chara_Harry)
-    {
-        anm = (s_AnmHeader*)FS_BUFFER_0;
+        cm = g_WorldGfxWork.registeredCharaModels[charaId];
     }
     else
     {
-        slot = PC_CHARA_ANIM_SLOT(charaId);
-        if (slot < 0 || slot >= CHARA_ANIM_DATA_COUNT)
+        charaId = Chara_Harry;
+        cm = Pc_CharaPool_HarryGhostModel();
+        if (cm == NULL || cm->skeleton.bones_4 == NULL)
         {
-            return 0;
+            /* Pool not up (global_chara_pool off, or load pending): last resort
+             * is the local Harry slot, even if play-as has dirtied it. */
+            cm = g_WorldGfxWork.registeredCharaModels[Chara_Harry];
         }
-        anm = g_CharaModelAnimsData[slot].activeAnmHdr;
     }
+    if (cm == NULL || cm->skeleton.bones_4 == NULL)
+    {
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost body->outline: chara %d model not resident", charaId); } }
+        return 0;
+    }
+
+    /* Pose EVERY remote from Harry's base anim (FS_BUFFER_0). Play-as never
+     * changes animFileIdx -- all skins animate on Harry's bank -- so the
+     * keyframe index the remote sends is always a Harry-bank index. Posing a
+     * skin's OWN (cutscene) anim with it produced the garbled "crazy" motion. */
+    anm = (s_AnmHeader*)FS_BUFFER_0;
     if (anm == NULL || anm->boneCount <= 0 || anm->boneCount > GHOST_BONE_MAX)
     {
-        /* One-shot diagnostic. If this fires for a Harry ghost, FS_BUFFER_0 no
-         * longer holds HB_BASE.ANM (another load took the buffer) -> the ghost
-         * needs a stable anim copy, not this shared scratch. */
         { static int once = 0; if (!once) { once = 1;
-            SH_DBG("[NET] ghost body->outline: chara %d anm invalid (boneCount=%d)",
-                   charaId, anm ? (int)anm->boneCount : -1); } }
+            SH_DBG("[NET] ghost body->outline: HB_BASE anm invalid (boneCount=%d)",
+                   anm ? (int)anm->boneCount : -1); } }
         return 0;
     }
 
