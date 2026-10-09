@@ -2026,6 +2026,7 @@ void DbgOverlay_Update(void)
          * is sampled before the chat handler above consumes the Esc. The
          * controls panel also uses Escape to back out and to cancel a rebind. */
         extern int Pc_BindPanel_IsOpen(void);
+        extern int g_PcCoopGame;
         /* The living-world "leave a message" composer also backs out on Escape;
          * without this it both closed the box AND warm-reset to the title. */
         extern int ShNetMemo_ComposerActive(void);
@@ -2045,12 +2046,13 @@ void DbgOverlay_Update(void)
                 g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveBrightness;
             } else if (g_GameWork.gameState == GameState_MainMenu) {
                 exit(0);
-            } else if (g_PcConfig.onlineEnabled) {
-                /* Online: Escape must not warm-reset to the title. It is the
-                 * back-out key for the message box and other overlays, and
-                 * dropping out of a shared world on a stray Escape is hostile.
-                 * Exit to title from the pause / co-op menu instead. */
-                SH_DBG_ECHO("Escape: online -- exit to title from the menu");
+            } else if (g_PcCoopGame) {
+                /* In a co-op GAME only, Escape must not warm-reset (leaving a
+                 * shared world on a stray key is hostile; exit via the M menu).
+                 * Single-player -- even with the living world on -- keeps the
+                 * normal Escape-to-title. The memo box is already excluded above
+                 * and backs out with its own Cancel (X). */
+                SH_DBG_ECHO("Escape: in a co-op game -- leave from the M menu");
             } else {
                 g_SysWork.sysFlags |= SysFlag_DoWarmReset;
                 SH_DBG_ECHO("Exiting to title...");

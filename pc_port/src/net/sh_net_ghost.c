@@ -628,6 +628,22 @@ void ShNet_DrawWorld(GsOT* ot)
             {
                 continue;
             }
+            /* In a co-op game the same player is also a session peer, drawn by
+             * the co-op loop below. Don't double-draw them here, or you get the
+             * body plus a ghost silhouette "rim" over it. */
+            {
+                extern int g_PcCoopGame;
+                if (g_PcCoopGame && ShSession_Active())
+                {
+                    int k, dup = 0, mc2 = ShSession_MemberCount();
+                    for (k = 0; k < mc2; k++)
+                    {
+                        const ShSessionMember* mm = ShSession_Member(k);
+                        if (mm && (unsigned int)mm->steamId == g->playerId) { dup = 1; break; }
+                    }
+                    if (dup) continue;
+                }
+            }
             if (ABS(gx - self->vx) > range || ABS(gz - self->vz) > range)
             {
                 continue;

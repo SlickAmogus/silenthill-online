@@ -1358,8 +1358,13 @@ int ShNet_GhostInterp(int i, int* outX, int* outY, int* outZ, short* outRotY)
     }
     g = &s_gt.ghosts[i];
 
-    if ((g->flags & SHNET_PF_CUTSCENE) || (g->flags & SHNET_PF_MENU))
+    /* Only a real cutscene hides a player; someone paused in a menu is still
+     * physically standing in the world, so do NOT cull on MENU (that was making
+     * living-world players invisible to each other during ordinary play). */
+    if (g->flags & SHNET_PF_CUTSCENE)
     {
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost %u culled: flags 0x%X (cutscene)", g->playerId, g->flags); } }
         return 0;
     }
 
@@ -1367,6 +1372,8 @@ int ShNet_GhostInterp(int i, int* outX, int* outY, int* outZ, short* outRotY)
     age = now - g->curMs;
     if (age > SHNET_GHOST_STALE_MS)
     {
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost %u culled: stale %ums (> %u)", g->playerId, age, (unsigned)SHNET_GHOST_STALE_MS); } }
         return 0;
     }
 
