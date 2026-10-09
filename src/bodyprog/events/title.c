@@ -163,8 +163,19 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 
     /* Neither the gameplay demo nor the intro FMV may take the screen while the
      * achievement panel is up -- the player is reading, not idle. */
-    playInGameDemo = g_PcConfig.attractDemos && !browserOpen &&
-                     (((g_Demo_ReproducedCount + 1) % 3) != 0);
+    /* A guest waiting in a co-op room (menu open or just in a session) must stay
+     * on the main menu: the host's world-boot request is consumed ONLY here, so
+     * an attract demo/FMV pulling the guest off the menu makes it miss Start and
+     * never board. Suppress attract while the co-op front end or a session is up
+     * -- this only gates the demo, so it does not disturb the co-op menu's input
+     * (which browserOpen, cleared at line ~350, would). */
+    {
+        extern int Pc_CoopMenu_IsOpen(void);
+        extern int ShSession_Active(void);
+        int coopHoldsTitle = (Pc_CoopMenu_IsOpen() || ShSession_Active());
+        playInGameDemo = g_PcConfig.attractDemos && !browserOpen && !coopHoldsTitle &&
+                         (((g_Demo_ReproducedCount + 1) % 3) != 0);
+    }
 #else
     playInGameDemo = ((g_Demo_ReproducedCount + 1) % 3) != 0;
 #endif
