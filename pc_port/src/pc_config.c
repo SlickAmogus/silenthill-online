@@ -66,6 +66,7 @@ s_PcConfig g_PcConfig = {
     .onlineUiScale    = 1.0f,
     .onlineFriendlyFire = 0,
     .onlinePvpDamage  = 0.15f,
+    .onlineRespawnSeconds = 7.0f,
     .onlineSteam           = 0,
     .onlineSteamAppId      = 480, /* Spacewar; see sh_net_steam.h */
     .onlineSteamMaxPlayers = 4,
@@ -785,6 +786,12 @@ void PcConfig_Load(const char* path)
             g_PcConfig.onlinePvpDamage = (float)atof(value);
             if (g_PcConfig.onlinePvpDamage < 0.01f) g_PcConfig.onlinePvpDamage = 0.01f;
             if (g_PcConfig.onlinePvpDamage > 5.0f)  g_PcConfig.onlinePvpDamage = 5.0f;
+        }
+        else if (strcmp(key, "online_respawn_seconds") == 0)
+        {
+            g_PcConfig.onlineRespawnSeconds = (float)atof(value);
+            if (g_PcConfig.onlineRespawnSeconds < 2.0f)  g_PcConfig.onlineRespawnSeconds = 2.0f;
+            if (g_PcConfig.onlineRespawnSeconds > 60.0f) g_PcConfig.onlineRespawnSeconds = 60.0f;
         }
         else if (strcmp(key, "online_steam") == 0)
         {

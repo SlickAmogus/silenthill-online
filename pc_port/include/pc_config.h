@@ -448,6 +448,8 @@ typedef struct {
                                * sides must have it on: you only take damage if YOU enabled it. */
     float onlinePvpDamage;    /* scale on weapon damage vs players (online_pvp_damage, default 0.15:
                                * weapons are tuned for 200-40000 HP monsters, Harry has 100) */
+    float onlineRespawnSeconds; /* co-op: how long a dead player lies there before respawning
+                                 * (online_respawn_seconds, default 7) */
     /* Steam co-op sessions. Independent of online_enabled: a player can run a
      * Steam session without a master server, or both at once. */
     int  onlineSteam;          /* 1 = bring up Steam for lobbies/invites (online_steam) */

@@ -20,6 +20,7 @@
 #include "bodyprog/screen/cutscene_border.h" /* CutsceneBorderState_None for the flag test */
 #include "bodyprog/sound/sound_system.h"     /* Sd_PlaySfx: lobby join chime */
 #include "sh_net_hit.h"                      /* friendly fire proxies + incoming hits */
+#include "sh_net_respawn.h"                  /* co-op death -> respawn instead of game over */
 #include "bodyprog/sound/sfx_id_enum.h"
 #include "bodyprog/items.h"        /* INV_ITEM_COUNT_MAX, s_InventoryItem */
 #include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup */
@@ -268,6 +269,10 @@ void ShNet_GameTick(void)
         s_initDone = 1;
         ShNet_Init();
     }
+
+    /* Co-op respawn state machine. Before the living-world gate: it belongs to
+     * the co-op game, not to the server connection. */
+    ShNetRespawn_Tick();
 
     /* Lobby chime: someone joined the room (member count went UP). Your own
      * arrival (0 -> 1) is silent. Before the enabled gate so co-op-only (no

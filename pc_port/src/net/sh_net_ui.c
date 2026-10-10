@@ -47,6 +47,7 @@
 #include "sh_net_memo.h"
 #include "sh_net_chat.h"
 #include "sh_net_session.h"
+#include "sh_net_respawn.h" /* "YOU DIED / respawning in N" */
 #include "pc_coop_menu.h"
 #include "pc_mouse_cursor.h"
 #include "pc_config.h"
@@ -1544,6 +1545,26 @@ void ShNetUi_Draw(void)
     {
         Nu_DrawTextCentered("Message left.", s_vpW * 0.5f, s_vpH * 0.74f, px,
                             0.80f, 0.78f, 0.60f, 1.0f);
+    }
+
+    /* Co-op death: no game over, a countdown instead. */
+    if (ShNetRespawn_Active())
+    {
+        const float rem = ShNetRespawn_Remaining();
+        const int   big = (int)((float)px * 1.6f);
+        char        line[48];
+        Nu_DrawTextCentered("YOU DIED", s_vpW * 0.5f, s_vpH * 0.38f, big,
+                            0.80f, 0.42f, 0.40f, 1.0f);
+        if (rem > 0.05f)
+        {
+            snprintf(line, sizeof(line), "Respawning in %d", (int)ceilf(rem));
+        }
+        else
+        {
+            snprintf(line, sizeof(line), "Respawning...");
+        }
+        Nu_DrawTextCentered(line, s_vpW * 0.5f, s_vpH * 0.38f + (float)big * 1.3f, px,
+                            0.88f, 0.84f, 0.62f, 1.0f);
     }
 
     if (ShNetChat_DisplayActive())

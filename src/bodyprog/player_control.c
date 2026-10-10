@@ -3078,6 +3078,17 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     if (player->health <= Q12(0.0f) && player->properties.player.afkTimer <= Q12(0.0f))
                     {
                         g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                        {
+                            /* Co-op: no game over; sh_net_respawn.c holds the
+                             * corpse and puts the player back later. */
+                            extern int Pc_Respawn_HoldDeath(void);
+                            if (Pc_Respawn_HoldDeath())
+                            {
+                                return;
+                            }
+                        }
+#endif
                         SysWork_StateSetNext(SysState_GameOver);
 
                         player->health                                                         = Q12(100.0f);
@@ -3170,6 +3181,17 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     if (player->health <= Q12(0.0f) && player->properties.player.afkTimer <= Q12(0.0f))
                     {
                         g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                        {
+                            /* Co-op: no game over; sh_net_respawn.c holds the
+                             * corpse and puts the player back later. */
+                            extern int Pc_Respawn_HoldDeath(void);
+                            if (Pc_Respawn_HoldDeath())
+                            {
+                                return;
+                            }
+                        }
+#endif
 
                         SysWork_StateSetNext(SysState_GameOver);
 
@@ -3766,6 +3788,18 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
             if (player->model.anim.keyframeIdx == g_MapOverlayHdr.field_38[D_800AF220].keyframeIdx_6)
             {
                 g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                {
+                    /* Co-op: no game over; sh_net_respawn.c holds the corpse
+                     * (anim locked on its last keyframe) and puts the player
+                     * back later. */
+                    extern int Pc_Respawn_HoldDeath(void);
+                    if (Pc_Respawn_HoldDeath())
+                    {
+                        return;
+                    }
+                }
+#endif
 
                 SysWork_StateSetNext(SysState_GameOver);
 
@@ -3818,7 +3852,13 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
              * line 2651 (which reads player->model.anim.keyframeIdx) never fires
              * without this copy. */
             if (player->model.stateStep == 2) {
-                Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
+                /* Co-op respawn holds the corpse frozen on its last keyframe
+                 * and blinks it out (sh_net_respawn.c); re-asserting here
+                 * would undo both. */
+                extern int Pc_Respawn_Holding(void);
+                if (!Pc_Respawn_Holding()) {
+                    Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
+                }
                 if (extra->model.anim.keyframeIdx > player->model.anim.keyframeIdx) {
                     player->model.anim.keyframeIdx = extra->model.anim.keyframeIdx;
                     player->model.anim.time        = extra->model.anim.time;
@@ -3874,6 +3914,18 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                 }
 
                 g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                {
+                    /* Co-op: no game over; sh_net_respawn.c holds the corpse
+                     * (anim locked on its last keyframe) and puts the player
+                     * back later. */
+                    extern int Pc_Respawn_HoldDeath(void);
+                    if (Pc_Respawn_HoldDeath())
+                    {
+                        return;
+                    }
+                }
+#endif
 
                 SysWork_StateSetNext(SysState_GameOver);
 
@@ -3920,6 +3972,18 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
 #endif
             {
                 g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                {
+                    /* Co-op: no game over; sh_net_respawn.c holds the corpse
+                     * (anim locked on its last keyframe) and puts the player
+                     * back later. */
+                    extern int Pc_Respawn_HoldDeath(void);
+                    if (Pc_Respawn_HoldDeath())
+                    {
+                        return;
+                    }
+                }
+#endif
 
                 SysWork_StateSetNext(SysState_GameOver);
 
