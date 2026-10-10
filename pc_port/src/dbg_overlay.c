@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "game.h"
+#include "bodyprog/sound/sound_system.h" /* Sd_PlaySfx (was implicitly declared) */
 
 #ifdef SH_PC_PORT
 

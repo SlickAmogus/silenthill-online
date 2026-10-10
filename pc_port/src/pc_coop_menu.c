@@ -19,6 +19,8 @@
 #include "sh_net_session.h"
 #include "sh_net_steam.h"
 #include "sh_log.h"
+#include "bodyprog/sound/sound_system.h" /* Sd_PlaySfx: the same menu sounds the title uses */
+#include "bodyprog/sound/sfx_id_enum.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -338,7 +340,7 @@ int Pc_CoopMenu_RowCount(void)
     {
     case COOP_PAGE_ROOT:       return 3; /* Host, Join, Back */
     case COOP_PAGE_HOST_SETUP: return 7; /* Host on, Players, Visibility, FPS, Load, Open, Back */
-    case COOP_PAGE_HOST:       return 4; /* Invite, Start Game, Leave, Back */
+    case COOP_PAGE_HOST:       return ShSession_IsHost() ? 4 : 2; /* host: Invite/Code, Start, Close, Back; guest: Leave, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
     case COOP_PAGE_INGAME:     return 7; /* Resume, Message, Save, Save&Exit, Nameplates, Players, Leave */
@@ -356,9 +358,9 @@ const char* Pc_CoopMenu_Title(void)
 {
     switch (s_page)
     {
-    case COOP_PAGE_HOST_SETUP: return "HOST GAME";
+    case COOP_PAGE_HOST_SETUP: return "HOST A GAME";
     case COOP_PAGE_HOST:       return "LOBBY";
-    case COOP_PAGE_JOIN:       return "JOIN GAME";
+    case COOP_PAGE_JOIN:       return "JOIN A GAME";
     case COOP_PAGE_ROOMS:      return "SERVER ROOMS";
     case COOP_PAGE_INGAME:     return "MULTIPLAYER";
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
@@ -404,9 +406,22 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
 
     case COOP_PAGE_HOST:
-        if (i == 0) snprintf(out, cap, "Invite Friend");
+        if (!ShSession_IsHost())
+        {
+            /* Guest lobby: nothing to start, just wait or leave. */
+            if (i == 0) snprintf(out, cap, "Leave Room");
+            else        snprintf(out, cap, "Back");
+            break;
+        }
+        if (i == 0)
+        {
+            /* A server room has a shareable code; a Steam lobby has an invite. */
+            unsigned long long id = ShSession_LobbyId();
+            if (id && id < 100000ull) snprintf(out, cap, "Room Code:  %u", (unsigned)id);
+            else                      snprintf(out, cap, "Invite Friend");
+        }
         else if (i == 1) snprintf(out, cap, "Start Game");
-        else if (i == 2) snprintf(out, cap, "Close Lobby");
+        else if (i == 2) snprintf(out, cap, "Close Room");
         else snprintf(out, cap, "Back");
         break;
 
@@ -497,6 +512,12 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
 
     case COOP_PAGE_HOST:
         ShSession_StatusLine(out, cap);
+        if (!ShSession_IsHost() && ShSession_Active())
+        {
+            char live[128];
+            SDL_strlcpy(live, out, sizeof(live));
+            snprintf(out, cap, "%s   -   waiting for the host to start", live);
+        }
         break;
 
     case COOP_PAGE_JOIN:
@@ -592,8 +613,14 @@ static void Coop_Confirm(void)
         break;
 
     case COOP_PAGE_HOST:
-        if (s_sel == 0)      { ShSession_RequestInvite(); }
-        else if (s_sel == 1) { Coop_RequestStart(); }                       /* Start Game */
+        if (!ShSession_IsHost())
+        {
+            if (s_sel == 0) { ShSession_RequestLeave(); }                 /* Leave Room */
+            s_page = COOP_PAGE_ROOT; s_sel = 0;
+            break;
+        }
+        if (s_sel == 0)      { ShSession_RequestInvite(); }               /* Steam invite; the room code is informational */
+        else if (s_sel == 1) { Coop_RequestStart(); }                     /* Start Game */
         else if (s_sel == 2) { ShSession_RequestLeave(); s_page = COOP_PAGE_ROOT; s_sel = 0; }
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
@@ -711,6 +738,27 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
     {
         return;
     }
+
+    /* Room browser: keep the list live (player counts, new rooms) while it is
+     * open. Coop_RefreshServerList is a no-op once we are in a room. */
+    if (s_page == COOP_PAGE_ROOMS)
+    {
+        static unsigned int s_roomsNextMs = 0;
+        unsigned int        now = SDL_GetTicks();
+        if ((int)(now - s_roomsNextMs) >= 0)
+        {
+            Coop_RefreshServerList();
+            s_roomsNextMs = now + 2000;
+        }
+    }
+    /* A guest whose join just completed lands in the live lobby (status line
+     * shows the real member count) instead of staring at a stale browser row. */
+    if ((s_page == COOP_PAGE_ROOMS || s_page == COOP_PAGE_JOIN) &&
+        ShSession_Active() && !ShSession_IsHost())
+    {
+        s_page = COOP_PAGE_HOST;
+        s_sel  = 0;
+    }
     rows = Pc_CoopMenu_RowCount();
 
     /* Left-click confirms the row the renderer said is under the pointer. The
@@ -726,6 +774,7 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
         if (edge && s_hover >= 0 && s_hover < rows)
         {
             s_sel = s_hover;
+            Sd_PlaySfx(Sfx_MenuConfirm, 0, Q8(0.25f));
             Coop_Confirm();
             return;
         }
@@ -734,18 +783,22 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
     if (up)
     {
         s_sel = (s_sel + rows - 1) % rows;
+        Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
     }
     if (down)
     {
         s_sel = (s_sel + 1) % rows;
+        Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
     }
     if (confirm)
     {
+        Sd_PlaySfx(Sfx_MenuConfirm, 0, Q8(0.25f));
         Coop_Confirm();
         return;
     }
     if (cancel)
     {
+        Sd_PlaySfx(Sfx_MenuCancel, 0, Q8(0.25f));
         if (s_page == COOP_PAGE_PLAYERS)
         {
             s_page = COOP_PAGE_INGAME; /* back out of the member list */

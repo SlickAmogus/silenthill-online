@@ -177,7 +177,8 @@ void ShNetMemo_Text(const ShNetMemo* m, char* out, int cap)
         if (out && cap > 0) out[0] = '\0';
         return;
     }
-    switch (m->kind)
+    /* kind byte: low nibble = marker kind, high nibble = emote (0 = none). */
+    switch (m->kind & 0x0F)
     {
     case SHNET_MARK_DEATH:
         snprintf(out, (size_t)cap, "%s died here",
@@ -188,8 +189,14 @@ void ShNetMemo_Text(const ShNetMemo* m, char* out, int cap)
                  m->owner[0] ? m->owner : "Someone");
         return;
     default:
-        ShNetMemo_Format((int)m->phraseA, (int)m->wordA, out, cap);
+    {
+        const char* emote = ShNetMemo_Emote((m->kind >> 4) & 0x0F);
+        char        body[96];
+        ShNetMemo_Format((int)m->phraseA, (int)m->wordA, body, (int)sizeof(body));
+        if (emote && emote[0]) snprintf(out, (size_t)cap, "%s  %s", emote, body);
+        else                   snprintf(out, (size_t)cap, "%s", body);
         return;
+    }
     }
 }
 
@@ -249,10 +256,33 @@ int ShNetMemo_NearestReadable(void)
 /* ------------------------------------------------------------------ */
 
 static int s_active;
-static int s_col;      /* 0 = phrase, 1 = word */
+static int s_col;      /* 0 = phrase, 1 = word, 2 = emote */
 static int s_phrase;
 static int s_word;
+static int s_emote;    /* index into s_emotes; 0 = none */
 static int s_placedTimer;
+
+/* Emotes ride the high nibble of the memo kind byte (no wire-size change), so
+ * at most 15. ASCII only: every glyph is guaranteed in the overlay font. */
+static const char* const s_emotes[] = {
+    "", "<3", "!!", "??", ":)", ":(", "XD", "**", "->", "RIP", "o/", "...", "zZz", "!?", "<o>"
+};
+#define EMOTE_COUNT ((int)(sizeof(s_emotes) / sizeof(s_emotes[0])))
+
+int ShNetMemo_EmoteCount(void)
+{
+    return EMOTE_COUNT;
+}
+
+const char* ShNetMemo_Emote(int i)
+{
+    return (i >= 0 && i < EMOTE_COUNT) ? s_emotes[i] : "";
+}
+
+int ShNetMemo_ComposerEmote(void)
+{
+    return s_emote;
+}
 
 int ShNetMemo_ComposerActive(void)
 {
@@ -309,7 +339,10 @@ int ShNetMemo_ComposerWord(void)
 
 void ShNetMemo_ComposerPreview(char* out, int cap)
 {
-    ShNetMemo_Format(s_phrase, s_word, out, cap);
+    char body[96];
+    ShNetMemo_Format(s_phrase, s_word, body, (int)sizeof(body));
+    if (s_emote > 0) snprintf(out, (size_t)cap, "%s  %s", s_emotes[s_emote], body);
+    else             snprintf(out, (size_t)cap, "%s", body);
 }
 
 int ShNetMemo_JustPlaced(void)
@@ -357,37 +390,47 @@ void ShNetMemo_ComposerInput(int up, int down, int left, int right,
         return;
     }
 
+    /* Three columns, Left/Right between them, Up/Down within. Enter advances
+     * phrase -> word -> emote and leaves the message from the emote column
+     * (an emote is optional: "none" is the first entry). */
     if (s_col == 0)
     {
         if (up)    s_phrase = (s_phrase + PHRASE_COUNT - 1) % PHRASE_COUNT;
         if (down)  s_phrase = (s_phrase + 1) % PHRASE_COUNT;
-        if (right) s_col    = 1; /* into the word column (left is already leftmost) */
+        if (right) s_col    = 1;
     }
-    else
+    else if (s_col == 1)
     {
         if (up)    s_word = (s_word + WORD_COUNT - 1) % WORD_COUNT;
         if (down)  s_word = (s_word + 1) % WORD_COUNT;
-        if (left)  s_col  = 0; /* back to the phrase column */
-        if (right) ShNetMemo_WordGroupStep(1);
+        if (left)  s_col  = 0;
+        if (right) s_col  = 2;
+    }
+    else
+    {
+        if (up)    s_emote = (s_emote + EMOTE_COUNT - 1) % EMOTE_COUNT;
+        if (down)  s_emote = (s_emote + 1) % EMOTE_COUNT;
+        if (left)  s_col   = 1;
     }
 
     if (confirm)
     {
-        if (s_col == 0)
+        if (s_col < 2)
         {
-            s_col = 1;
+            s_col++;
         }
         else
         {
             const VECTOR3* p = &g_SysWork.playerWork.player.position;
-            if (ShNet_PlaceMarker(SHNET_MARK_MEMO, (int)p->vx, (int)p->vy, (int)p->vz,
+            if (ShNet_PlaceMarker(SHNET_MARK_MEMO | (s_emote << 4),
+                                  (int)p->vx, (int)p->vy, (int)p->vz,
                                   (short)g_SysWork.playerWork.player.rotation.vy,
                                   (unsigned short)s_phrase, (unsigned short)s_word,
                                   0xFFFF, 0xFFFF))
             {
                 char text[96];
                 ShNetMemo_Format(s_phrase, s_word, text, (int)sizeof(text));
-                SH_DBG("[NET] left a message: \"%s\"", text);
+                SH_DBG("[NET] left a message: \"%s %s\"", s_emotes[s_emote], text);
                 s_placedTimer = MEMO_PLACED_FRAMES;
                 /* The server assigns the id and hands it back in the next
                  * marker list, so ask for one instead of guessing. */

@@ -177,7 +177,8 @@ enum
     SHNET_REJ_FULL     = 2,
     SHNET_REJ_PASSWORD = 3,
     SHNET_REJ_BANNED   = 4,
-    SHNET_REJ_NAME     = 5
+    SHNET_REJ_NAME     = 5,
+    SHNET_REJ_BUILD    = 6  /* build id not on the server's allow-list */
 };
 
 /* Chat scope. Also the value the U key cycles through. */

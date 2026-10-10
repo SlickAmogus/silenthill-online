@@ -822,7 +822,7 @@ void ShNet_DrawWorld(GsOT* ot)
             {
                 continue;
             }
-            if (m->kind == SHNET_MARK_DEATH && !g_PcConfig.onlineDeaths)
+            if ((m->kind & 0x0F) == SHNET_MARK_DEATH && !g_PcConfig.onlineDeaths) /* low nibble = kind; high = emote */
             {
                 continue;
             }
@@ -856,7 +856,7 @@ void ShNet_DrawWorld(GsOT* ot)
             axisV.vy = 0;
             axisV.vz = MEMO_HALF;
 
-            ShNetG_MarkerColor(m->kind, &cr, &cg, &cb);
+            ShNetG_MarkerColor(m->kind & 0x0F, &cr, &cg, &cb);
             poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
                                    SHNET_CLUT(MEMO_SLOT),
                                    MEMO_TEX_W - 1, MEMO_TEX_H - 1,

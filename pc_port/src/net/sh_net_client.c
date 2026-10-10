@@ -32,6 +32,7 @@
 #include "sh_net_internal.h"
 #include "sh_net_session.h"
 #include "sh_net_coopudp.h" /* unified co-op rides this connection */
+#include "sh_build_hash.h"  /* this build's id, sent in HELLO */
 #include "sh_net_steam.h"
 #include "pc_config.h"
 #include "sh_log.h"
@@ -263,7 +264,7 @@ static void ShNetW_SendHello(ShNetWorker* w, int charaId)
     ShnPutU8(buf, &off, (shn_u8)charaId);
     ShnPutU32(buf, &off, w->session);
     ShnPutStr(buf, &off, s_name, SHNET_NAME_MAX);
-    ShnPutStr(buf, &off, "shpc-online-1", SHNET_BUILD_MAX);
+    ShnPutStr(buf, &off, ShBuild_Short(), SHNET_BUILD_MAX); /* exe hash: the server may allow-list it */
     ShnPutU32(buf, &off, s_passHash);
 
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), w->session);
@@ -1145,6 +1146,9 @@ void ShNet_Init(void)
                 sizeof(s_name));
     ShNet_SanitizeName(s_name);
     s_passHash = g_PcConfig.onlinePassword[0] ? ShnHashPassword(g_PcConfig.onlinePassword) : 0;
+    /* Logged so an admin can read the id of an approved build straight off a
+     * client log (the server also logs it on every join). */
+    SH_DBG("[NET] build id %s  (sha256 %s)", ShBuild_Short(), ShBuild_Hash());
 
     s_lock = SDL_CreateMutex();
     if (!s_lock)

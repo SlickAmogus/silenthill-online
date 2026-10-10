@@ -985,7 +985,9 @@ static void Nu_DrawComposer(int px)
     const float x    = (s_vpW - w) * 0.5f;
     const float y    = s_vpH * 0.16f;
     const int   col  = ShNetMemo_ComposerColumn();
-    const float colW = (w - pad * 3.0f) * 0.5f;
+    /* Three columns: phrase | word | emote. The emote column is narrow. */
+    const float usable = w - pad * 4.0f;
+    const float colWs[3] = { usable * 0.46f, usable * 0.34f, usable * 0.20f };
     float       ty;
     int         i;
     char        buf[128];
@@ -996,12 +998,16 @@ static void Nu_DrawComposer(int px)
     Nu_DrawText("LEAVE A MESSAGE", x + pad, ty, px, 0.82f, 0.79f, 0.70f, 1.0f);
     ty += rowH * 1.3f;
 
-    for (i = 0; i < 2; i++)
+    for (i = 0; i < 3; i++)
     {
         const int   isPhrase = (i == 0);
-        const int   sel      = isPhrase ? ShNetMemo_ComposerPhrase() : ShNetMemo_ComposerWord();
-        const int   total    = isPhrase ? ShNetMemo_PhraseCount() : ShNetMemo_WordCount();
-        const float cx       = x + pad + (float)i * (colW + pad);
+        const int   isEmote  = (i == 2);
+        const int   sel      = isPhrase ? ShNetMemo_ComposerPhrase()
+                             : isEmote  ? ShNetMemo_ComposerEmote() : ShNetMemo_ComposerWord();
+        const int   total    = isPhrase ? ShNetMemo_PhraseCount()
+                             : isEmote  ? ShNetMemo_EmoteCount()    : ShNetMemo_WordCount();
+        const float colW     = colWs[i];
+        const float cx       = x + pad + (i > 0 ? colWs[0] + pad : 0.0f) + (i > 1 ? colWs[1] + pad : 0.0f);
         const int   half     = NU_COMPOSER_ROWS / 2;
         float       cy       = ty;
         int         k;
@@ -1021,9 +1027,15 @@ static void Nu_DrawComposer(int px)
              * above the first is the last, which is how it navigates. */
             int idx = ((sel + k) % total + total) % total;
             int on  = (k == 0);
-            const char* label = isPhrase ? ShNetMemo_Phrase(idx) : ShNetMemo_Word(idx);
+            const char* label = isPhrase ? ShNetMemo_Phrase(idx)
+                              : isEmote  ? (idx == 0 ? "(no emote)" : ShNetMemo_Emote(idx))
+                                         : ShNetMemo_Word(idx);
 
-            if (isPhrase)
+            if (isEmote)
+            {
+                /* plain tags, nothing to substitute or group */
+            }
+            else if (isPhrase)
             {
                 /* Show the template with its slot filled by a placeholder, so
                  * the player reads a sentence rather than a printf string. */
@@ -1065,8 +1077,9 @@ static void Nu_DrawComposer(int px)
     Nu_DrawTextCentered(buf, x + w * 0.5f, ty, (int)((float)px * 1.3f),
                         0.88f, 0.84f, 0.62f, 1.0f);
     ty += rowH * 1.4f;
-    Nu_DrawTextCentered(col == 0 ? "Up/Down choose     Enter next     Esc cancel"
-                                 : "Up/Down word     Left/Right group     Enter leave it     Esc cancel",
+    Nu_DrawTextCentered(col == 0 ? "Up/Down choose     Enter next     Cancel (X) close"
+                      : col == 1 ? "Up/Down word     Left/Right column     Enter next     Cancel (X) close"
+                                 : "Up/Down emote     Left back     Enter leave it     Cancel (X) close",
                         x + w * 0.5f, ty, (int)((float)px * 0.9f),
                         0.42f, 0.42f, 0.40f, 1.0f);
 }
@@ -1103,12 +1116,15 @@ static void Nu_DrawNearbyMemo(int px)
         Nu_Panel(bx, y - (float)px * 0.5f, tw + (float)px * 2.0f, (float)big * 2.6f, 0.85f);
     }
 
-    Nu_DrawTextCentered(text, s_vpW * 0.5f, y, big,
-                        m->kind == SHNET_MARK_DEATH ? 0.80f : 0.88f,
-                        m->kind == SHNET_MARK_DEATH ? 0.42f : 0.84f,
-                        m->kind == SHNET_MARK_DEATH ? 0.40f : 0.62f, 1.0f);
+    {
+        const int kind = m->kind & 0x0F; /* high nibble = emote */
+        Nu_DrawTextCentered(text, s_vpW * 0.5f, y, big,
+                            kind == SHNET_MARK_DEATH ? 0.80f : 0.88f,
+                            kind == SHNET_MARK_DEATH ? 0.42f : 0.84f,
+                            kind == SHNET_MARK_DEATH ? 0.40f : 0.62f, 1.0f);
+    }
 
-    if (m->kind == SHNET_MARK_MEMO)
+    if ((m->kind & 0x0F) == SHNET_MARK_MEMO)
     {
         snprintf(sub, sizeof(sub), "- %s   (%+d)", m->owner[0] ? m->owner : "someone",
                  (int)m->rating);

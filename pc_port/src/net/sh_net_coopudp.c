@@ -18,6 +18,7 @@
 #include "sh_log.h"
 #include "sh_master_embed.h"
 #include "sh_net.h" /* ShNet_World*: ride the living-world link when unified */
+#include "sh_build_hash.h"
 
 #include <SDL.h> /* SDL_CreateThread for the embedded relay */
 
@@ -97,8 +98,10 @@ static void CoopUdp_SendHello(void)
     ShnPutU8(buf, &off, 0);              /* charaId; unused for co-op */
     ShnPutU32(buf, &off, s_session);     /* reconnect (0 while fresh) */
     ShnPutStr(buf, &off, s_name, SHNET_NAME_MAX);
-    ShnPutStr(buf, &off, "shpc-online-1", SHNET_BUILD_MAX);
-    ShnPutU32(buf, &off, 0);             /* no password on the co-op relay */
+    ShnPutStr(buf, &off, ShBuild_Short(), SHNET_BUILD_MAX);
+    /* Same password as the living world: a password-protected server must
+     * accept a direct co-op link too (the embedded This-PC relay has none). */
+    ShnPutU32(buf, &off, g_PcConfig.onlinePassword[0] ? ShnHashPassword(g_PcConfig.onlinePassword) : 0);
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), s_session);
     CoopUdp_SendRaw(buf, off);
 }

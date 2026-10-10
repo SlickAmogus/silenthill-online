@@ -64,7 +64,13 @@ void ShNetMemo_ComposerInput(int up, int down, int left, int right,
                              int confirm, int cancel);
 
 /* What the composer is showing, for the panel. */
-int         ShNetMemo_ComposerColumn(void);  /* 0 = phrase, 1 = word */
+int         ShNetMemo_ComposerColumn(void);  /* 0 = phrase, 1 = word, 2 = emote */
+
+/* Emotes: a short tag shown with a message, carried in the memo kind byte's
+ * high nibble. 0 = none. */
+int         ShNetMemo_EmoteCount(void);
+const char* ShNetMemo_Emote(int i);
+int         ShNetMemo_ComposerEmote(void);
 int         ShNetMemo_ComposerPhrase(void);
 int         ShNetMemo_ComposerWord(void);
 void        ShNetMemo_ComposerPreview(char* out, int cap);

@@ -108,5 +108,13 @@ if ($Zip) {
     Remove-Item -Recurse -Force $stage
     $zsz = (Get-Item $zipPath).Length
     "{0}: {1:N0} MB (no disc image, clean default config - ready to share)" -f $zipPath, ($zsz / 1MB)
+    # The build id this exe will send to the server (first 23 hex chars of its
+    # SHA-256). Put it in the server's allow-list (sh_master -b ID) to admit
+    # only this build. Changes with every rebuild.
+    $exe = Join-Path $Dist "SilentHillPC.exe"
+    if (Test-Path $exe) {
+        $full = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
+        "build id (for sh_master -b): {0}" -f $full.Substring(0, 23)
+    }
 }
 exit 0

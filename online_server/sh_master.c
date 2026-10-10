@@ -168,6 +168,45 @@ static unsigned int  g_lastSaveMs;
 static volatile int  g_running = 1;
 static int           g_verbose;
 
+/* Build allow-list (-b ID, --builds FILE). Empty = any build may connect
+ * (the default). Entries are the short id the client sends in HELLO (the first
+ * SHNET_BUILD_MAX-1 hex chars of its executable's SHA-256); a full 64-char
+ * hash pasted by the admin is truncated to match. */
+#define SRV_BUILDS_MAX 32
+static char g_allowedBuilds[SRV_BUILDS_MAX][SHNET_BUILD_MAX];
+static int  g_allowedBuildCount;
+
+static void SrvAllowBuild(const char* id)
+{
+    char tmp[SHNET_BUILD_MAX];
+    int  n = 0;
+    while (*id == ' ' || *id == '\t') id++;
+    while (*id && *id != ' ' && *id != '\t' && *id != '\r' && *id != '\n' && n < SHNET_BUILD_MAX - 1)
+    {
+        tmp[n++] = *id++;
+    }
+    tmp[n] = '\0';
+    if (n == 0 || tmp[0] == '#' || g_allowedBuildCount >= SRV_BUILDS_MAX) return;
+    memcpy(g_allowedBuilds[g_allowedBuildCount++], tmp, sizeof(tmp));
+}
+
+/* One id per line; blank lines and '#' comments ignored. */
+static void SrvLoadBuildsFile(const char* path)
+{
+    FILE* f = fopen(path, "r");
+    char  line[256];
+    if (!f)
+    {
+        fprintf(stderr, "could not read build allow-list %s\n", path);
+        return;
+    }
+    while (fgets(line, sizeof(line), f))
+    {
+        SrvAllowBuild(line);
+    }
+    fclose(f);
+}
+
 /* ------------------------------------------------------------------ */
 /* Platform odds and ends                                              */
 /* ------------------------------------------------------------------ */
@@ -621,6 +660,22 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         SrvLog("rejected %s: bad password", addr);
         return;
     }
+    /* Build allow-list: a deterrent against casually modified clients (the id
+     * is the client exe's hash). Off unless the admin listed at least one id. */
+    if (g_allowedBuildCount > 0)
+    {
+        int ok = 0, k;
+        for (k = 0; k < g_allowedBuildCount; k++)
+        {
+            if (strncmp(build, g_allowedBuilds[k], SHNET_BUILD_MAX - 1) == 0) { ok = 1; break; }
+        }
+        if (!ok)
+        {
+            SrvSendReject(from, SHNET_REJ_BUILD, "This game build is not approved on this server");
+            SrvLog("rejected %s: build %s is not on the allow-list", addr, build);
+            return;
+        }
+    }
 
     SrvSanitize(name, SHNET_NAME_MAX);
 
@@ -818,7 +873,7 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
             {
                 continue;
             }
-            if (!(kinds & (1 << m->kind)) && kinds != 0xFF)
+            if (!(kinds & (1 << (m->kind & 0x0F))) && kinds != 0xFF) /* mask the emote nibble */
             {
                 continue;
             }
@@ -930,11 +985,16 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     {
         return;
     }
-    if (m.kind < 0 || m.kind > SHNET_MARK_SAVE)
+    /* kind byte: low nibble = marker kind, high nibble = emote (memos only). */
+    if ((m.kind & 0x0F) > SHNET_MARK_SAVE)
     {
         return;
     }
-    if (m.kind == SHNET_MARK_DEATH && !(g_featureFlags & SHNET_SF_DEATHS))
+    if ((m.kind & 0x0F) != SHNET_MARK_MEMO && (m.kind & 0xF0) != 0)
+    {
+        return;
+    }
+    if ((m.kind & 0x0F) == SHNET_MARK_DEATH && !(g_featureFlags & SHNET_SF_DEATHS))
     {
         return;
     }
@@ -942,7 +1002,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     /* The client latches its death report, but a reconnect or a replayed
      * datagram can still produce a second one; collapse those here so a single
      * death never leaves a cluster of markers. */
-    if (m.kind == SHNET_MARK_DEATH)
+    if ((m.kind & 0x0F) == SHNET_MARK_DEATH)
     {
         unsigned int now = SrvMillis();
         shn_s32      dx  = m.x - c->lastDeathX;
@@ -1014,11 +1074,11 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     SrvPushMemo(&m); /* live: everyone else on this map sees it now */
 
     SrvLog("  %s placed %s on map %d (id %u)", c->name,
-           m.kind == SHNET_MARK_DEATH ? "a death marker" :
-           m.kind == SHNET_MARK_SAVE  ? "a save mark" : "a message",
+           (m.kind & 0x0F) == SHNET_MARK_DEATH ? "a death marker" :
+           (m.kind & 0x0F) == SHNET_MARK_SAVE  ? "a save mark" : "a message",
            m.mapIdx, m.memoId);
 
-    if (m.kind == SHNET_MARK_DEATH)
+    if ((m.kind & 0x0F) == SHNET_MARK_DEATH)
     {
         char text[SHNET_EVENT_MAX];
         snprintf(text, sizeof(text), "%s died", c->name);
@@ -1451,6 +1511,9 @@ static void SrvUsage(const char* argv0)
     printf("  -n NAME      server name shown to players\n");
     printf("  -m TEXT      message of the day\n");
     printf("  -w WORD      require this password\n");
+    printf("  -b ID        only admit clients whose build id is ID (repeatable)\n");
+    printf("  --builds F   read allowed build ids from file F, one per line\n");
+    printf("               (a client's id is logged on every join: \"build ...\")\n");
     printf("  -d FILE      marker store path (default memos.db)\n");
     printf("  --max N      maximum simultaneous players (default 64)\n");
     printf("  --no-ghosts  do not fan out positions\n");
@@ -1482,6 +1545,14 @@ int main(int argc, char** argv)
         else if (!strcmp(a, "-w") && i + 1 < argc)
         {
             g_passHash = ShnHashPassword(argv[++i]);
+        }
+        else if (!strcmp(a, "-b") && i + 1 < argc)
+        {
+            SrvAllowBuild(argv[++i]);
+        }
+        else if (!strcmp(a, "--builds") && i + 1 < argc)
+        {
+            SrvLoadBuildsFile(argv[++i]);
         }
         else if (!strcmp(a, "-d") && i + 1 < argc)
         {

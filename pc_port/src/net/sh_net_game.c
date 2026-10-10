@@ -18,6 +18,8 @@
 #include "bodyprog/bodyprog.h"
 #include "bodyprog/map/map.h"
 #include "bodyprog/screen/cutscene_border.h" /* CutsceneBorderState_None for the flag test */
+#include "bodyprog/sound/sound_system.h"     /* Sd_PlaySfx: lobby join chime */
+#include "bodyprog/sound/sfx_id_enum.h"
 #include "bodyprog/items.h"        /* INV_ITEM_COUNT_MAX, s_InventoryItem */
 #include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup */
 #include "bodyprog/collision/collision.h" /* Collision_SurfaceGet: ground-snap a joining guest */
@@ -260,6 +262,19 @@ void ShNet_GameTick(void)
          * else's machine. */
         s_initDone = 1;
         ShNet_Init();
+    }
+
+    /* Lobby chime: someone joined the room (member count went UP). Your own
+     * arrival (0 -> 1) is silent. Before the enabled gate so co-op-only (no
+     * living world) sessions chime too. */
+    {
+        static int s_lastMembers = 0;
+        int mc = ShSession_Active() ? ShSession_MemberCount() : 0;
+        if (mc > s_lastMembers && s_lastMembers > 0)
+        {
+            Sd_PlaySfx(Sfx_MenuConfirm, 0, Q8(0.30f));
+        }
+        s_lastMembers = mc;
     }
 
     if (!ShNet_Enabled())
