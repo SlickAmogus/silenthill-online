@@ -64,6 +64,8 @@ s_PcConfig g_PcConfig = {
     .onlineGhostModel = 1, /* living-world players draw as translucent bodies */
     .onlineEvents     = 1,
     .onlineUiScale    = 1.0f,
+    .onlineFriendlyFire = 0,
+    .onlinePvpDamage  = 0.15f,
     .onlineSteam           = 0,
     .onlineSteamAppId      = 480, /* Spacewar; see sh_net_steam.h */
     .onlineSteamMaxPlayers = 4,
@@ -773,6 +775,16 @@ void PcConfig_Load(const char* path)
             g_PcConfig.onlineUiScale = (float)atof(value);
             if (g_PcConfig.onlineUiScale < 0.5f) g_PcConfig.onlineUiScale = 0.5f;
             if (g_PcConfig.onlineUiScale > 3.0f) g_PcConfig.onlineUiScale = 3.0f;
+        }
+        else if (strcmp(key, "online_friendly_fire") == 0)
+        {
+            g_PcConfig.onlineFriendlyFire = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_pvp_damage") == 0)
+        {
+            g_PcConfig.onlinePvpDamage = (float)atof(value);
+            if (g_PcConfig.onlinePvpDamage < 0.01f) g_PcConfig.onlinePvpDamage = 0.01f;
+            if (g_PcConfig.onlinePvpDamage > 5.0f)  g_PcConfig.onlinePvpDamage = 5.0f;
         }
         else if (strcmp(key, "online_steam") == 0)
         {

@@ -141,6 +141,14 @@ int  ShSession_TakeItem(int* itemId, int* count);
 void ShSession_SetGuestDebug(int on);
 int  ShSession_GuestDebugGranted(void);
 
+/* Friendly fire (pc_port/src/net/sh_net_hit.c). The attacker queues a hit for
+ * ONE victim; the victim drains it and applies the damage to its own player.
+ * amount is Q12 HP, pre-difficulty, already PvP-scaled. */
+unsigned long long ShSession_SelfId(void);
+void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby, int kbz,
+                           int reaction, short yaw);
+int  ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reaction, short* yaw);
+
 #ifdef __cplusplus
 }
 #endif

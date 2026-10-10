@@ -19,6 +19,7 @@
 #include "bodyprog/map/map.h"
 #include "bodyprog/screen/cutscene_border.h" /* CutsceneBorderState_None for the flag test */
 #include "bodyprog/sound/sound_system.h"     /* Sd_PlaySfx: lobby join chime */
+#include "sh_net_hit.h"                      /* friendly fire proxies + incoming hits */
 #include "bodyprog/sound/sfx_id_enum.h"
 #include "bodyprog/items.h"        /* INV_ITEM_COUNT_MAX, s_InventoryItem */
 #include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup */
@@ -90,6 +91,10 @@ static int ShNetG_BuildFlags(void)
     if (g_SysWork.sysState != SysState_Gameplay)
     {
         flags |= SHNET_PF_MENU;
+    }
+    if (g_PcConfig.onlineFriendlyFire)
+    {
+        flags |= SHNET_PF_FFIRE; /* others may shoot me; I would apply it */
     }
     return flags;
 }
@@ -355,6 +360,10 @@ void ShNet_GameTick(void)
 
     /* Co-op shared items: hand out what we picked up, take in what others did. */
     ShNetG_SyncItems();
+    /* Friendly fire: rebuild the hittable proxies for this frame, then apply
+     * any hits that landed on us. */
+    Pc_NetHit_Refresh();
+    Pc_NetHit_ApplyIncoming();
 
     /* Co-op: place a joining guest next to the host once his pose is known. */
     ShNetG_CoopGuestSpawn(mapIdx);

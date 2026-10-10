@@ -340,10 +340,10 @@ int Pc_CoopMenu_RowCount(void)
     {
     case COOP_PAGE_ROOT:       return 3; /* Host, Join, Back */
     case COOP_PAGE_HOST_SETUP: return 7; /* Host on, Players, Visibility, FPS, Load, Open, Back */
-    case COOP_PAGE_HOST:       return ShSession_IsHost() ? 4 : 2; /* host: Invite/Code, Start, Close, Back; guest: Leave, Back */
+    case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 2 : 4; /* guest: Leave, Back; host: Invite/Code, Start, Close, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
-    case COOP_PAGE_INGAME:     return 7; /* Resume, Message, Save, Save&Exit, Nameplates, Players, Leave */
+    case COOP_PAGE_INGAME:     return 8; /* Resume, Message, Save, Save&Exit, Nameplates, Friendly Fire, Players, Leave */
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
     default:                   return 1;
     }
@@ -406,7 +406,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
 
     case COOP_PAGE_HOST:
-        if (!ShSession_IsHost())
+        if (ShSession_Active() && !ShSession_IsHost())
         {
             /* Guest lobby: nothing to start, just wait or leave. */
             if (i == 0) snprintf(out, cap, "Leave Room");
@@ -432,7 +432,9 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 3) snprintf(out, cap, "Save & Exit");
         else if (i == 4) snprintf(out, cap, "Nameplates:  %s",
                                   g_PcConfig.onlineNameplates ? "On" : "Off");
-        else if (i == 5) snprintf(out, cap, "Players");
+        else if (i == 5) snprintf(out, cap, "Friendly Fire:  %s",
+                                  g_PcConfig.onlineFriendlyFire ? "On" : "Off");
+        else if (i == 6) snprintf(out, cap, "Players");
         else snprintf(out, cap, "Leave to Title");
         break;
 
@@ -613,7 +615,7 @@ static void Coop_Confirm(void)
         break;
 
     case COOP_PAGE_HOST:
-        if (!ShSession_IsHost())
+        if (ShSession_Active() && !ShSession_IsHost())
         {
             if (s_sel == 0) { ShSession_RequestLeave(); }                 /* Leave Room */
             s_page = COOP_PAGE_ROOT; s_sel = 0;
@@ -636,7 +638,8 @@ static void Coop_Confirm(void)
         else if (s_sel == 2) { Coop_DoSave(0); }                            /* Save */
         else if (s_sel == 3) { Coop_DoSave(1); }                            /* Save & Exit */
         else if (s_sel == 4) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
-        else if (s_sel == 5) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
+        else if (s_sel == 5) { g_PcConfig.onlineFriendlyFire = !g_PcConfig.onlineFriendlyFire; } /* both sides must enable */
+        else if (s_sel == 6) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
         else
         {
             /* Leave to Title without saving. */
@@ -650,7 +653,7 @@ static void Coop_Confirm(void)
         /* Rows above Back are members; host-kick lands with the session kick
          * API. Back returns to the in-game root (the Players row). */
         s_page = COOP_PAGE_INGAME;
-        s_sel  = 5;
+        s_sel  = 6;
         break;
 
     case COOP_PAGE_JOIN:

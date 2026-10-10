@@ -444,6 +444,10 @@ typedef struct {
                                * (online_ghost_model); 0 = silhouette (default, proven) */
     int  onlineEvents;        /* 1 = show the server's join/leave/death feed (online_events) */
     float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
+    int   onlineFriendlyFire; /* 1 = players can hit each other in co-op (online_friendly_fire). Both
+                               * sides must have it on: you only take damage if YOU enabled it. */
+    float onlinePvpDamage;    /* scale on weapon damage vs players (online_pvp_damage, default 0.15:
+                               * weapons are tuned for 200-40000 HP monsters, Harry has 100) */
     /* Steam co-op sessions. Independent of online_enabled: a player can run a
      * Steam session without a master server, or both at once. */
     int  onlineSteam;          /* 1 = bring up Steam for lobbies/invites (online_steam) */

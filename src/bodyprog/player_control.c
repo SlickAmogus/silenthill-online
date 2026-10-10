@@ -10148,7 +10148,19 @@ void Player_ReceiveDamage(s_SubCharacter* player, s_PlayerExtra* extra) // 0x800
                 g_SysWork.playerWork.player.collision.shapeOffsets.box.vx = Q12(0.0f);
             }
 
+#ifdef SH_PC_PORT
+            {
+                /* A friendly-fire hit carries the attacker's heading in the
+                 * packet (there is no NPC to read it from; field_40 is -1). */
+                extern int Pc_NetHit_TakePendingYaw(short*);
+                short netYaw;
+                if (Pc_NetHit_TakePendingYaw(&netYaw))      enemyRotY = netYaw;
+                else if (player->field_40 >= 0)             enemyRotY = g_SysWork.npcs[player->field_40].rotation.vy;
+                else                                        enemyRotY = player->rotation.vy;
+            }
+#else
             enemyRotY = g_SysWork.npcs[player->field_40].rotation.vy;
+#endif
             if (player->attackReceived >= 64 && player->attackReceived < 66)
             {
                 enemyRotY -= Q12_ANGLE(90.0f);

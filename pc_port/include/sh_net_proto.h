@@ -124,6 +124,7 @@ enum
     SHNET_MSG_S_POS      = 0x54, /* P2P  my position/anim this tick (co-op presence) */
     SHNET_MSG_S_WORLD    = 0x55, /* P2P  host -> guests: boot into this map */
     SHNET_MSG_S_ITEM     = 0x56, /* P2P  I picked this up; everyone gets it too */
+    SHNET_MSG_S_DAMAGE   = 0x57, /* P2P  I hit YOU: apply this damage to yourself (friendly fire) */
 
     /* Co-op over a relay server (sh_master rooms). The transport the session layer
      * rides when it is NOT using Steam P2P: the host creates a room, guests join
@@ -158,7 +159,8 @@ enum
     SHNET_PF_CUTSCENE   = 1 << 3, /* ghost hides: the player is not really "there" */
     SHNET_PF_AIMING     = 1 << 4,
     SHNET_PF_MENU       = 1 << 5,
-    SHNET_PF_OTHERWORLD = 1 << 6  /* reserved for a future fog/otherworld split */
+    SHNET_PF_OTHERWORLD = 1 << 6, /* reserved for a future fog/otherworld split */
+    SHNET_PF_FFIRE      = 1 << 7  /* accepts hits from other players (friendly fire is on) */
 };
 
 /* WELCOME feature bits — a server can host ghosts without memos, etc. */

@@ -140,6 +140,24 @@ static int           s_itemOutCount;
 static ShSessionItem s_itemIn[SESSION_ITEM_Q];
 static int           s_itemInCount;
 
+/* Friendly fire: a hit the local player landed on a remote player's proxy,
+ * sent to THAT player, who applies it to their own character (victim-
+ * authoritative -- the attacker never writes anyone else's health). In: hits
+ * landed on us, for the game thread to apply. */
+#define SESSION_DMG_Q 16
+typedef struct
+{
+    unsigned long long to;
+    int                amount;        /* Q12 HP, pre-difficulty, already PvP-scaled */
+    int                kbx, kby, kbz; /* Q12 knockback vector */
+    unsigned char      reaction;      /* enemy attack id the victim flinches to */
+    short              yaw;           /* attacker heading, for the flinch direction */
+} ShSessionDmg;
+static ShSessionDmg s_dmgOut[SESSION_DMG_Q];
+static int          s_dmgOutCount;
+static ShSessionDmg s_dmgIn[SESSION_DMG_Q];
+static int          s_dmgInCount;
+
 /* Host: the map guests should be booted into, kept persistent (not one-shot) so a
  * player who joins AFTER the host started still gets sent in -- join-in-progress.
  * s_worldSent[i] is "member i has been sent the current world"; a map change
@@ -389,6 +407,48 @@ int ShSession_TakeItem(int* itemId, int* count)
         if (count)  *count  = s_itemIn[0].n;
         s_itemInCount--;
         memmove(s_itemIn, s_itemIn + 1, (size_t)s_itemInCount * sizeof(s_itemIn[0]));
+        got = 1;
+    }
+    SDL_UnlockMutex(s_lock);
+    return got;
+}
+
+unsigned long long ShSession_SelfId(void)
+{
+    return Tp_SelfId();
+}
+
+void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby, int kbz,
+                           int reaction, short yaw)
+{
+    if (!s_lock || !toId || amount <= 0) return;
+    SDL_LockMutex(s_lock);
+    if (s_dmgOutCount < SESSION_DMG_Q)
+    {
+        ShSessionDmg* d = &s_dmgOut[s_dmgOutCount++];
+        d->to = toId; d->amount = amount;
+        d->kbx = kbx; d->kby = kby; d->kbz = kbz;
+        d->reaction = (unsigned char)reaction; d->yaw = yaw;
+    }
+    SDL_UnlockMutex(s_lock);
+}
+
+int ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reaction, short* yaw)
+{
+    int got = 0;
+    if (!s_lock) return 0;
+    SDL_LockMutex(s_lock);
+    if (s_dmgInCount > 0)
+    {
+        const ShSessionDmg* d = &s_dmgIn[0];
+        if (amount)   *amount   = d->amount;
+        if (kbx)      *kbx      = d->kbx;
+        if (kby)      *kby      = d->kby;
+        if (kbz)      *kbz      = d->kbz;
+        if (reaction) *reaction = d->reaction;
+        if (yaw)      *yaw      = d->yaw;
+        s_dmgInCount--;
+        memmove(s_dmgIn, s_dmgIn + 1, (size_t)s_dmgInCount * sizeof(s_dmgIn[0]));
         got = 1;
     }
     SDL_UnlockMutex(s_lock);
@@ -700,6 +760,33 @@ static void ShSession_Receive(unsigned int now)
             }
             SDL_UnlockMutex(s_lock);
             SH_DBG("[SESSION] %s picked up item %d x%d", s_members[idx].name, id, n);
+            break;
+        }
+        case SHNET_MSG_S_DAMAGE:
+        {
+            const shn_u8* p = buf + SHNET_HDR_SIZE;
+            int           o = 0;
+            ShSessionDmg  d;
+            if (payLen < 20)
+            {
+                break;
+            }
+            d.to       = 0;
+            d.amount   = (int)ShnGetU32(p, &o);
+            d.kbx      = (int)ShnGetU32(p, &o);
+            d.kby      = (int)ShnGetU32(p, &o);
+            d.kbz      = (int)ShnGetU32(p, &o);
+            d.reaction = ShnGetU8(p, &o);
+            (void)ShnGetU8(p, &o);
+            d.yaw      = (short)ShnGetU16(p, &o);
+            SDL_LockMutex(s_lock);
+            if (s_dmgInCount < SESSION_DMG_Q)
+            {
+                s_dmgIn[s_dmgInCount++] = d;
+            }
+            SDL_UnlockMutex(s_lock);
+            SH_DBG("[SESSION] %s hit me for %d.%03d HP", s_members[idx].name,
+                   d.amount >> 12, ((d.amount & 0xFFF) * 1000) >> 12);
             break;
         }
         default:
@@ -1080,6 +1167,31 @@ void ShSession_Tick(unsigned int nowMs)
             Tp_Send(s_members[i].steamId, buf, off, 1);
         }
         SH_DBG("[SESSION] shared pickup item %d x%d to session", itemOut[q].id, itemOut[q].n);
+    }
+
+    /* Friendly-fire hits we landed, each to its one victim. */
+    {
+        ShSessionDmg dmg[SESSION_DMG_Q];
+        int          dn, q;
+        SDL_LockMutex(s_lock);
+        dn = s_dmgOutCount;
+        if (dn > 0) memcpy(dmg, s_dmgOut, (size_t)dn * sizeof(dmg[0]));
+        s_dmgOutCount = 0;
+        SDL_UnlockMutex(s_lock);
+        for (q = 0; q < dn; q++)
+        {
+            shn_u8 buf[SHNET_HDR_SIZE + 20];
+            int    off = SHNET_HDR_SIZE;
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].amount);
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].kbx);
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].kby);
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].kbz);
+            ShnPutU8(buf, &off, dmg[q].reaction);
+            ShnPutU8(buf, &off, 0);
+            ShnPutU16(buf, &off, (shn_u16)dmg[q].yaw);
+            ShnPutHeader(buf, SHNET_MSG_S_DAMAGE, (shn_u16)(off - SHNET_HDR_SIZE), 0);
+            Tp_Send(dmg[q].to, buf, off, 1);
+        }
     }
 
     ShSession_Receive(nowMs);

@@ -496,7 +496,10 @@ void func_8005E89C(void) // 0x8005E89C
 
         if (D_800C42E8[i].field_0 != 0)
         {
-            if (D_800C42E8[i].field_1 == 6)
+            /* The player registers as ARRAY_SIZE(npcs) (Chara_NpcIdxGet): 6 on
+             * PSX, 32 on PC, where the literal 6 read the player's decal
+             * through npcs[32] and mistook npcs[6]'s for the player's. */
+            if (D_800C42E8[i].field_1 == ARRAY_SIZE(g_SysWork.npcs))
             {
                 chara = &g_SysWork.playerWork.player;
             }
@@ -877,6 +880,15 @@ void func_8005F6B0(s_SubCharacter* chara, VECTOR* pos, s32 arg2, s32 arg3) // 0x
             i = ARRAY_SIZE(D_800C42E8);
         }
 
+#ifdef SH_PC_PORT
+        /* A remote-player proxy (friendly fire) has no NPC index; the blood
+         * splash itself was already spawned, just do not register a decal
+         * that would later be read back as npcs[-1]. */
+        if (i != ARRAY_SIZE(D_800C42E8) && Chara_NpcIdxGet(chara) == NO_VALUE)
+        {
+            i = ARRAY_SIZE(D_800C42E8);
+        }
+#endif
         if (i != ARRAY_SIZE(D_800C42E8))
         {
             D_800C42E8[i].field_0 = 1;
