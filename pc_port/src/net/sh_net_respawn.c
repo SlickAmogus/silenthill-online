@@ -70,6 +70,17 @@ static int InCoop(void)
     return g_PcCoopGame && ShSession_Active();
 }
 
+/* The world exists only inside GameState_InGame. The load screen
+ * (GameState_LoadMapScreen) already runs with sysState == SysState_Gameplay
+ * and a savegame while g_Map's chunk table is being torn down and rebuilt,
+ * and a collision probe there dereferences stale chunk headers. InGame's own
+ * update (dispatched before this tick each frame) probes collision in its
+ * first step, so once it reports InGame the map is safe to query. */
+static int WorldReady(void)
+{
+    return g_PcCoopGame && g_SavegamePtr != NULL && g_GameWork.gameState == GameState_InGame;
+}
+
 static int IsDeathState(int st)
 {
     return st == PlayerState_Death || st == PlayerState_InstantDeath || st == PlayerState_Unk36 ||
@@ -108,6 +119,10 @@ static int ProbeGround(void)
 static void Abort(void)
 {
     SetVisible(1);
+    if (s_phase == RS_SETTLE && s_graceLeft > 0)
+    {
+        g_Player_DisableDamage = false;
+    }
     s_phase = RS_ALIVE;
 }
 
@@ -266,14 +281,12 @@ void ShNetRespawn_Tick(void)
 {
     s_SubCharacter* p = &g_SysWork.playerWork.player;
 
-    if (!g_PcCoopGame || g_SavegamePtr == NULL)
+    if (!WorldReady())
     {
         if (s_phase != RS_ALIVE)
         {
             Abort();
         }
-        s_lastMap = s_lastRoom = -1;
-        s_entryValid = 0;
         return;
     }
 
