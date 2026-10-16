@@ -400,7 +400,25 @@ static void ShNetW_GhostUpdate(unsigned int playerId, int charaId, int flags,
     {
         if (s_sh.ghostCount >= SHNET_MAX_GHOSTS)
         {
-            return;
+            /* The server sends the nearest peers first, so one this snapshot
+             * did not refresh is farther than every peer it carries: give its
+             * slot to the newcomer instead of making them wait out the stale
+             * timer. */
+            int victim = -1;
+            for (i = 0; i < s_sh.ghostCount; i++)
+            {
+                if (s_sh.ghosts[i].curMs != now &&
+                    (victim < 0 || s_sh.ghosts[i].curMs < s_sh.ghosts[victim].curMs))
+                {
+                    victim = i;
+                }
+            }
+            if (victim < 0)
+            {
+                return;
+            }
+            s_sh.ghosts[victim] = s_sh.ghosts[s_sh.ghostCount - 1];
+            s_sh.ghostCount--;
         }
         g = &s_sh.ghosts[s_sh.ghostCount++];
         memset(g, 0, sizeof(*g));

@@ -539,6 +539,74 @@ int main(int argc, char** argv)
     PeerSimple(&a, SHNET_MSG_BYE);
     PeerSimple(&b, SHNET_MSG_BYE);
 
+    /* --- a crowd larger than one snapshot: the nearest peers must win --- */
+    printf("\ncrowd\n");
+    {
+        enum { CROWD = SHNET_SNAP_MAX + 11, CROWD_MAP = 40 };
+        static Peer crowd[CROWD];
+        Peer        o;
+        int         k, ok = 1, tries, best = -1;
+        int         seen[CROWD];
+
+        /* Connected FARTHEST first, so slot order is the worst case for a
+         * server that fills the datagram in slot order. */
+        for (k = CROWD - 1; k >= 0; k--)
+        {
+            char nm[SHNET_NAME_MAX];
+            snprintf(nm, sizeof(nm), "Crowd%02d", k);
+            PeerOpen(&crowd[k], host, port, nm);
+            if (!PeerHello(&crowd[k])) ok = 0;
+        }
+        PeerOpen(&o, host, port, "Observer");
+        if (!PeerHello(&o)) ok = 0;
+        CHECK(ok, "%d crowd players and an observer connected", (int)CROWD);
+
+        memset(seen, 0, sizeof(seen));
+        for (tries = 0; tries < 20 && best != SHNET_SNAP_MAX; tries++)
+        {
+            for (k = 0; k < CROWD; k++)
+            {
+                PeerState(&crowd[k], CROWD_MAP, (k + 1) * (2 << 12), 0, 0, 0, SHNET_PF_ALIVE);
+            }
+            PeerState(&o, CROWD_MAP, 0, 0, 0, 0, SHNET_PF_ALIVE);
+            n = PeerWait(&o, SHNET_MSG_SNAPSHOT, 300, pay, sizeof(pay));
+            if (n >= 8)
+            {
+                int off = 0, cnt, e;
+                (void)ShnGetU32(pay, &off);
+                cnt = (int)ShnGetU16(pay, &off);
+                (void)ShnGetU16(pay, &off);
+                if (cnt > best && 8 + cnt * SHNET_SNAP_ENTRY <= n)
+                {
+                    best = cnt;
+                    memset(seen, 0, sizeof(seen));
+                    for (e = 0; e < cnt; e++)
+                    {
+                        int     eo = 8 + e * SHNET_SNAP_ENTRY;
+                        shn_u32 id = ShnGetU32(pay, &eo);
+                        for (k = 0; k < CROWD; k++)
+                        {
+                            if (crowd[k].playerId == id) seen[k] = 1;
+                        }
+                    }
+                }
+            }
+        }
+        CHECK(best == SHNET_SNAP_MAX, "the observer's snapshot is full (%d of %d)", best, (int)SHNET_SNAP_MAX);
+        {
+            int nearOk = 1, farOk = 1;
+            for (k = 0; k < SHNET_SNAP_MAX; k++) if (!seen[k]) nearOk = 0;
+            for (k = SHNET_SNAP_MAX; k < CROWD; k++) if (seen[k]) farOk = 0;
+            CHECK(nearOk, "every one of the %d nearest players is in it", (int)SHNET_SNAP_MAX);
+            CHECK(farOk, "the %d farthest are the ones left out", (int)(CROWD - SHNET_SNAP_MAX));
+        }
+        for (k = 0; k < CROWD; k++)
+        {
+            PeerSimple(&crowd[k], SHNET_MSG_BYE);
+        }
+        PeerSimple(&o, SHNET_MSG_BYE);
+    }
+
     printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "PASSED", g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
 }

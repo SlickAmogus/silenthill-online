@@ -46,7 +46,9 @@ enum
     SHNET_GS_BOTH       = 2
 };
 
-#define SHNET_MAX_GHOSTS 32
+/* About one snapshot datagram (SHNET_SNAP_MAX, 49): the server sends the
+ * nearest peers first, so anything past this is the far end. */
+#define SHNET_MAX_GHOSTS 48
 #define SHNET_MAX_PEERS  128
 #define SHNET_MAX_MEMOS  96
 #define SHNET_MAX_EVENTS 8

@@ -1124,9 +1124,28 @@ static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
  * the server has no collision or geometry, so it cannot know what is visible,
  * and the client's own online_ghost_range already handles the near case. Map
  * filtering is what actually matters — it keeps a 60-player server's traffic
- * proportional to the people you could plausibly meet. */
+ * proportional to the people you could plausibly meet.
+ *
+ * One datagram holds SHNET_SNAP_MAX peers. When a map has more than that, the
+ * NEAREST ones go out: in slot order a player standing next to you could be
+ * the one left off, while the whole-town view makes far players visible too,
+ * so the cut has to fall on the far end. */
+typedef struct
+{
+    int                idx;
+    unsigned long long d2;
+} SnapPick;
+
+static int SrvSnapPickCmp(const void* a, const void* b)
+{
+    const SnapPick* pa = (const SnapPick*)a;
+    const SnapPick* pb = (const SnapPick*)b;
+    return (pa->d2 > pb->d2) - (pa->d2 < pb->d2);
+}
+
 static void SrvSendSnapshots(unsigned int now)
 {
+    static SnapPick picks[SRV_MAX_CLIENTS];
     int i;
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
@@ -1157,13 +1176,33 @@ static void SrvSendSnapshots(unsigned int now)
         ShnPutU16(buf, &off, 0); /* count, back-patched */
         ShnPutU16(buf, &off, 0);
 
-        for (j = 0; j < SRV_MAX_CLIENTS && count < SHNET_SNAP_MAX; j++)
         {
-            Client* o = &g_clients[j];
-            if (!o->used || o == c || o->mapIdx != c->mapIdx)
+            int n = 0;
+            for (j = 0; j < SRV_MAX_CLIENTS; j++)
             {
-                continue;
+                Client* o = &g_clients[j];
+                long long dx, dz;
+                if (!o->used || o == c || o->mapIdx != c->mapIdx)
+                {
+                    continue;
+                }
+                dx = (long long)o->x - c->x;
+                dz = (long long)o->z - c->z;
+                picks[n].idx = j;
+                picks[n].d2  = (unsigned long long)(dx * dx) + (unsigned long long)(dz * dz);
+                n++;
             }
+            if (n > SHNET_SNAP_MAX)
+            {
+                qsort(picks, (size_t)n, sizeof(picks[0]), SrvSnapPickCmp);
+                n = SHNET_SNAP_MAX;
+            }
+            picks[n].idx = -1;
+        }
+
+        for (j = 0; picks[j].idx >= 0; j++)
+        {
+            Client* o = &g_clients[picks[j].idx];
             ShnPutU32(buf, &off, o->playerId);
             ShnPutU8(buf, &off, (shn_u8)o->charaId);
             ShnPutU8(buf, &off, (shn_u8)o->flags);

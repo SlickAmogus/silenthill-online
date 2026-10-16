@@ -352,6 +352,23 @@ static s32 ShNetG_RangeQ12(void)
     return (s32)m << 12;
 }
 
+/* Players (not markers) when the fog is thinned outdoors: the street stays
+ * visible far past online_ghost_range, and a partner vanishing mid-street in
+ * plain view reads as a bug, not as fog. 240 stays inside the far band's
+ * depth-tested range (past 256 every far poly shares one GL depth), so a
+ * distant body still hides behind the buildings in front of it. */
+#define GHOST_RANGE_LONG_VIEW 240
+
+static s32 ShNetG_PlayerRangeQ12(void)
+{
+    s32 r = ShNetG_RangeQ12();
+    if (Pc_LongViewActive() && r < ((s32)GHOST_RANGE_LONG_VIEW << 12))
+    {
+        r = (s32)GHOST_RANGE_LONG_VIEW << 12;
+    }
+    return r;
+}
+
 /* Floor ring under a ghost, in the marker texture. Drawn for the FOOTPRINT and
  * BOTH styles: the contour alone disappears behind a doorframe, and knowing
  * exactly where another player is standing is most of the appeal. */
@@ -572,6 +589,7 @@ void ShNet_DrawWorld(GsOT* ot)
     int          count;
     const int    style = g_PcConfig.onlineGhostStyle;
     s32          range;
+    const s32    markRange = ShNetG_RangeQ12();
     const VECTOR3* self = &g_SysWork.playerWork.player.position;
 
     /* Two sources of other players: the living world (master server ghosts) and
@@ -598,17 +616,136 @@ void ShNet_DrawWorld(GsOT* ot)
 
     poly     = (POLY_FT4*)GsOUT_PACKET_P;
     primBase = poly;
-    range    = ShNetG_RangeQ12();
+    range    = ShNetG_PlayerRangeQ12();
     modelsDrawn = 0;
     namesDrawn  = 0;
+
+    /* ---- co-op session peers ----
+     * Before the living-world ghosts: the full-body and nameplate budgets are
+     * first come, and the people you are actually playing with must never
+     * fall back to a silhouette because strangers took the slots. */
+    {
+        extern int g_PcCoopGame;
+        if (g_PcCoopGame && ShSession_Active() && s_ghostTexOk)
+        {
+            int myMap = (g_SavegamePtr) ? (int)g_SavegamePtr->mapIdx : -1;
+            int mc    = ShSession_MemberCount();
+            for (i = 0; i < mc; i++)
+            {
+                const ShSessionMember* m = ShSession_Member(i);
+                VECTOR3 centre, axisU, axisV;
+                int     gx, gy, gz;
+                short   grot;
+                u8      cr, cg, cb;
+
+                if (poly - primBase >= SHNET_MAX_PRIMS)
+                {
+                    break;
+                }
+                if (!m || m->poseMs == 0 || m->mapIdx != myMap) /* self/no pose/other map */
+                {
+                    continue;
+                }
+                gx = m->x; gy = m->y; gz = m->z; grot = m->rotY;
+                if (ABS(gx - self->vx) > range || ABS(gz - self->vz) > range)
+                {
+                    continue;
+                }
+
+                centre.vx = gx;
+                centre.vy = gy - GHOST_HALF_H;
+                centre.vz = gz;
+                axisU.vx  = (GHOST_HALF_W * GsWSMATRIX.m[0][0]) >> 12;
+                axisU.vy  = (GHOST_HALF_W * GsWSMATRIX.m[0][1]) >> 12;
+                axisU.vz  = (GHOST_HALF_W * GsWSMATRIX.m[0][2]) >> 12;
+                axisV.vx  = 0;
+                axisV.vy  = GHOST_HALF_H; /* quad top uses -axisV; +Y (world down) = upright */
+                axisV.vz  = 0;
+
+                ShNetG_GhostColor((unsigned int)m->steamId, &cr, &cg, &cb);
+                {
+                    int drewModel = 0;
+                    /* Co-op shows each player as their REAL character model by
+                     * default (that is the whole point -- you see your friend as
+                     * Harry, or whatever PLAYAS character they picked, which the
+                     * pose carries in charaId). The silhouette is only the
+                     * fallback when the model cannot be drawn (assets not
+                     * resident). */
+                    if (modelsDrawn < SHNET_MAX_MODELS) /* CUTSCENE unreliable; always draw the body */
+                    {
+                        unsigned char* before = (unsigned char*)poly;
+                        GsOUT_PACKET_P = (PACKET*)poly;
+                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, (int)m->frame);
+                        {
+                            unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
+                            poly     = (POLY_FT4*)after;
+                            primBase = (POLY_FT4*)((unsigned char*)primBase + (after - before));
+                        }
+                        if (drewModel) modelsDrawn++;
+                    }
+                    if (!drewModel)
+                    {
+                        int alpha = (m->flags & SHNET_PF_FLASHLIGHT) ? 255 : 230;
+                        poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
+                                               SHNET_CLUT(GHOST_SLOT),
+                                               GHOST_TEX_W - 1, GHOST_TEX_H - 1,
+                                               cr, cg, cb, alpha);
+                    }
+                }
+                if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
+                    m->name[0] && m->name[0] != '?')
+                {
+                    poly = ShNetG_DrawNameplate(ot, poly, m->name, gx, gy, gz);
+                    namesDrawn++;
+                }
+            }
+        }
+    }
 
     /* ---- other players ---- */
     if (g_PcConfig.onlineGhosts && (s_ghostTexOk || s_memoTexOk))
     {
+        /* Nearest first, so the full-body and nameplate caps fall on the far
+         * end of a crowd rather than on whoever joined the server first. */
+        int                order[SHNET_MAX_GHOSTS];
+        unsigned long long orderD2[SHNET_MAX_GHOSTS];
+        int                orderCount = 0;
+        int                k;
+
         count = ShNet_GhostCount();
+        if (count > SHNET_MAX_GHOSTS)
+        {
+            count = SHNET_MAX_GHOSTS;
+        }
         for (i = 0; i < count; i++)
         {
-            const ShNetGhost* g = ShNet_Ghost(i);
+            int                ox, oy, oz;
+            short              orot;
+            long long          dx, dz;
+            unsigned long long d2;
+            int                j;
+            if (!ShNet_GhostInterp(i, &ox, &oy, &oz, &orot))
+            {
+                continue;
+            }
+            dx = (long long)ox - self->vx;
+            dz = (long long)oz - self->vz;
+            d2 = (unsigned long long)(dx * dx) + (unsigned long long)(dz * dz);
+            for (j = orderCount; j > 0 && orderD2[j - 1] > d2; j--)
+            {
+                order[j]   = order[j - 1];
+                orderD2[j] = orderD2[j - 1];
+            }
+            order[j]   = i;
+            orderD2[j] = d2;
+            orderCount++;
+        }
+
+        for (k = 0; k < orderCount; k++)
+        {
+            const ShNetGhost* g;
+            i = order[k];
+            g = ShNet_Ghost(i);
             VECTOR3           centre;
             VECTOR3           axisU;
             VECTOR3           axisV;
@@ -723,85 +860,6 @@ void ShNet_DrawWorld(GsOT* ot)
         }
     }
 
-    /* ---- co-op session peers (Steam P2P) ---- */
-    {
-        extern int g_PcCoopGame;
-        if (g_PcCoopGame && ShSession_Active() && s_ghostTexOk)
-        {
-            int myMap = (g_SavegamePtr) ? (int)g_SavegamePtr->mapIdx : -1;
-            int mc    = ShSession_MemberCount();
-            for (i = 0; i < mc; i++)
-            {
-                const ShSessionMember* m = ShSession_Member(i);
-                VECTOR3 centre, axisU, axisV;
-                int     gx, gy, gz;
-                short   grot;
-                u8      cr, cg, cb;
-
-                if (poly - primBase >= SHNET_MAX_PRIMS)
-                {
-                    break;
-                }
-                if (!m || m->poseMs == 0 || m->mapIdx != myMap) /* self/no pose/other map */
-                {
-                    continue;
-                }
-                gx = m->x; gy = m->y; gz = m->z; grot = m->rotY;
-                if (ABS(gx - self->vx) > range || ABS(gz - self->vz) > range)
-                {
-                    continue;
-                }
-
-                centre.vx = gx;
-                centre.vy = gy - GHOST_HALF_H;
-                centre.vz = gz;
-                axisU.vx  = (GHOST_HALF_W * GsWSMATRIX.m[0][0]) >> 12;
-                axisU.vy  = (GHOST_HALF_W * GsWSMATRIX.m[0][1]) >> 12;
-                axisU.vz  = (GHOST_HALF_W * GsWSMATRIX.m[0][2]) >> 12;
-                axisV.vx  = 0;
-                axisV.vy  = GHOST_HALF_H; /* quad top uses -axisV; +Y (world down) = upright */
-                axisV.vz  = 0;
-
-                ShNetG_GhostColor((unsigned int)m->steamId, &cr, &cg, &cb);
-                {
-                    int drewModel = 0;
-                    /* Co-op shows each player as their REAL character model by
-                     * default (that is the whole point -- you see your friend as
-                     * Harry, or whatever PLAYAS character they picked, which the
-                     * pose carries in charaId). The silhouette is only the
-                     * fallback when the model cannot be drawn (assets not
-                     * resident). */
-                    if (modelsDrawn < SHNET_MAX_MODELS) /* CUTSCENE unreliable; always draw the body */
-                    {
-                        unsigned char* before = (unsigned char*)poly;
-                        GsOUT_PACKET_P = (PACKET*)poly;
-                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, (int)m->frame);
-                        {
-                            unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
-                            poly     = (POLY_FT4*)after;
-                            primBase = (POLY_FT4*)((unsigned char*)primBase + (after - before));
-                        }
-                        if (drewModel) modelsDrawn++;
-                    }
-                    if (!drewModel)
-                    {
-                        int alpha = (m->flags & SHNET_PF_FLASHLIGHT) ? 255 : 230;
-                        poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
-                                               SHNET_CLUT(GHOST_SLOT),
-                                               GHOST_TEX_W - 1, GHOST_TEX_H - 1,
-                                               cr, cg, cb, alpha);
-                    }
-                }
-                if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
-                    m->name[0] && m->name[0] != '?')
-                {
-                    poly = ShNetG_DrawNameplate(ot, poly, m->name, gx, gy, gz);
-                    namesDrawn++;
-                }
-            }
-        }
-    }
-
     /* ---- markers ---- */
     if (g_PcConfig.onlineMemos && s_memoTexOk)
     {
@@ -826,7 +884,7 @@ void ShNet_DrawWorld(GsOT* ot)
             {
                 continue;
             }
-            if (ABS(m->x - self->vx) > range || ABS(m->z - self->vz) > range)
+            if (ABS(m->x - self->vx) > markRange || ABS(m->z - self->vz) > markRange)
             {
                 continue;
             }
