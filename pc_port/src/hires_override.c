@@ -114,10 +114,19 @@ typedef struct {
     unsigned packBytes;          /* GL bytes charged to the pack budget (0 = uncounted) */
     unsigned tick;               /* pump tick this entry was last SAMPLED (LRU key) */
     unsigned long long contentHash; /* TexPack_LastComposeHash of the resident texture; 0 = unknown/always re-upload */
+    /* Survives VRAM rewrites of its rect and the evictor. For an entry whose
+     * VRAM home is deliberately NOT uploaded: the PAL font grid on a USA or
+     * Japanese disc, where (768,128) belongs to other art (font_region.c). The
+     * prim keyed to it never samples VRAM, so what the game writes there is
+     * no reason to drop it. Only the owner's explicit drop removes it. */
+    int      pinned;
 } HiresEntry;
 
 static HiresEntry g_entries[MAX_HIRES_OVERRIDES];
 static int        g_numEntries = 0;
+/* Bumped on every change to the set or placement of g_entries; invalidates the
+ * (tpage, clut) lookup memo in HiresOverride_LookupByTpageClut. */
+static unsigned   g_hiresEntriesGen = 1;
 static int        g_initialized = 0;
 
 static int upload_rgba(GLuint* tex, const unsigned char* rgba, int w, int h, int nearest);
@@ -411,7 +420,7 @@ int HiresOverride_EvictColdestPackRow(unsigned minAgeTicks,
             HiresEntry* e = &g_entries[i];
             unsigned    age;
 
-            if (e->packBytes == 0 || e->glTexture == 0) continue;
+            if (e->packBytes == 0 || e->glTexture == 0 || e->pinned) continue;
             age = g_hiresTick - e->tick;
             if (age < minAgeTicks) continue;
             if (bestEntry < 0 || age > bestEntryAge)
@@ -428,6 +437,7 @@ int HiresOverride_EvictColdestPackRow(unsigned minAgeTicks,
             glDeleteTextures(1, &e->glTexture);
             pack_credit(&e->packBytes);
             g_entries[bestEntry] = g_entries[--g_numEntries];
+            g_hiresEntriesGen++;
         }
     }
 
@@ -621,6 +631,7 @@ void HiresOverride_Init(void)
 
     if (g_initialized) return;
     g_numEntries = 0;
+    g_hiresEntriesGen++;
     for (i = 0; i < HIRES_POOL_SLOT_MAX; i++)
     {
         g_poolSlots[i].nativeClutX = -1;
@@ -877,6 +888,7 @@ int HiresOverride_RegisterFromTim(const char* timPath,
     free(rgba);
 
     HiresEntry* e = &g_entries[g_numEntries++];
+    g_hiresEntriesGen++;
     e->vramX = targetVramX;
     e->vramY = targetVramY;
     e->vramW = targetVramW;
@@ -889,6 +901,7 @@ int HiresOverride_RegisterFromTim(const char* timPath,
     e->hiresH = hiH;
     e->sourceBitDepth = srcBpp;
     e->packBytes = 0; /* loose user file, not pack-budgeted (recycled slot may hold a stale charge) */
+    e->pinned = 0;
 
     SH_DBG("[HIRES] registered %s: vram=(%d,%d %dx%d cells, %dbpp) "
            "clut=(%d,%d) hires=%dx%d (src %dbpp) tex=%u",
@@ -1443,6 +1456,53 @@ int HiresOverride_PoolSlotRegisterDdsKeyed(int slotId, int row,
     return 0;
 }
 
+static HiresEntry* find_keyed(int vramX, int vramY, int vramW, int vramH,
+                              int clutX, int clutY, int bitDepth)
+{
+    int i;
+
+    for (i = 0; i < g_numEntries; i++)
+    {
+        HiresEntry* c = &g_entries[i];
+        if (c->vramX == vramX && c->vramY == vramY &&
+            c->vramW == vramW && c->vramH == vramH &&
+            c->clutX == clutX && c->clutY == clutY &&
+            c->originalBitDepth == bitDepth)
+        {
+            return c;
+        }
+    }
+    return NULL;
+}
+
+int HiresOverride_PinVramRect(int vramX, int vramY, int vramW, int vramH,
+                              int clutX, int clutY, int bitDepth, int pin)
+{
+    HiresEntry* e = find_keyed(vramX, vramY, vramW, vramH, clutX, clutY, bitDepth);
+
+    if (e == NULL)
+        return -1;
+    e->pinned = pin ? 1 : 0;
+    return 0;
+}
+
+int HiresOverride_DropVramRect(int vramX, int vramY, int vramW, int vramH,
+                               int clutX, int clutY, int bitDepth)
+{
+    HiresEntry* e = find_keyed(vramX, vramY, vramW, vramH, clutX, clutY, bitDepth);
+
+    if (e == NULL)
+        return -1;
+    if (e->glTexture != 0)
+    {
+        glDeleteTextures(1, &e->glTexture);
+    }
+    pack_credit(&e->packBytes);
+    *e = g_entries[--g_numEntries];
+    g_hiresEntriesGen++;
+    return 0;
+}
+
 int HiresOverride_RegisterRGBAKeyed(const char* label,
                                     const unsigned char* rgba, int w, int h,
                                     int targetVramX, int targetVramY,
@@ -1451,26 +1511,15 @@ int HiresOverride_RegisterRGBAKeyed(const char* label,
                                     int originalBitDepth,
                                     unsigned long long contentHash)
 {
-    HiresEntry* e = NULL;
-    int i;
+    HiresEntry* e;
 
     if (!g_initialized) HiresOverride_Init();
 
     /* Replace-in-place on an identical key: the same VRAM rect gets
      * re-uploaded whenever the game reloads that TIM (room transitions),
      * and content-hashed pack composites can change with it. */
-    for (i = 0; i < g_numEntries; i++)
-    {
-        HiresEntry* c = &g_entries[i];
-        if (c->vramX == targetVramX && c->vramY == targetVramY &&
-            c->vramW == targetVramW && c->vramH == targetVramH &&
-            c->clutX == targetClutX && c->clutY == targetClutY &&
-            c->originalBitDepth == originalBitDepth)
-        {
-            e = c;
-            break;
-        }
-    }
+    e = find_keyed(targetVramX, targetVramY, targetVramW, targetVramH,
+                   targetClutX, targetClutY, originalBitDepth);
 
     /* Redundant re-upload skip (see the pool-slot registrar): a found entry
      * whose content is byte-identical (same hash + dims + a live texture) is
@@ -1495,6 +1544,7 @@ int HiresOverride_RegisterRGBAKeyed(const char* label,
         /* A recycled table index can still carry the previous entry's charge;
          * zero it before any failure path below credits it. */
         e->packBytes = 0;
+        e->pinned = 0;
     }
 
     if (upload_rgba(&e->glTexture, rgba, w, h, 0) != 0)
@@ -1517,6 +1567,7 @@ int HiresOverride_RegisterRGBAKeyed(const char* label,
      * maximally cold to the evictor, which would free it before a single prim
      * ever sampled it. */
     e->tick = g_hiresTick;
+    g_hiresEntriesGen++;
 
     e->vramX = targetVramX;
     e->vramY = targetVramY;
@@ -1592,6 +1643,7 @@ int HiresOverride_RegisterDdsKeyed(const char* label,
         /* A recycled table index can still carry the previous entry's charge;
          * zero it before any failure path below credits it. */
         e->packBytes = 0;
+        e->pinned = 0;
     }
 
     /* RGBA twin passes 0 here and upload_rgba ORs the font force-nearest in
@@ -1613,6 +1665,7 @@ int HiresOverride_RegisterDdsKeyed(const char* label,
     pack_charge(&e->packBytes, (w + 3) / 4, h);
     e->contentHash = contentHash;
     e->tick = g_hiresTick; /* see the RGBA twin */
+    g_hiresEntriesGen++;
 
     e->vramX = targetVramX;
     e->vramY = targetVramY;
@@ -1799,10 +1852,18 @@ void HiresOverride_InvalidateVramRect(int x, int y, int w, int h)
     while (i < g_numEntries)
     {
         HiresEntry* e = &g_entries[i];
+        int clutW;
+
+        /* Its VRAM home was never its content (see HiresEntry.pinned). */
+        if (e->pinned)
+        {
+            i++;
+            continue;
+        }
         /* Pixel-rect overlap, or the upload stomping the entry's CLUT
          * cells (16 entries at 4bpp, 256 at 8bpp). Either way the entry no
          * longer reflects what a prim keyed to it samples. */
-        int clutW = (e->originalBitDepth == 8) ? 256 : 16;
+        clutW = (e->originalBitDepth == 8) ? 256 : 16;
         int hitPixels = e->vramX < x + w && e->vramX + e->vramW > x &&
                         e->vramY < y + h && e->vramY + e->vramH > y;
         int hitClut = e->clutX >= 0 &&
@@ -1823,6 +1884,7 @@ void HiresOverride_InvalidateVramRect(int x, int y, int w, int h)
             }
             pack_credit(&e->packBytes);
             g_entries[i] = g_entries[--g_numEntries];
+            g_hiresEntriesGen++;
             continue;
         }
         i++;
@@ -1948,16 +2010,42 @@ unsigned int HiresOverride_LookupByTpageClut(int tpage, int clut,
      * TIM keep the final coordinate non-negative. */
     int pageCellW = (bd == 4) ? 64 : (bd == 8) ? 128 : 256;
 
-    for (int i = 0; i < g_numEntries; i++)
+    /* The scan below depends only on (tpage, clut) and the entry table, and a
+     * pack-heavy frame repeats the same few keys for thousands of prims while
+     * each miss walks every entry. */
+    int hit;
     {
-        HiresEntry* e = &g_entries[i];
-        if (e->originalBitDepth != bd) continue;
-        if (tpx >= e->vramX + e->vramW || tpx + pageCellW <= e->vramX) continue;
-        if (tpy >= e->vramY + e->vramH || tpy + 256 <= e->vramY) continue;
-        if (e->clutX >= 0)
+        static struct { unsigned key; unsigned gen; int idx; } s_memo[256];
+        const unsigned key = ((unsigned)(tpage & 0xFFFF) << 16) | (unsigned)(clut & 0xFFFF);
+        const unsigned m   = (key * 2654435761u) >> 24;
+
+        if (s_memo[m].gen == g_hiresEntriesGen && s_memo[m].key == key)
+            hit = s_memo[m].idx;
+        else
         {
-            if (cx != e->clutX || cy != e->clutY) continue;
+            hit = -1;
+            for (int i = 0; i < g_numEntries; i++)
+            {
+                HiresEntry* e = &g_entries[i];
+                if (e->originalBitDepth != bd) continue;
+                if (tpx >= e->vramX + e->vramW || tpx + pageCellW <= e->vramX) continue;
+                if (tpy >= e->vramY + e->vramH || tpy + 256 <= e->vramY) continue;
+                if (e->clutX >= 0)
+                {
+                    if (cx != e->clutX || cy != e->clutY) continue;
+                }
+                hit = i;
+                break;
+            }
+            s_memo[m].key = key;
+            s_memo[m].gen = g_hiresEntriesGen;
+            s_memo[m].idx = hit;
         }
+    }
+
+    if (hit >= 0)
+    {
+        HiresEntry* e = &g_entries[hit];
         {
             /* vramX/W are in 16-bit VRAM cells; texels per cell depends on
              * the bit depth. The offset is where this prim's tpage origin

@@ -338,13 +338,7 @@ s32 Gfx_MapMsg_Draw(s32 mapMsgIdx) // 0x800365B8
              * fell seconds behind the wall-clock animation). Real-drain gating
              * restores the authored pacing while still preventing PC's instant
              * next-line SD_Call from cutting a live voice. */
-            /* Also hold through the post-voice inter-line gap
-             * (cutscene_line_gap_ms) so tightly-timed lines get the PSX CD-seek
-             * pause instead of the next voice firing back-to-back. It's a
-             * MINIMUM: mapMsgTimer==0 is still required, so a line whose authored
-             * ~J timer already exceeds the gap is unaffected (Flauros-safe). */
             extern int Xa_IsVoiceAudioDraining(void);
-            extern int Xa_VoiceGapHold(void);
             /* J2 single-audio-file cutscenes (VHS tape: map3_s03 msgs 27-39,
              * map7_s02 msgs 32-44): ONE ~35s XA clip spans ALL pages, which are
              * authored to advance on their ~J timers WHILE it plays (PSX has no
@@ -391,10 +385,18 @@ s32 Gfx_MapMsg_Draw(s32 mapMsgIdx) // 0x800365B8
                     }
                 }
             }
+            /* A loose msg_<KEY>.wav added to an UNVOICED box holds too. The
+             * clause above cannot cover it: the game never set
+             * BgmStatusFlag_VoiceDialog for a line it does not voice, so these
+             * pages advanced the instant their authored ~J0 timer ran out and
+             * cut the recording off. Pc_MsgVoice_Holding() is true only for the
+             * page that started the clip, so a take spanning several pages
+             * still lets the later ones keep their authored pacing. */
             const int pcVoiceHold =
                 !pcSingleFileAudio &&
-                (g_SysWork.bgmStatusFlags & BgmStatusFlag_VoiceDialog) &&
-                (Xa_IsVoiceAudioDraining() || Xa_VoiceGapHold());
+                (((g_SysWork.bgmStatusFlags & BgmStatusFlag_VoiceDialog) &&
+                  Xa_IsVoiceAudioDraining()) ||
+                 Pc_MsgVoice_Holding());
 #endif
             temp_s1 = stateMachineIdx0;
             if (temp_s1 == NO_VALUE)

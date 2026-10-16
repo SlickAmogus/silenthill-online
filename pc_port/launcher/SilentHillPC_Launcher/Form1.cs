@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -94,6 +94,11 @@ public partial class Form1 : Form
         LoadConfig();
         SetupTooltips();
         SetupLanguageButton();
+        trackFog.ValueChanged += (s, e) => UpdateFogValueLabel();
+        // On release, not while dragging, and never from LoadConfig setting
+        // the slider.
+        trackFog.MouseUp += (s, e) => AskPgxpForDistantWorld();
+        trackFog.KeyUp   += (s, e) => AskPgxpForDistantWorld();
         this.Shown += (s, e) =>
         {
             CleanupOldFiles();
@@ -125,16 +130,12 @@ public partial class Form1 : Form
 
         btnLang = new Button
         {
-            /* The right column is full from y 469 down: comboMap 469..490,
-             * progUpdate 503..526, lblUpdateStatus 533..548 -- so 416,472 landed
-             * ON TOP of the Level dropdown and the randomizer checkbox once the
-             * new options moved in. Back on the right edge, one row lower: the
-             * only things it shares that band with are progUpdate and
-             * chkRandomizer, both Visible=false in normal use (the progress bar
-             * appears during a download). Created in code rather than the designer (the flag
-             * is custom-painted), so it cannot be nudged from the design surface;
-             * re-check this against Form1.Designer.cs after any layout change. */
-            Location = new System.Drawing.Point(416, 504),
+            /* Bottom-right corner, on the Help/Reset/Report Bug row;
+             * lblUpdateStatus was narrowed to end before it. Created in code
+             * rather than the designer (the flag is custom-painted), so it
+             * cannot be nudged from the design surface; re-check this against
+             * Form1.Designer.cs after any layout change. */
+            Location = new System.Drawing.Point(420, 616),
             Size = new System.Drawing.Size(30, 22),
             Text = "",
             FlatStyle = FlatStyle.Standard,
@@ -182,6 +183,80 @@ public partial class Form1 : Form
     /// translation — resolution, refresh rate, FPS cap, disc image and level are
     /// left alone because their selected text is what gets written to config.cfg.
     /// </summary>
+    /// Codes parallel to comboGameLang's items. Never read the item text: it is
+    /// translated, the codes are not.
+    private readonly List<string> _gameLangCodes = new List<string>();
+
+    /* The "Native (PSX)" resolution entry: config native_resolution = 1, with
+     * width/height kept as the WINDOW size the game scales its own modes into. */
+    private string _nativeResText;
+
+    /// Build the Game Language row: Automatic, the languages every disc family
+    /// carries, then whatever packs are installed in gamedata/lang.
+    ///
+    /// The launcher does not know which disc will be mounted, so it offers all
+    /// of them and lets the game decide -- it already falls back to Automatic
+    /// for anything this disc cannot render, and says so in its log.
+    /// The dropdown's current code -- the user's intent, saved or not.
+    private string CurrentGameLanguageCode()
+    {
+        int i = comboGameLang.SelectedIndex;
+        return (i >= 0 && i < _gameLangCodes.Count) ? _gameLangCodes[i] : config.Get("language", "auto");
+    }
+
+    private void BuildGameLangList()
+    {
+        comboGameLang.Items.Clear();
+        _gameLangCodes.Clear();
+
+        void Add(string name, string code)
+        {
+            if (_gameLangCodes.Any(c => string.Equals(c, code, StringComparison.OrdinalIgnoreCase)))
+                return;
+            comboGameLang.Items.Add(name);
+            _gameLangCodes.Add(code);
+        }
+
+        // "en" is NOT PAL English: it is the disc's own, so on a USA disc it is
+        // US English and on every disc it is what Automatic already gives. The
+        // PAL script travels as the en_pal pack, and that is its code anywhere.
+        Add("Automatic",   "auto");
+        Add("US English",  "en_us");
+        Add("PAL English", "en_pal");
+        Add("German",      "de");
+        Add("French",      "fr");
+        Add("Spanish",     "es");
+        Add("Italian",     "it");
+
+        try
+        {
+            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gamedata", "lang");
+
+            if (Directory.Exists(dir))
+            {
+                foreach (string f in Directory.GetFiles(dir, "*.lang").OrderBy(x => x))
+                {
+                    string code = null, name = null;
+
+                    // Only the headers, which the format puts first.
+                    foreach (string line in File.ReadLines(f, Encoding.UTF8).Take(16))
+                    {
+                        if (line.StartsWith("!code=")) code = line.Substring(6).Trim();
+                        else if (line.StartsWith("!name=")) name = line.Substring(6).Trim();
+                        if (code != null && name != null) break;
+                    }
+
+                    if (!string.IsNullOrEmpty(code))
+                        Add(string.IsNullOrEmpty(name) ? code : name, code);
+                }
+            }
+        }
+        catch
+        {
+            // An unreadable pack folder costs the extra rows, nothing else.
+        }
+    }
+
     private void LocalizeValueLists()
     {
         // "はい"/"いいえ" and "Nein" are wider than "Yes"/"No", and each of these
@@ -190,14 +265,18 @@ public partial class Form1 : Form
                                   pgxpYes, pgxpNo, loggingYes, loggingNo, consoleYes, consoleNo })
             r.AutoSize = true;
 
+        Loc.LocalizeItems(comboGameLang);
         Loc.LocalizeItems(comboFullscreen);
         Loc.LocalizeItems(comboSkipIntros);
         Loc.LocalizeItems(comboPillarbox);
         Loc.LocalizeItems(comboFiltering);
+        Loc.LocalizeItems(comboDithering);
+        Loc.LocalizeItems(comboScaling);
         Loc.LocalizeItems(comboAA);
         Loc.LocalizeItems(comboPost);
         Loc.LocalizeItems(comboTone);
         Loc.LocalizeItems(comboFlash);
+        Loc.LocalizeItems(comboLineGap);
         Loc.LocalizeItems(comboAudioOut);
         Loc.LocalizeItems(comboRender);
         Loc.LocalizeItems(comboMinimap);
@@ -604,12 +683,28 @@ public partial class Form1 : Form
 
         const string filteringTip =
             "Off: crisp PSX pixels.\n" +
-            "Dithering: the original PSX dither pattern.\n" +
             "Bilinear: smooths textures.\n" +
             "Trilinear: bilinear plus mip blending (only replacement textures with mips).\n" +
             "Anisotropic: sharper surfaces at steep angles; higher costs more GPU.";
         Set(filteringLabel, filteringTip);
         Set(comboFiltering, filteringTip);
+
+        const string ditheringTip =
+            "The PSX 4x4 ordered dither plus a 5-bit quantize: the original look.\n" +
+            "It also hides texture-page seams as noise instead of hard edges.\n" +
+            "Separate from Filtering, so the two can be combined.";
+        Set(ditheringLabel, ditheringTip);
+        Set(comboDithering, ditheringTip);
+
+        const string scalingTip =
+            "How a render resolution SMALLER than the window is scaled up to fill it.\n" +
+            "Integer: whole-number scale, centred, with a border. Nothing shimmers.\n" +
+            "Nearest Neighbor: fills the screen, no blending, edges can crawl.\n" +
+            "Bilinear: fills the screen, smoothly blended. Default.\n" +
+            "Sharp Bilinear: whole-number scale first, then blend the remainder.\n" +
+            "No effect when the resolution already matches the window.";
+        Set(scalingLabel, scalingTip);
+        Set(comboScaling, scalingTip);
 
         const string menuFilterTip =
             "Also smooth menus and 2D screens with bilinear filtering.\n" +
@@ -703,9 +798,21 @@ public partial class Form1 : Form
             "Overrides the Level setting.");
 
         const string uncensoredTip =
-            "PAL discs only. Checked (default): the censored \"Mumblers\", as on the\n" +
-            "retail PAL disc. Unchecked: the original Grey Children, as in the US version.\n" +
-            "No effect on USA / NTSC-J discs.";
+            "PAL and NTSC-J discs. Checked (default): the censored \"Mumblers\", as on\n" +
+            "the retail disc. Unchecked: the original Grey Children, as on the US disc.\n" +
+            "PAL censors them everywhere, NTSC-J in the school and the amusement park.\n" +
+            "No effect on a USA disc, which was never censored.";
+        Set(lblMenuType,   Loc.T("Which main menu the game shows: the US picture, "
+                                + "PAL's fog-only title, or the Japanese logo. "
+                                + "Auto follows the disc."));
+        Set(comboMenuType, Loc.T("Which main menu the game shows: the US picture, "
+                                + "PAL's fog-only title, or the Japanese logo. "
+                                + "Auto follows the disc."));
+        const string gameLangTip =
+            "Which language the game runs in. Automatic follows the disc: US English" +
+            " on a USA disc, PAL English on a PAL one, Japanese on NTSC-J.";
+        Set(lblGameLang,   Loc.T(gameLangTip));
+        Set(comboGameLang, Loc.T(gameLangTip));
         Set(lblUncensored,  uncensoredTip);
         Set(chkUncensored,  uncensoredTip);
 
@@ -749,6 +856,23 @@ public partial class Form1 : Form
             "Cycle in-game with F4; [ and ] adjust the beam.";
         Set(flashLabel, flashTip);
         Set(comboFlash, flashTip);
+
+        const string fogTip =
+            "How far you can see through the fog. The default (1.10) is the classic game.\n" +
+            "Anything below 1.00 lets you see the world beyond the fog: the whole town is\n" +
+            "drawn out to the horizon. Below about 0.70 the fog has only a minimal effect.\n" +
+            "Also in game: F10 > Graphics.";
+        Set(lblFog, fogTip);
+        Set(trackFog, fogTip);
+        Set(lblFogValue, fogTip);
+
+        const string lineGapTip =
+            "Emulates the PlayStation's CD seek before each spoken line in cutscenes.\n" +
+            "On the console a voice line started a beat after its subtitle while the disc\n" +
+            "sought the clip; the PC loads instantly. Scene and subtitle timing are unchanged,\n" +
+            "only the voice starts later. Normal is the default.";
+        Set(lblLineGap, lineGapTip);
+        Set(comboLineGap, lineGapTip);
 
         Set(btnManager, "Manage texture packs, load-folder and FMV mods: enable, disable and set load order.");
 
@@ -947,6 +1071,11 @@ public partial class Form1 : Form
         foreach (var r in resolutions)
             comboResolution.Items.Add($"{r.w}x{r.h}");
 
+        /* Last, under 320x240: every screen at the resolution the game itself
+         * uses (320x224 play, 640x448 Konami, 320x448 menus), not one fixed size. */
+        _nativeResText = Loc.T("Native (PSX)");
+        comboResolution.Items.Add(_nativeResText);
+
         // Unique refresh rates, highest first.
         var refreshRates = new List<int>();
         foreach (var m in modes)
@@ -1021,6 +1150,31 @@ public partial class Form1 : Form
         // (censored) → checked, so the box defaults on.
         chkUncensored.Checked = config.Get("uncensored", "0") == "0";
 
+        // Game language. Built once, then selected by code, because the row is
+        // a mix of what every disc carries and whatever packs are installed.
+        BuildGameLangList();
+        {
+            string gl = config.Get("language", "auto").Trim();
+            int    at = _gameLangCodes.FindIndex(
+                            c => string.Equals(c, gl, StringComparison.OrdinalIgnoreCase));
+
+            // An unknown or removed code lands on Automatic rather than on
+            // whatever happens to be first, which is what the game does too.
+            comboGameLang.SelectedIndex = at >= 0 ? at : 0;
+        }
+
+        // Main-menu style. "auto" is the disc's own, which is what every
+        // existing config says and what the game defaults to, so it stays the
+        // first item rather than silently pinning a style on the next save.
+        {
+            string ms = config.Get("menu_style", "auto").Trim().ToLowerInvariant();
+            comboMenuType.SelectedIndex =
+                  ms == "us" || ms == "western" || ms == "ntsc" ? 1
+                : ms == "pal" || ms == "eur"                    ? 2
+                : ms == "japanese" || ms == "jp" || ms == "ntscj" ? 3
+                : 0;
+        }
+
         // fullscreen
         // fullscreen: 0 = windowed, 1 = exclusive fullscreen, 2 = borderless.
         // Dropdown order: Fullscreen(0), Windowed(1), Borderless(2).
@@ -1060,16 +1214,42 @@ public partial class Form1 : Form
         else
             comboFps.SelectedItem = "30";
 
-        /* Filtering. psx_dither carries BOTH the mode and, for anisotropic, the
-         * strength: 0 off, 1 dithering, 2 bilinear, 3 trilinear, 4..7
-         * anisotropic 2x/4x/8x/16x. One value means the launcher, the in-game
-         * row and config.cfg cannot disagree about what is selected, which two
-         * separate keys would have allowed. Index maps to it directly. */
+        /* Dithering and Filtering used to share one key (psx_dither), which meant
+         * the authentic dither could not be combined with a smoothing mode. They
+         * are separate keys now; a config that still only has the old one is
+         * translated here the same way the game translates it, so the launcher
+         * shows what is actually in effect.
+         *
+         * texture_filter indexes comboFiltering directly: 0 off, 1 bilinear,
+         * 2 trilinear, 3..6 anisotropic 2x/4x/8x/16x. */
+        int ditherOn = config.Get("dithering", "") == "1" ? 1 : 0;
         int filterIdx;
-        if (!int.TryParse(config.Get("psx_dither", "1"), out filterIdx))
-            filterIdx = 1; // default to dithering
-        if (filterIdx < 0 || filterIdx >= comboFiltering.Items.Count) filterIdx = 1;
+        bool haveNewKeys = config.Get("dithering", "") != "" ||
+                           config.Get("texture_filter", "") != "";
+
+        if (!int.TryParse(config.Get("texture_filter", "0"), out filterIdx))
+            filterIdx = 0;
+
+        if (!haveNewKeys)
+        {
+            int legacy;
+            if (!int.TryParse(config.Get("psx_dither", "1"), out legacy))
+                legacy = 1;
+            ditherOn  = (legacy == 1) ? 1 : 0;
+            filterIdx = (legacy <= 1) ? 0 : legacy - 1;  // 2..7 -> 1..6
+        }
+
+        if (filterIdx < 0 || filterIdx >= comboFiltering.Items.Count) filterIdx = 0;
         comboFiltering.SelectedIndex = filterIdx;
+        comboDithering.SelectedIndex = ditherOn;
+
+        /* Scaling: how a render resolution below the window is scaled up to it.
+         * 0 integer, 1 nearest, 2 bilinear, 3 sharp bilinear. */
+        int scaleIdx;
+        if (!int.TryParse(config.Get("scaling", "2"), out scaleIdx))
+            scaleIdx = 2;
+        if (scaleIdx < 0 || scaleIdx >= comboScaling.Items.Count) scaleIdx = 2;
+        comboScaling.SelectedIndex = scaleIdx;
 
         // "Menus:" checkbox — also bilinear-filter menu/2D screens (config key menu_filter)
         checkBox1.Checked = config.Get("menu_filter", "0") == "1";
@@ -1114,6 +1294,27 @@ public partial class Form1 : Form
             comboFlash.SelectedIndex = fmIdx;
         }
 
+        // cutscene_line_gap_ms: minimum pause after a voiced cutscene line.
+        // Presets only; a hand-set value that matches none shows the nearest
+        // preset and stays in the file unless the dropdown is changed.
+        {
+            int ms;
+            if (!int.TryParse(config.Get("cutscene_line_gap_ms", "300"), out ms)) ms = 300;
+            _lineGapLoadedIdx = LineGapIndexFor(ms);
+            comboLineGap.SelectedIndex = _lineGapLoadedIdx;
+        }
+
+        // fog_strength, snapped to the slider's 0.05 steps. A value the slider
+        // cannot show (set in game above 1.20) stays in the file unless moved.
+        {
+            float fs;
+            if (!float.TryParse(config.Get("fog_strength", "1.10"), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out fs)) fs = 1.10f;
+            _fogLoadedStep = Math.Max(trackFog.Minimum, Math.Min(trackFog.Maximum, (int)Math.Round(fs / FogStep)));
+            trackFog.Value = _fogLoadedStep;
+            UpdateFogValueLabel();
+        }
+
         // Audio output (speaker layout): auto = OpenAL detects the system
         // layout. With rears active the game pans SFX on the full circle and
         // sends wide-stereo BGM layers to the surrounds.
@@ -1130,9 +1331,16 @@ public partial class Form1 : Form
         /* A size set by hand in config.cfg, or one this machine's driver does
          * not enumerate, still has to be selectable: without this the box comes
          * up blank and the next Save writes whatever the user picks instead. */
-        if (!comboResolution.Items.Contains(res))
-            InsertResolutionSorted(res);
-        comboResolution.SelectedItem = res;
+        if (config.Get("native_resolution", "0") == "1" && _nativeResText != null)
+        {
+            comboResolution.SelectedItem = _nativeResText;
+        }
+        else
+        {
+            if (!comboResolution.Items.Contains(res))
+                InsertResolutionSorted(res);
+            comboResolution.SelectedItem = res;
+        }
 
         // refresh rate is config-only now (auto-detected by default); keep the
         // hidden combo populated harmlessly so its references stay valid.
@@ -1209,9 +1417,36 @@ public partial class Form1 : Form
             "0");                                        // Windowed
         config.Set("vsync", radioVsyncYes.Checked ? "1" : "0");
         // resolution
-        if (comboResolution.SelectedItem != null)
+        if (comboResolution.SelectedItem != null &&
+            comboResolution.SelectedItem.ToString() == _nativeResText)
+        {
+            /* The render size follows the game, so width/height only size the
+             * window: the desktop when fullscreen, otherwise the largest whole
+             * multiple of 320x240 that leaves room on the screen. */
+            var scr = Screen.PrimaryScreen;
+            int ww, wh;
+
+            if (comboFullscreen.SelectedIndex != 1)
+            {
+                ww = scr.Bounds.Width;
+                wh = scr.Bounds.Height;
+            }
+            else
+            {
+                int k = Math.Min(scr.WorkingArea.Width * 9 / 10 / 320,
+                                 scr.WorkingArea.Height * 9 / 10 / 240);
+                if (k < 2) k = 2;
+                ww = 320 * k;
+                wh = 240 * k;
+            }
+            config.Set("native_resolution", "1");
+            config.Set("width", ww.ToString());
+            config.Set("height", wh.ToString());
+        }
+        else if (comboResolution.SelectedItem != null)
         {
             var parts = comboResolution.SelectedItem.ToString().Split('x');
+            config.Set("native_resolution", "0");
             config.Set("width", parts[0]);
             config.Set("height", parts[1]);
         }
@@ -1257,9 +1492,15 @@ public partial class Form1 : Form
         if (comboFps.SelectedItem != null)
             config.Set("fps_cap", comboFps.SelectedItem.ToString());
 
-        // Filtering: dropdown index (0=Off, 1=Dithering, 2=Bilinear) -> int
+        /* Filtering and Dithering are independent keys. psx_dither is deliberately
+         * not written back: it only exists so an old config still loads, and
+         * leaving it alone keeps it from overriding these two on the next boot. */
         if (comboFiltering.SelectedIndex >= 0)
-            config.Set("psx_dither", comboFiltering.SelectedIndex.ToString());
+            config.Set("texture_filter", comboFiltering.SelectedIndex.ToString());
+        if (comboDithering.SelectedIndex >= 0)
+            config.Set("dithering", comboDithering.SelectedIndex == 1 ? "1" : "0");
+        if (comboScaling.SelectedIndex >= 0)
+            config.Set("scaling", comboScaling.SelectedIndex.ToString());
         config.Set("menu_filter", checkBox1.Checked ? "1" : "0");
 
         // Antialiasing (MSAA): dropdown index 0..3 -> msaa 0/2/4/8
@@ -1289,6 +1530,13 @@ public partial class Form1 : Form
             config.Set("flashlight_shadows", (fmIdx == 1 || fmIdx == 3) ? "1" : "0");
         }
 
+        if (comboLineGap.SelectedIndex >= 0 &&
+            (comboLineGap.SelectedIndex != _lineGapLoadedIdx || config.Get("cutscene_line_gap_ms", "") == ""))
+            config.Set("cutscene_line_gap_ms", LineGapValues[comboLineGap.SelectedIndex].ToString());
+
+        if (trackFog.Value != _fogLoadedStep)
+            config.Set("fog_strength", (trackFog.Value * FogStep).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+
         // Audio output dropdown -> audio_output string id.
         if (comboAudioOut.SelectedIndex >= 0)
             config.Set("audio_output", AudioOutputIds[comboAudioOut.SelectedIndex]);
@@ -1302,6 +1550,22 @@ public partial class Form1 : Form
 
         config.Set("randomizer", chkRandomizer.Checked ? "1" : "0");
         config.Set("uncensored", chkUncensored.Checked ? "0" : "1"); // checked = censored
+
+        // By INDEX into the parallel code list, for the same reason as below:
+        // the visible names are translated, the codes are not.
+        if (comboGameLang.SelectedIndex >= 0 &&
+            comboGameLang.SelectedIndex < _gameLangCodes.Count)
+            config.Set("language", _gameLangCodes[comboGameLang.SelectedIndex]);
+
+        // Read by INDEX, never by item text: the items are region codes the
+        // game parses, and Loc must never be able to change what lands here.
+        switch (comboMenuType.SelectedIndex)
+        {
+            case 1:  config.Set("menu_style", "us");       break;
+            case 2:  config.Set("menu_style", "pal");      break;
+            case 3:  config.Set("menu_style", "japanese"); break;
+            default: config.Set("menu_style", "auto");     break;
+        }
 
         // Level: persist only the map id, not the " - description" suffix. Skipped
         // while the randomizer owns the row — the selection is the synthetic
@@ -1318,6 +1582,58 @@ public partial class Form1 : Form
 
     // Dropdown index -> audio_output config id (matches the game's parser).
     private static readonly string[] AudioOutputIds = { "auto", "stereo", "quad", "51", "71", "hrtf" };
+
+    // Fog/World Visibility slider -> fog_strength. Capped at 1.20 rather than
+    // the game's 2.0: past that the town is already fully fogged out.
+    private const float FogStep = 0.05f;
+    private int _fogLoadedStep = 22;
+
+    // A "No" holds until the launcher is closed; "Do Not Ask Again" is saved.
+    private static bool s_pgxpFogDeclined;
+
+    private void AskPgxpForDistantWorld()
+    {
+        if (trackFog.Value * FogStep >= 0.999f || pgxpYes.Checked || s_pgxpFogDeclined)
+            return;
+        if (config.Get("launcher_warn_pgxp_fog", "1").Trim() == "0")
+            return;
+
+        using (var dlg = new SilentHillPC_Launcher.PgxpFogDialog())
+        {
+            dlg.ShowDialog(this);
+            switch (dlg.Result)
+            {
+                case SilentHillPC_Launcher.PgxpFogDialog.Choice.Yes:
+                    pgxpYes.Checked = true;
+                    break;
+                case SilentHillPC_Launcher.PgxpFogDialog.Choice.NeverAsk:
+                    config.EnsureLauncherSection();
+                    config.Set("launcher_warn_pgxp_fog", "0");
+                    config.Save();
+                    break;
+                default:
+                    s_pgxpFogDeclined = true;
+                    break;
+            }
+        }
+    }
+
+    private void UpdateFogValueLabel()
+    {
+        lblFogValue.Text = (trackFog.Value * FogStep).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Dialog Pause dropdown -> cutscene_line_gap_ms (CD seek before each voice
+    // line). 300 is the engine default.
+    private static readonly int[] LineGapValues = { 0, 150, 300, 600 };
+    private int _lineGapLoadedIdx = 2;
+    private static int LineGapIndexFor(int ms)
+    {
+        if (ms <= 0)   return 0;
+        if (ms <= 220) return 1;
+        if (ms <= 450) return 2;
+        return 3;
+    }
 
     private const string RandomizerMapEntry = "Randomizer Enabled";
 
@@ -1425,7 +1741,14 @@ public partial class Form1 : Form
 
         try
         {
-            var p = Process.Start(exePath);
+            // The game opens config.cfg relative to its working directory; a
+            // shortcut with another "Start in" folder made it read (and write
+            // binds to) a different file than the one this launcher edits.
+            var p = Process.Start(new ProcessStartInfo(exePath)
+            {
+                WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
+                UseShellExecute  = false,
+            });
             if (p != null)
             {
                 /* THE stale-settings bug. The launcher loads config.cfg once at
@@ -1865,7 +2188,7 @@ public partial class Form1 : Form
 
     private void btnManager_Click(object sender, EventArgs e)
     {
-        using (var f = new SilentHillPC_Launcher.ModManagerForm(config, AppDomain.CurrentDomain.BaseDirectory))
+        using (var f = new SilentHillPC_Launcher.ModManagerForm(config, AppDomain.CurrentDomain.BaseDirectory, CurrentGameLanguageCode()))
         {
             f.ShowDialog(this);
         }

@@ -34,6 +34,7 @@
 #include "pc_bind_panel.h"
 #include "pc_mouse_cursor.h"
 #include "pc_config.h"
+#include "lang_text.h"
 #include "pc_cheats.h"
 #include "control_style.h"
 #include "lang_quick.h"
@@ -64,9 +65,11 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_TPSFOV, QO_X_FPSFOV,
        QO_X_FPSHEADX, QO_X_FPSHEADY, QO_X_FPSHEADZ, QO_X_FPSSWING,
        QO_X_OTSFOV, QO_X_TPSAIMZOOM, QO_X_OTSAIMZOOM, QO_X_TPSOTSAIM,
+       QO_X_TPSRESTZOOM, QO_X_OTSRESTZOOM,
        QO_X_TPSRESTX, QO_X_TPSRESTY, QO_X_TPSAIMX, QO_X_TPSAIMY,
        QO_X_OTSRESTX, QO_X_OTSRESTY, QO_X_OTSAIMX, QO_X_OTSAIMY,
-       QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE };
+       QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE, QO_X_CROSSHAIRSTYLE,
+       QO_X_LINEGAP };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -110,7 +113,7 @@ typedef struct
 #define QO_CLOSE_ROW { ROW_CLOSE, NULL, 0, "Close" }
 
 static const QoRowDef s_pageGfx1[] = {
-    { ROW_OPT,   "psx_dither",           0, NULL },  /* Texture_Filter */
+    { ROW_OPT,   "texture_filter",       0, NULL },  /* Texture_Filter */
     { ROW_OPT,   "msaa",                 0, NULL },  /* Antialiasing (restart) */
     { ROW_OPT,   "post_process",         0, NULL },
     { ROW_OPT,   "tonemap",              0, NULL },
@@ -140,6 +143,9 @@ static const QoRowDef s_pageHud[] = {
     { ROW_OPT,   "minimap_require_map",  0, NULL },
     { ROW_OPT,   "crosshair",            0, NULL },
     { ROW_OPT,   "crosshair_size",       0, NULL },
+    /* Quick menu only: crosshair_style has no row in the PC Options table and
+     * does not get one, that page keeps its slack for the next HUD setting. */
+    { ROW_EXTRA, NULL, QO_X_CROSSHAIRSTYLE,  "Crosshair Style" },
     { ROW_OPT,   "text_size",            0, NULL },
     { ROW_OPT,   "low_health_glow",      0, NULL },
     QO_NAV_ROW,
@@ -151,6 +157,7 @@ static const QoRowDef s_pageAudio[] = {
     { ROW_EXTRA, NULL, QO_X_BGM,            "Music Volume" },
     { ROW_EXTRA, NULL, QO_X_SFX,            "Effects Volume" },
     { ROW_OPT,   "fmv_volume",           0, NULL },
+    { ROW_EXTRA, NULL, QO_X_LINEGAP,        "Dialog Pause" },
     QO_NAV_ROW,
     QO_CLOSE_ROW,
 };
@@ -217,6 +224,7 @@ static const QoRowDef s_page2Tps[] = {
     { ROW_EXTRA,  NULL, QO_X_TPSFOV,       "FOV" },
     { ROW_EXTRA,  NULL, QO_X_TPSOTSAIM,    "OTS Aim (while in TPS)" },
     { ROW_EXTRA,  NULL, QO_X_TPSAIMZOOM,   "Aim Zoom" },
+    { ROW_EXTRA,  NULL, QO_X_TPSRESTZOOM,  "Rest Zoom" },
     { ROW_EXTRA,  NULL, QO_X_TPSRESTX,     "Rest X (left/right)" },
     { ROW_EXTRA,  NULL, QO_X_TPSRESTY,     "Rest Y (up/down)" },
     { ROW_EXTRA,  NULL, QO_X_TPSAIMX,      "Aim X (left/right)" },
@@ -230,6 +238,7 @@ static const QoRowDef s_page2Tps[] = {
 static const QoRowDef s_page2Ots[] = {
     { ROW_EXTRA,  NULL, QO_X_OTSFOV,       "FOV" },
     { ROW_EXTRA,  NULL, QO_X_OTSAIMZOOM,   "Aim Zoom" },
+    { ROW_EXTRA,  NULL, QO_X_OTSRESTZOOM,  "Rest Zoom" },
     { ROW_EXTRA,  NULL, QO_X_OTSRESTX,     "Rest X (left/right)" },
     { ROW_EXTRA,  NULL, QO_X_OTSRESTY,     "Rest Y (up/down)" },
     { ROW_EXTRA,  NULL, QO_X_OTSAIMX,      "Aim X (left/right)" },
@@ -404,6 +413,7 @@ static stbtt_fontinfo s_font;
 static unsigned char* s_fontData;
 static int            s_fontOk;
 static int            s_fontsTried;
+static int            s_fontsScript = -1; /* Pc_LangQuickScript the face was picked for */
 
 /* Baked text, re-baked when the pixel size or the page changes; values are
  * re-baked whenever their text changes. */
@@ -448,6 +458,9 @@ static GLuint s_ddTex[QO_DD_MAX];
 static int    s_ddW[QO_DD_MAX], s_ddH[QO_DD_MAX];
 static float  s_ddL, s_ddR, s_ddTop, s_ddRowH; /* published for the hit-test */
 static int    s_ddShown;
+/* Which list s_ddTex holds. The Map and Spawn rows share the cache, so a list
+ * opened after the other drew the first one's names until this was keyed. */
+static int    s_ddTexKey = -1;
 
 static int qo_row_is_list(const QoRowDef* r)
 {
@@ -462,7 +475,8 @@ static GLuint qo_make_shader(GLenum type, const char* src)
 {
     GLuint sh = glCreateShader(type);
     GLint  ok = 0;
-    glShaderSource(sh, 1, &src, NULL);
+    const char* parts[2] = { PsyX_Shader_Preamble(type == GL_FRAGMENT_SHADER, PSYX_GLSL_LEGACY), src };
+    glShaderSource(sh, 2, parts, NULL);
     glCompileShader(sh);
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
     if (!ok)
@@ -906,18 +920,15 @@ static int qo_font_check(void)
 
 static void qo_fonts_init(void)
 {
-    static const char* paths[] = {
-        "gamedata/font/Oswald-Regular.ttf",
-        "gamedata/font/BarlowSemiCondensed-Regular.ttf",
-        "C:/Windows/Fonts/segoeui.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    };
+    static const char* paths[16];
+    int count = Pc_LangQuickFontPaths(paths, 16);
     int i;
-    if (s_fontsTried)
-        return;
-    s_fontsTried = 1;
-    for (i = 0; i < (int)(sizeof(paths) / sizeof(paths[0])); i++)
+
+    s_fontsTried  = 1;
+    s_fontsScript = Pc_LangQuickScript();
+    s_fontOk      = 0;
+
+    for (i = 0; i < count; i++)
     {
         long           sz   = 0;
         unsigned char* data = qo_read_file(paths[i], &sz);
@@ -1213,6 +1224,7 @@ static void qo_free_text(void)
     {
         qo_retire(s_ddTex[i]); s_ddTex[i] = 0;
     }
+    s_ddTexKey = -1;
 }
 
 /* The overlay's baked textures have twice been seen drawing as solid blocks
@@ -1653,6 +1665,9 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
         int pick = -1, mMoved2, mClick2, wheel2;
         float mx2, my2;
 
+        if (n > QO_DD_MAX) n = QO_DD_MAX;
+        if (n <= 0) { s_ddRow = -1; return; }
+
         if (close) { qo_beep(Sfx_MenuCancel); s_ddRow = -1; return; }
         if (up)   s_ddSel = (s_ddSel + n - 1) % n;
         if (down) s_ddSel = (s_ddSel + 1) % n;
@@ -1664,8 +1679,8 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
          * the selection instead, which hover re-snapped to the line under the
          * cursor on the next jitter -- so with the pointer resting over the
          * list the wheel felt dead. */
-        wheel2 = Pc_MouseCursor_WheelStep();
-        if (wheel2) s_ddScroll += (wheel2 > 0) ? -1 : 1;
+        wheel2 = Pc_MouseCursor_WheelNotches();
+        if (wheel2) s_ddScroll -= wheel2 * 3;
         {
             int vis = (n < QO_DD_VISIBLE) ? n : QO_DD_VISIBLE;
             if (s_ddScroll > n - vis) s_ddScroll = n - vis;
@@ -1907,7 +1922,18 @@ void Pc_QuickOptions_Draw(void)
         qo_atlas_ensure();
         qo_build_white();
     }
-    if (!s_fontsTried) qo_fonts_init();
+    /* Also when the language changes script: a Latin face has no kana, so the
+     * text baked from it is dropped with it. The old face's memory is
+     * abandoned rather than freed, as on any reload (stbtt points into it). */
+    if (!s_fontsTried || s_fontsScript != Pc_LangQuickScript())
+    {
+        if (s_fontsTried)
+        {
+            qo_free_text();
+            s_viewRowsDirty = 1;
+        }
+        qo_fonts_init();
+    }
 
     if (s_sel >= nRows) s_sel = nRows - 1;
     if (s_sel < 0)      s_sel = 0;
@@ -2223,6 +2249,17 @@ void Pc_QuickOptions_Draw(void)
         const QoRowDef* r  = &rows[s_ddRow];
         int   n   = Pc_Cheats_ListCount(r->cpage, r->extra);
         int   vis = (n < QO_DD_VISIBLE) ? n : QO_DD_VISIBLE;
+        const int key = (r->cpage << 8) | (r->extra & 0xFF);
+
+        if (key != s_ddTexKey)
+        {
+            int i;
+            for (i = 0; i < QO_DD_MAX; i++)
+            {
+                qo_retire(s_ddTex[i]); s_ddTex[i] = 0;
+            }
+            s_ddTexKey = key;
+        }
         float ddL = panelL + panelW * 0.5f;
         float ddR = panelR - 4.0f;
         float ddTop = listT - (float)(s_ddRow + 1) * rowPitch + rowPitch * 0.08f;

@@ -1201,6 +1201,12 @@ static inline void func_80071968_Switch1(void)
     }
 }
 
+#ifdef SH_PC_PORT
+/* Time spent in the walk<->run transition blend, for the deadlock bound at the
+ * bottom of Player_AnimUpdate. */
+static q19_12 s_walkRunBlendTime = 0;
+#endif
+
 void Player_AnimUpdate(s_SubCharacter* player, s_PlayerExtra* extra, s_AnmHeader* anmHdr, GsCOORDINATE2* coords) // 0x80071968
 {
     s_AnimInfo* animInfo;
@@ -1396,6 +1402,9 @@ void Player_AnimUpdate(s_SubCharacter* player, s_PlayerExtra* extra, s_AnmHeader
 
     if (!g_Player_IsInWalkToRunTransition)
     {
+#ifdef SH_PC_PORT
+        s_walkRunBlendTime = 0;
+#endif
         // Disable upper body bones before playing anim.
         g_SysWork.playerWork.extra.disabledAnimBones = HARRY_UPPER_BODY_BONE_MASK;
 
@@ -1427,6 +1436,32 @@ void Player_AnimUpdate(s_SubCharacter* player, s_PlayerExtra* extra, s_AnmHeader
     {
         g_Player_IsInWalkToRunTransition = false;
     }
+
+#ifdef SH_PC_PORT
+    /* The equality above is the flag's ONLY exit, and while the flag is set
+     * Player_Update (~:855) zeroes every player input flag each frame. Anything
+     * that rewrites player->model.anim.status between frames starves that exit:
+     * the branch above force-sets Still and replays it from the top, so the link
+     * never arrives. A reaction state does exactly that, and the cycle is
+     * self-sustaining -- Player_ReceiveDamage runs the line before the input
+     * clear, while the damage path stashes the hit in D_800C4560 and returns
+     * (~:10124), so no state change ever breaks it. Several Night Flutters
+     * pecking at once reproduced it: Harry stood or ran in place with dead input
+     * until an attack happened to land through one of the non-deferred cases.
+     *
+     * The blend is ~0.1s of cosmetics, so bound it. Q12(0.5f) is a 5x margin
+     * here and is NOT the threshold that cut get-ups short (see
+     * Pc_ReactionStateStuck): those reaction anims run about two seconds, this
+     * is one short link. */
+    s_walkRunBlendTime += g_DeltaTime;
+    if (g_Player_IsInWalkToRunTransition && s_walkRunBlendTime > Q12(0.5f))
+    {
+        SH_DBG("[WALKRUN] transition blend never linked (%dms, anim status 0x%X) - force-clearing; input was dead",
+               (s_walkRunBlendTime * 1000) >> Q12_SHIFT, player->model.anim.status);
+        g_Player_IsInWalkToRunTransition = false;
+        s_walkRunBlendTime               = 0;
+    }
+#endif
 }
 
 #ifdef SH_PC_PORT
@@ -1605,8 +1640,9 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
              * Harry is standing still. Player_Controller doesn't fold R2
              * into HasActionInput (only Cross/run do that on PSX). */
             {
+                extern int g_PcRearLookActive;
                 u16 aimBtn  = g_GameWorkPtr->config.controllerConfig.aim;
-                bool aimHeld   = (g_Controller0->heldBtnFlags & aimBtn) != 0;
+                bool aimHeld   = (g_Controller0->heldBtnFlags & aimBtn) != 0 && !g_PcRearLookActive;
                 bool hasWeapon = (g_SysWork.playerCombat.weaponAttack != (s8)NO_VALUE);
                 if (!aimHeld || !hasWeapon)
                 {
@@ -2576,6 +2612,15 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * sprint-cancel below drops aim while running. */
                     aimHeld  = (g_Controller0->heldBtnFlags & aimBtn)  != 0;
                     fireHeld = (g_Controller0->heldBtnFlags & fireBtn) != 0;
+                    {
+                        /* Rear Look (TPS/OTS, held) and aiming are exclusive:
+                         * the camera faces behind Harry, so an aim would point
+                         * away from what the player sees. Only aim is refused;
+                         * the aim button's other uses read g_Controller0 as is. */
+                        extern int g_PcRearLookActive;
+                        if (g_PcRearLookActive)
+                            aimHeld = false;
+                    }
 
                     /* Free-aim (OTS/TPS): a ranged weapon stays aimed while running
                      * (move+aim+shoot). Walk speed is forced at the move-speed site
@@ -2584,7 +2629,17 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * recovery are no longer needed for guns. Melee has no Aim pose, so
                      * still drop its "aim" while running to avoid the arm-swinging-in-
                      * place bug. */
-                    if (g_DebugThirdPersonCam && g_Player_IsRunning &&
+                    /* g_Player_IsRunning means "run MODE is engaged", NOT "Harry is
+                     * moving": it is derived from the run control alone. With the
+                     * Walk/Run Control option set to Reverse the sense inverts, so
+                     * run mode is engaged whenever the run control is NOT held --
+                     * including standing perfectly still. Cancelling on that flag
+                     * alone therefore killed melee aim PERMANENTLY in the alt
+                     * cameras for anyone playing with Reverse, and in Normal it also
+                     * blocked aiming while merely holding the run key still. Require
+                     * actual movement input, which is what the in-place swing bug
+                     * needs anyway. */
+                    if (g_DebugThirdPersonCam && g_Player_IsRunning && g_Player_HasMoveInput &&
                         g_SysWork.playerCombat.weaponAttack < WEAPON_ATTACK(EquippedWeaponId_Handgun, AttackInputType_Tap)) {
                         aimHeld = false;
                         g_Player_IsAiming = false;
@@ -12029,6 +12084,13 @@ void Player_Controller(void) // 0x8007F32C
     {
         g_Player_IsAiming = g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.aim;
     }
+#ifdef SH_PC_PORT
+    {
+        extern int g_PcRearLookActive;
+        if (g_PcRearLookActive)
+            g_Player_IsAiming = false;
+    }
+#endif
 
     if (g_SysWork.playerCombat.weaponAttack >= WEAPON_ATTACK(EquippedWeaponId_Handgun, AttackInputType_Tap) &&
         g_SysWork.playerWork.extra.lowerBodyState >= PlayerLowerBodyState_Aim

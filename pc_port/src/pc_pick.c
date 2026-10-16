@@ -13,11 +13,15 @@
  * ortho (g_PcWorldOrthoRect) rather than assuming a 320x224 frame is what keeps
  * the test honest under hfov/vfov, pillarbox, Hor+ and stretch alike.
  *
- * SCALE multiplies the root bone's matrix through Chara_ModelBoneScaleSet, the
- * same call Twinfeeler and map4_s03 use to resize a character. The skeleton is
- * re-posed from keyframes every frame, so the multiply is re-applied every
- * frame and never compounds. Collision is not scaled: a giant Groaner still
- * has a normal-sized hitbox.
+ * SCALE publishes g_PcCharaDrawScale for the character about to be drawn, and
+ * the skeleton draw scales each bone final matrices about the root. It used to
+ * multiply bone 0 coord instead, but bone 0 only reaches bones the ANM
+ * parented, and a skeleton built from the LM can carry parts beyond that --
+ * which is why the Incubator scaled only from the waist down. Nothing is left
+ * in the bone coords either, so a scale can never compound.
+ *
+ * Collision is separate (Pc_Pick_CollScale) and does scale, except the
+ * player's map-collision cylinder -- see Pc_Pick_MoveScale.
  */
 #include "game.h"
 
@@ -81,8 +85,16 @@ static s32         s_selPropX, s_selPropY, s_selPropZ;
 /* FREEZE and HEAL state per NPC slot, each tagged with the character it was
  * recorded for so a recycled slot starts clean (same reason as
  * s_npcScaleChara). -1 = nothing recorded. */
+/* NOCOLLIDE, tagged with the character it was set for exactly like
+ * s_frozenChara so a recycled slot starts solid again. */
+static s32 s_noColChara[NPC_COUNT_MAX];
+static int s_noColPlayer;
+
+/* Collision asks per character per frame, so keep a global fast-out: with
+ * nothing phased the query must not walk the NPC array at all. */
+static int s_anyNoCol;
+
 static s32 s_frozenChara[NPC_COUNT_MAX];
-static s32 s_bakedScale[NPC_COUNT_MAX]; /* scale the slot's bones were last drawn at */
 static s32 s_maxHealth[NPC_COUNT_MAX];
 static s32 s_maxHealthChara[NPC_COUNT_MAX];
 static int s_npcStateInit;
@@ -97,9 +109,9 @@ static void NpcStateInit(void)
     for (i = 0; i < NPC_COUNT_MAX; i++)
     {
         s_frozenChara[i]    = -1;
+        s_noColChara[i]     = -1;
         s_maxHealth[i]      = 0;
         s_maxHealthChara[i] = -1;
-        s_bakedScale[i]     = Q12(1.0f);
     }
     s_npcStateInit = 1;
 }
@@ -418,6 +430,8 @@ int Pc_Pick_GetScale(void)
 void Pc_Pick_Reset(void)
 {
     s_anyScaled  = 0;
+    s_anyNoCol   = 0;
+    s_noColPlayer = 0;
     s_propCount  = 0;
     s_scalesInit = 0;
     ScalesInit();
@@ -488,6 +502,70 @@ int Pc_Pick_NpcMaxHealth(int slot)
     return s_maxHealth[slot];
 }
 
+int Pc_Pick_SetNoCollide(int on)
+{
+    NpcStateInit();
+
+    if (s_selKind == PcPick_Player)
+    {
+        s_noColPlayer = on ? 1 : 0;
+    }
+    else if (s_selKind == PcPick_Npc && s_selSlot >= 0 && s_selSlot < NPC_COUNT_MAX)
+    {
+        if (g_SysWork.npcs[s_selSlot].model.charaId == Chara_None)
+            return 0;
+        s_noColChara[s_selSlot] = on ? s_selCharaId : -1;
+    }
+    else
+    {
+        /* Props are world geometry, not characters: they never run the chara
+         * collision paths this flag gates, so there is nothing to phase. */
+        return 0;
+    }
+
+    if (on)
+        s_anyNoCol = 1;
+
+    return 1;
+}
+
+int Pc_Pick_GetNoCollide(void)
+{
+    if (s_selKind == PcPick_Player)
+        return s_noColPlayer;
+
+    if (s_selKind == PcPick_Npc && s_selSlot >= 0 && s_selSlot < NPC_COUNT_MAX)
+        return Pc_Pick_IsNoCollide(&g_SysWork.npcs[s_selSlot]);
+
+    return 0;
+}
+
+int Pc_Pick_IsNoCollide(const void* charaPtr)
+{
+    const s_SubCharacter* chara = (const s_SubCharacter*)charaPtr;
+    int                   i;
+
+    if (!s_anyNoCol || chara == NULL)
+        return 0;
+
+    if (chara == &g_SysWork.playerWork.player)
+        return s_noColPlayer;
+
+    if (!s_npcStateInit)
+        return 0;
+
+    for (i = 0; i < NPC_COUNT_MAX; i++)
+    {
+        if (chara == &g_SysWork.npcs[i])
+        {
+            return s_noColChara[i] != -1 &&
+                   s_noColChara[i] == chara->model.charaId;
+        }
+    }
+
+    return 0;
+}
+
 int Pc_Pick_SetFrozen(int slot, int on)
 {
     if (slot < 0 || slot >= NPC_COUNT_MAX || g_SysWork.npcs[slot].model.charaId == Chara_None)
@@ -535,25 +613,22 @@ void Pc_Pick_CharaPreDraw(struct _SubCharacter* charaPtr, int slot, void* boneCo
         *scale = Q12(1.0f);
     }
 
-    if (kind == PcPick_Npc && Pc_Pick_IsFrozen(slot))
+    /* Published for the skeleton draw rather than multiplied into bone 0.
+     *
+     * Bone 0 only reaches bones the ANM parented. Anim_BoneInit parents
+     * indices 1..boneCount-1, but the SKELETON is built from the LM, which can
+     * carry more models than the ANM has bones (BoneHierarchy_MultiModel).
+     * Those extra parts keep super == NULL, so they are not under bone 0 and a
+     * bone-0 scale never reached them: the Incubator scaled from the waist down
+     * and bosses whose body is mostly such parts did not appear to scale.
+     *
+     * Scaling at the draw also means nothing is left in the bone coords, so
+     * there is no compounding and no need to track what was baked in -- which
+     * is what the frozen-NPC ratio dance here existed for. A frozen NPC is not
+     * re-posed, but it is still drawn, so it scales like anything else. */
     {
-        /* A frozen NPC is not re-posed, so its bones still carry the scale
-         * applied on its last live frame. Re-applying it would compound it;
-         * only a change made while frozen is applied, as the ratio. */
-        s32 want = (scale != NULL) ? *scale : Q12(1.0f);
-        if (boneCoords != NULL && want != s_bakedScale[slot] && s_bakedScale[slot] > 0)
-        {
-            s32 ratio = (s32)(((s64)want << 12) / s_bakedScale[slot]);
-            Chara_ModelBoneScaleSet(boneCoords, 0, ratio, ratio, ratio);
-        }
-        s_bakedScale[slot] = want;
-    }
-    else
-    {
-        if (scale != NULL && *scale != Q12(1.0f) && boneCoords != NULL)
-            Chara_ModelBoneScaleSet(boneCoords, 0, *scale, *scale, *scale);
-        if (kind == PcPick_Npc && slot >= 0 && slot < NPC_COUNT_MAX)
-            s_bakedScale[slot] = (scale != NULL) ? *scale : Q12(1.0f);
+        extern s32 g_PcCharaDrawScale;
+        g_PcCharaDrawScale = (scale != NULL) ? *scale : Q12(1.0f);
     }
 
     if (s_pendState != 1)

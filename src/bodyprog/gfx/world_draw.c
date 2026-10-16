@@ -431,13 +431,6 @@ void Ipd_CloseRangeChunksInit(void) // 0x8003C3AC
         pos1.vz = CLAMP(pos1.vz, temp_a2 + 1, temp_a2 + (Q12(2.5f) - 1));
     }
 
-#ifdef SH_PC_PORT
-    {
-        static s32 closeRangeLogCD = 0;
-        if ((closeRangeLogCD++ % 300) == 0) {
-        }
-    }
-#endif
     Ipd_ChunkInit(pos0.vx, pos0.vz, pos1.vx, pos1.vz);
 }
 
@@ -540,6 +533,34 @@ void WorldObject_ModelNameSet(s_WorldObjectModel* model, char* newStr) // 0x8003
 
     model->metadata.field_8 = 0;
 }
+
+#ifdef SH_PC_PORT
+bool Pc_CommonPickupInRange(const VECTOR3* pos)
+{
+    extern s_MapTerrain g_Map;
+    const VECTOR3*      pp = &g_SysWork.playerWork.player.position;
+    q19_12              dy = pos->vy - pp->vy;
+    s32                 dx;
+    s32                 dz;
+
+    /* Interiors only: rooms are short and first person sees across a cell
+     * edge within a few steps. Outdoors keeps the original per-cell items. */
+    if (g_Map.isExterior)
+    {
+        return false;
+    }
+
+    /* The floor test keeps an item on a storey above or below from showing
+     * through a stairwell or an unloaded room. */
+    if (dy > Q12(3.0f) || dy < Q12(-3.0f))
+    {
+        return false;
+    }
+    dx = FLOOR_TO_STEP(pos->vx, CHUNK_CELL_SIZE) - FLOOR_TO_STEP(pp->vx, CHUNK_CELL_SIZE);
+    dz = FLOOR_TO_STEP(pos->vz, CHUNK_CELL_SIZE) - FLOOR_TO_STEP(pp->vz, CHUNK_CELL_SIZE);
+    return dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1;
+}
+#endif
 
 void WorldGfx_ObjectAdd(s_WorldObjectModel* model, const VECTOR3* pos, const SVECTOR3* rot) // 0x8003C92C
 {
@@ -1562,6 +1583,13 @@ void WorldGfx_CharaModelProcessLoad(s_CharaModel* model) // 0x8003D9C8
 #endif
 }
 
+#ifdef SH_PC_PORT
+/* Console SCALE for the character about to be drawn, Q12. Set by
+ * Pc_Pick_CharaPreDraw and consumed by this draw, so a draw with no preceding
+ * set -- the save/load screen Harry -- cannot inherit the last one. */
+s32 g_PcCharaDrawScale = Q12(1.0f);
+#endif
+
 void func_8003DA9C(e_CharaId charaId, GsCOORDINATE2* boneCoords, s32 arg2, q3_12 timer, s32 arg4) // 0x8003DA9C
 {
     CVECTOR tintColor = { 0 };
@@ -1695,6 +1723,10 @@ void func_8003DA9C(e_CharaId charaId, GsCOORDINATE2* boneCoords, s32 arg2, q3_12
 #endif
     func_80045534(&g_WorldGfxWork.registeredCharaModels[charaId]->skeleton, &g_OrderingTable0[g_ActiveBufferIdx], arg2,
                   boneCoords, Q8_TO_Q12(CHARA_FILE_INFOS[charaId].field_6), ret, CHARA_FILE_INFOS[charaId].field_8);
+
+#ifdef SH_PC_PORT
+    g_PcCharaDrawScale = Q12(1.0f);
+#endif
 #ifdef SH_PC_PORT
     { extern int g_PcCharaPrimProbeActive; g_PcCharaPrimProbeActive = 0; }
     { extern int g_PcHideHarryFpsBody; g_PcHideHarryFpsBody = 0; }

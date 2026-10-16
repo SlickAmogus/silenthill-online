@@ -23,6 +23,7 @@
 
 #include <SDL.h>
 #include <PsyX/common/glad.h>
+#include <PsyX/PsyX_backend.h>
 
 #include "stb_truetype.h"
 
@@ -140,6 +141,7 @@ static stbtt_fontinfo s_font;
 static unsigned char* s_fontData;
 static int            s_fontOk;
 static int            s_fontsTried;
+static int            s_fontsScript = -1;
 
 /* Baked strings, cached by text + pixel size. Cleared on resize or when full. */
 #define BP_TEXT_MAX 192
@@ -779,7 +781,8 @@ static GLuint bp_make_shader(GLenum type, const char* src)
 {
     GLuint sh = glCreateShader(type);
     GLint  ok = 0;
-    glShaderSource(sh, 1, &src, NULL);
+    const char* parts[2] = { PsyX_Shader_Preamble(type == GL_FRAGMENT_SHADER, PSYX_GLSL_LEGACY), src };
+    glShaderSource(sh, 2, parts, NULL);
     glCompileShader(sh);
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
     if (!ok)
@@ -930,18 +933,14 @@ static unsigned char* bp_read_file(const char* path)
 
 static void bp_fonts_init(void)
 {
-    static const char* paths[] = {
-        "gamedata/font/Oswald-Regular.ttf",
-        "gamedata/font/BarlowSemiCondensed-Regular.ttf",
-        "C:/Windows/Fonts/segoeui.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    };
+    static const char* paths[16];
+    int count = Pc_LangQuickFontPaths(paths, 16);
     int i;
-    if (s_fontsTried)
-        return;
-    s_fontsTried = 1;
-    for (i = 0; i < (int)(sizeof(paths) / sizeof(paths[0])); i++)
+
+    s_fontsTried  = 1;
+    s_fontsScript = Pc_LangQuickScript();
+    s_fontOk      = 0;
+    for (i = 0; i < count; i++)
     {
         unsigned char* data = bp_read_file(paths[i]);
         if (!data)
@@ -1101,7 +1100,11 @@ void Pc_BindPanel_Draw(void)
 
     if (!s_glReady) bp_gl_init();
     if (s_glReady != 1) return;
-    if (!s_fontsTried) bp_fonts_init();
+    if (!s_fontsTried || s_fontsScript != Pc_LangQuickScript())
+    {
+        bp_text_flush(); /* baked from the old face */
+        bp_fonts_init();
+    }
 
     glGetIntegerv(GL_VIEWPORT, prevVp);
     glViewport(vp[0], vp[1], vp[2], vp[3]);
@@ -1386,40 +1389,6 @@ void Pc_BindPanel_Draw(void)
         float cx, cy, cw, ch;
         if (Pc_MouseCursor_GlRect(vpW, vpH, &cx, &cy, &cw, &ch))
             bp_quad(s_texCursor, NX(cx), NY(cy), NX(cx + cw), NY(cy - ch), 1.0f, 1.0f, 1.0f, 1.0f);
-    }
-
-    /* [PANELMISS] The panel vanishes from single presented frames. Hand the
-     * renderer's present-time readback one pixel of the red rule under the
-     * title -- opaque (0.47,0.11,0.08), so (120,28,20) whatever is behind the
-     * panel, and no scene pixel is near it -- plus the GL state this draw ran
-     * under, so a frame that comes out without the panel says whether the draw
-     * was rejected or the image was lost later. Only while fully shown: the
-     * fades change the colour. */
-    if (dim >= 1.0f)
-    {
-        extern int g_PsxPanelProbe[6], g_PsxPanelState[16];
-        GLint     iv = 0, box[4] = { 0, 0, 0, 0 }, cvp[4] = { 0, 0, 0, 0 };
-
-        g_PsxPanelProbe[0] = 1;
-        g_PsxPanelProbe[1] = vp[0] + (int)(panelL + 8.0f);
-        g_PsxPanelProbe[2] = vp[1] + (int)(panelT - titleH - 1.0f);
-        g_PsxPanelProbe[3] = 120; g_PsxPanelProbe[4] = 28; g_PsxPanelProbe[5] = 20;
-
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &iv); g_PsxPanelState[0] = iv;
-        g_PsxPanelState[1] = glIsEnabled(GL_SCISSOR_TEST) ? 1 : 0;
-        glGetIntegerv(GL_SCISSOR_BOX, box);
-        g_PsxPanelState[2] = box[0]; g_PsxPanelState[3] = box[1];
-        g_PsxPanelState[4] = box[2]; g_PsxPanelState[5] = box[3];
-        g_PsxPanelState[6] = glIsEnabled(GL_STENCIL_TEST) ? 1 : 0;
-        glGetIntegerv(GL_STENCIL_FUNC, &iv);       g_PsxPanelState[7] = iv;
-        glGetIntegerv(GL_STENCIL_REF, &iv);        g_PsxPanelState[8] = iv;
-        glGetIntegerv(GL_STENCIL_VALUE_MASK, &iv); g_PsxPanelState[9] = iv;
-        glGetIntegerv(GL_VIEWPORT, cvp);
-        g_PsxPanelState[10] = cvp[2]; g_PsxPanelState[11] = cvp[3];
-        g_PsxPanelState[12] = glIsProgram(s_prog) ? 1 : 0;
-        g_PsxPanelState[13] = glIsTexture(s_texWhite) ? (int)s_texWhite : -(int)s_texWhite;
-        g_PsxPanelState[14] = (int)glGetError();
-        g_PsxPanelState[15] = (int)s_phase;
     }
 
 #undef TEXT_AT

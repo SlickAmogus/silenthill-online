@@ -155,6 +155,9 @@ typedef struct {
     float              fstep;
 } s_PcOpt;
 
+/* Defined with the other quick-row helpers below, used by the adjust above. */
+static void PcOpt_FilterApply(int combined);
+
 static const int VAL_WIN[]   = { 0, 1, 2 };
 static const int VAL_VSYNC[] = { 0, 1 };
 static const int VAL_FILT[]  = { 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -197,7 +200,7 @@ static const s_PcOpt PCOPT_G[] = {
     { "Resolution",     NULL,                           NULL,                   NULL,      0, NULL,      NULL,                          0, PCK_RES    },
     { "Window_Mode",    &g_PcConfig.fullscreen,         "fullscreen",           VAL_WIN,   3, LBL_WIN,   NULL,                          1, PCK_WINMODE },
     { "VSync",          &g_PcConfig.vsync,              "vsync",                VAL_VSYNC, 2, LBL_VSYNC, NULL,                          1, PCK_VSYNC   },
-    { "Texture_Filter", &g_PcConfig.psxDither,          "psx_dither",           VAL_FILT,  8, LBL_FILT,  NULL,                          1, PCK_FILTER },
+    { "Texture_Filter", &g_PcConfig.psxDither,          "texture_filter",       VAL_FILT,  8, LBL_FILT,  NULL,                          1, PCK_FILTER },
     { "PGXP",           &g_PcConfig.usePgxp,            "use_pgxp",             VAL_ONOFF, 2, LBL_ONOFF, &g_PsxUsePgxp,                 1, PCK_INT    },
     { "Antialiasing",   &g_PcConfig.msaaSamples,        "msaa",                 VAL_AA,    4, LBL_AA,    NULL,                          0, PCK_INT    },
     { "Post_Process",   &g_PcConfig.postProcess,        "post_process",         VAL_POST,  9, LBL_POST,  &g_cfg_postProcess,            1, PCK_INT    },
@@ -475,27 +478,12 @@ static void PcOpt_Adjust(const s_PcOpt* e, int dir)
         int idx = (PcOpt_ValIndex(e) + dir + e->nVals) % e->nVals;
         *e->field = e->vals[idx];
         snprintf(buf, sizeof(buf), "%d", *e->field);
-        if (e->key) PcConfig_SaveKeyValue(e->key, buf);
+        /* PCK_FILTER writes two keys of its own, on a different scale from the
+         * combined value this row cycles. */
+        if (e->key && e->kind != PCK_FILTER) PcConfig_SaveKeyValue(e->key, buf);
 
         if (e->kind == PCK_FILTER) {
-            switch (*e->field) {
-            /* 0 off, 1 dither, 2 bilinear, 3 trilinear, 4 anisotropic.
-             * g_cfg_textureFilter is the mode the renderer acts on;
-             * g_cfg_bilinearFiltering is kept as the derived "any filtering"
-             * flag its remaining callers expect. */
-            case 1:  g_cfg_psxDither = 1; g_cfg_textureFilter = 0; break;
-            case 2:  g_cfg_psxDither = 0; g_cfg_textureFilter = 1; break;
-            case 3:  g_cfg_psxDither = 0; g_cfg_textureFilter = 2; break;
-            /* 4..7 are anisotropic at 2x/4x/8x/16x. One value carries both the
-             * mode and the strength so the row, the launcher and config.cfg
-             * cannot disagree about what is selected. */
-            case 4:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 2;  break;
-            case 5:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 4;  break;
-            case 6:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 8;  break;
-            case 7:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 16; break;
-            default: g_cfg_psxDither = 0; g_cfg_textureFilter = 0; break;
-            }
-            g_cfg_bilinearFiltering = (g_cfg_textureFilter > 0);
+            PcOpt_FilterApply(*e->field);
         } else if (e->kind == PCK_WINMODE) {
             PsyX_ApplyWindowState(g_PcConfig.windowWidth, g_PcConfig.windowHeight, g_PcConfig.fullscreen);
         } else if (e->kind == PCK_VSYNC) {
@@ -558,9 +546,11 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_TPSFOV, QO_X_FPSFOV,
        QO_X_FPSHEADX, QO_X_FPSHEADY, QO_X_FPSHEADZ, QO_X_FPSSWING,
        QO_X_OTSFOV, QO_X_TPSAIMZOOM, QO_X_OTSAIMZOOM, QO_X_TPSOTSAIM,
+       QO_X_TPSRESTZOOM, QO_X_OTSRESTZOOM,
        QO_X_TPSRESTX, QO_X_TPSRESTY, QO_X_TPSAIMX, QO_X_TPSAIMY,
        QO_X_OTSRESTX, QO_X_OTSRESTY, QO_X_OTSAIMX, QO_X_OTSAIMY,
-       QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE };
+       QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE, QO_X_CROSSHAIRSTYLE,
+       QO_X_LINEGAP };
 
 /* display_aspect = crt puts the picture on (4:3 x trim), so one framebuffer
  * pixel lands on screen this many times wider than tall at trim 1.0. It is the
@@ -569,9 +559,70 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
 
 extern void Pc_QuickOptions_InvalidateRows(void);
 
+/* Texture_Filter is one 8-way row -- off, dither, bilinear, trilinear, aniso
+ * 2x/4x/8x/16x -- over what config.cfg stores as the two INDEPENDENT keys
+ * `dithering` and `texture_filter`. It used to persist its combined value under
+ * psx_dither, the single key those two replaced, which the loader discards
+ * whenever either new key is present: i.e. always, since the shipped config.cfg
+ * carries both. So the row applied live and then lost the change on the next
+ * launch, and it disagreed with the launcher, which writes the pair. psxDither
+ * is composed back from the pair at load (pc_config.c) so the row still opens
+ * on whatever is actually in effect.
+ *
+ * Both callers route through here: the adjust and the reset-to-default. */
+static void PcOpt_FilterApply(int combined)
+{
+    char buf[16];
+    int  dither = (combined == 1) ? 1 : 0;
+    int  filter;
+
+    switch (combined) {
+        case 2:  filter = 1; break;   /* bilinear  */
+        case 3:  filter = 2; break;   /* trilinear */
+        case 4:  filter = 3; break;   /* aniso 2x  */
+        case 5:  filter = 4; break;   /* aniso 4x  */
+        case 6:  filter = 5; break;   /* aniso 8x  */
+        case 7:  filter = 6; break;   /* aniso 16x */
+        default: filter = 0; break;   /* off, or dither-only */
+    }
+
+    g_PcConfig.dithering     = dither;
+    g_PcConfig.textureFilter = filter;
+
+    /* The renderer takes the mode and the tap count separately: modes 3..6 are
+     * all g_cfg_textureFilter 3 with 2/4/8/16 taps. Same split main_pc.c makes
+     * at boot. */
+    g_cfg_psxDither     = dither;
+    g_cfg_textureFilter = (filter >= 3) ? 3 : filter;
+    if (filter >= 3)
+        g_cfg_anisoLevel = 2 << (filter - 3);
+    g_cfg_bilinearFiltering = (g_cfg_textureFilter > 0);
+
+    snprintf(buf, sizeof(buf), "%d", dither);
+    PcConfig_SaveKeyValue("dithering", buf);
+    snprintf(buf, sizeof(buf), "%d", filter);
+    PcConfig_SaveKeyValue("texture_filter", buf);
+}
+
 static const int         QO_SHADOW_SIZES[] = { 256, 512, 1024, 2048, 4096, 8192 };
 static const char* const QO_SPEAKER_LBL[]  = { "Auto", "Stereo", "Quad", "5.1", "7.1" };
+/* crosshair_style 0..3, the order pc_crosshair.c builds (CH_CROSS..CH_DASHES)
+ * and the Backspace cycle in control_style.c reports. */
+static const char* const QO_CROSSHAIR_LBL[] = { "Cross (+)", "Dot", "Circle", "Dashes" };
 static const char* const QO_SPEAKER_IDS[]  = { "auto", "stereo", "quad", "51", "71" };
+/* Dialog Pause presets, the launcher's former dropdown: cutscene_line_gap_ms. */
+static const char* const QO_LINEGAP_LBL[] = { "Off", "Short", "Normal", "Long" };
+static const int         QO_LINEGAP_MS[]  = { 0, 150, 300, 600 };
+
+static int PcOpt_LineGapIndex(void)
+{
+    int ms = g_PcConfig.cutsceneLineGapMs;
+
+    if (ms <= 0)   return 0;
+    if (ms <= 220) return 1;
+    if (ms <= 450) return 2;
+    return 3;
+}
 
 const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz)
 {
@@ -588,6 +639,22 @@ const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz)
         return Pc_LangQuickMenu(g_PcConfig.dreamBlur ? "On" : "Off");
     case QO_X_DPADMOVE:
         return Pc_LangQuickMenu(g_PcConfig.disableDpadMovement ? "On" : "Off");
+    case QO_X_LINEGAP: {
+        int i = PcOpt_LineGapIndex();
+        return (i == 0) ? Pc_LangQuickMenu("Off") : Pc_LangQuick(QO_LINEGAP_LBL[i]);
+    }
+    /* Marked "(off)" while the crosshair itself is off, the way Dream Blur
+     * Strength does, since the shape has nothing to draw then. */
+    case QO_X_CROSSHAIRSTYLE: {
+        int st = g_PcConfig.crosshairStyle & 3;
+
+        if (!g_PcConfig.crosshair) {
+            snprintf(buf, bufsz, "%s  %s", Pc_LangQuick(QO_CROSSHAIR_LBL[st]),
+                     Pc_LangQuick("(off)"));
+            return buf;
+        }
+        return Pc_LangQuick(QO_CROSSHAIR_LBL[st]);
+    }
     case QO_X_DREAMSTR:
         if (!g_PcConfig.dreamBlur) { snprintf(buf, bufsz, "%d%%  %s", (int)(g_PcConfig.dreamBlurStrength * 100.0f + 0.5f), Pc_LangQuick("(off)")); return buf; }
         snprintf(buf, bufsz, "%d%%", (int)(g_PcConfig.dreamBlurStrength * 100.0f + 0.5f));
@@ -659,6 +726,12 @@ const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz)
         return buf;
     case QO_X_OTSAIMZOOM:
         snprintf(buf, bufsz, "%+d%%", (int)(g_PcConfig.otsAimZoom + (g_PcConfig.otsAimZoom < 0.0f ? -0.5f : 0.5f)));
+        return buf;
+    case QO_X_TPSRESTZOOM:
+        snprintf(buf, bufsz, "%+d%%", (int)(g_PcConfig.tpsRestZoom + (g_PcConfig.tpsRestZoom < 0.0f ? -0.5f : 0.5f)));
+        return buf;
+    case QO_X_OTSRESTZOOM:
+        snprintf(buf, bufsz, "%+d%%", (int)(g_PcConfig.otsRestZoom + (g_PcConfig.otsRestZoom < 0.0f ? -0.5f : 0.5f)));
         return buf;
     case QO_X_TPSOTSAIM:
         return Pc_LangQuickMenu(g_PcConfig.tpsOtsAim ? "On" : "Off");
@@ -762,11 +835,13 @@ void PcOpt_QuickViewReset(int mode)
     {
         g_PcConfig.tpsFov     = d->tpsFov;
         g_PcConfig.tpsAimZoom = d->tpsAimZoom;
+        g_PcConfig.tpsRestZoom = d->tpsRestZoom;
         g_PcConfig.tpsOtsAim  = d->tpsOtsAim;
         g_PcConfig.tpsRestX   = d->tpsRestX; g_PcConfig.tpsRestY = d->tpsRestY;
         g_PcConfig.tpsAimX    = d->tpsAimX;  g_PcConfig.tpsAimY  = d->tpsAimY;
         snprintf(buf, sizeof(buf), "%.1f", g_PcConfig.tpsFov);     PcConfig_SaveKeyValue("tps_fov", buf);
         snprintf(buf, sizeof(buf), "%.1f", g_PcConfig.tpsAimZoom); PcConfig_SaveKeyValue("tps_aim_zoom_amount", buf);
+        snprintf(buf, sizeof(buf), "%.1f", g_PcConfig.tpsRestZoom); PcConfig_SaveKeyValue("tps_rest_zoom_amount", buf);
         PcConfig_SaveKeyValue("tps_ots_aim", g_PcConfig.tpsOtsAim ? "1" : "0");
         snprintf(buf, sizeof(buf), "%d", g_PcConfig.tpsRestX); PcConfig_SaveKeyValue("tps_rest_x", buf);
         snprintf(buf, sizeof(buf), "%d", g_PcConfig.tpsRestY); PcConfig_SaveKeyValue("tps_rest_y", buf);
@@ -777,10 +852,12 @@ void PcOpt_QuickViewReset(int mode)
     {
         g_PcConfig.otsFov     = d->otsFov;
         g_PcConfig.otsAimZoom = d->otsAimZoom;
+        g_PcConfig.otsRestZoom = d->otsRestZoom;
         g_PcConfig.otsRestX   = d->otsRestX; g_PcConfig.otsRestY = d->otsRestY;
         g_PcConfig.otsAimX    = d->otsAimX;  g_PcConfig.otsAimY  = d->otsAimY;
         snprintf(buf, sizeof(buf), "%.1f", g_PcConfig.otsFov);     PcConfig_SaveKeyValue("ots_fov", buf);
         snprintf(buf, sizeof(buf), "%.1f", g_PcConfig.otsAimZoom); PcConfig_SaveKeyValue("ots_aim_zoom_amount", buf);
+        snprintf(buf, sizeof(buf), "%.1f", g_PcConfig.otsRestZoom); PcConfig_SaveKeyValue("ots_rest_zoom_amount", buf);
         snprintf(buf, sizeof(buf), "%d", g_PcConfig.otsRestX); PcConfig_SaveKeyValue("ots_rest_x", buf);
         snprintf(buf, sizeof(buf), "%d", g_PcConfig.otsRestY); PcConfig_SaveKeyValue("ots_rest_y", buf);
         snprintf(buf, sizeof(buf), "%d", g_PcConfig.otsAimX);  PcConfig_SaveKeyValue("ots_aim_x", buf);
@@ -939,6 +1016,14 @@ void PcOpt_QuickExtraAdjust(int which, int dir)
         Sd_PlaySfx(Sfx_MenuMove, 0, 64);
         break;
     }
+    case QO_X_LINEGAP: {
+        int i = (PcOpt_LineGapIndex() + dir + 4) % 4;
+        g_PcConfig.cutsceneLineGapMs = QO_LINEGAP_MS[i];
+        snprintf(buf, sizeof(buf), "%d", QO_LINEGAP_MS[i]);
+        PcConfig_SaveKeyValue("cutscene_line_gap_ms", buf);
+        Sd_PlaySfx(Sfx_MenuMove, 0, 64);
+        break;
+    }
     case QO_X_BGM:
     case QO_X_SFX: {
         /* 16 notches of 8 over 0..128, exactly the main Options sliders. */
@@ -988,6 +1073,12 @@ void PcOpt_QuickExtraAdjust(int which, int dir)
     case QO_X_OTSAIMZOOM:
         PcOpt_ViewStep(&g_PcConfig.otsAimZoom, NULL, "ots_aim_zoom_amount", -200.0f, 200.0f, 5.0f, dir, 2);
         break;
+    case QO_X_TPSRESTZOOM:
+        PcOpt_ViewStep(&g_PcConfig.tpsRestZoom, NULL, "tps_rest_zoom_amount", -200.0f, 200.0f, 5.0f, dir, 2);
+        break;
+    case QO_X_OTSRESTZOOM:
+        PcOpt_ViewStep(&g_PcConfig.otsRestZoom, NULL, "ots_rest_zoom_amount", -200.0f, 200.0f, 5.0f, dir, 2);
+        break;
     case QO_X_TPSOTSAIM:
         g_PcConfig.tpsOtsAim = !g_PcConfig.tpsOtsAim;
         PcConfig_SaveKeyValue("tps_ots_aim", g_PcConfig.tpsOtsAim ? "1" : "0");
@@ -1005,6 +1096,18 @@ void PcOpt_QuickExtraAdjust(int which, int dir)
         PcConfig_SaveKeyValue("disable_dpad_movement", g_PcConfig.disableDpadMovement ? "1" : "0");
         Sd_PlaySfx(Sfx_MenuMove, 0, 64);
         break;
+    /* Wraps both ways through the four shapes. Pc_CrosshairBuild reads the
+     * value when it draws, so it applies live; the row does NOT switch the
+     * crosshair on, because picking a shape is not asking for one. */
+    case QO_X_CROSSHAIRSTYLE: {
+        char buf2[8];
+
+        g_PcConfig.crosshairStyle = ((g_PcConfig.crosshairStyle & 3) + dir + 4) % 4;
+        snprintf(buf2, sizeof(buf2), "%d", g_PcConfig.crosshairStyle);
+        PcConfig_SaveKeyValue("crosshair_style", buf2);
+        Sd_PlaySfx(Sfx_MenuMove, 0, 64);
+        break;
+    }
     /* Position offsets: config-only (live = NULL), 128 = ~0.03 units per press.
      * Y presses are inverted so a "+" press raises the camera (stored PSX-down). */
     case QO_X_TPSRESTX: PcOpt_FpsHeadStep(&g_PcConfig.tpsRestX, NULL, "tps_rest_x",  dir * 128); break;
@@ -1050,20 +1153,10 @@ static void PcOpt_ResetEntry(const s_PcOpt* e)
         int dv = *(const int*)((const char*)d + ((const char*)e->field - (const char*)&g_PcConfig));
         *e->field = dv;
         snprintf(buf, sizeof(buf), "%d", dv);
-        PcConfig_SaveKeyValue(e->key, buf);
+        if (e->key && e->kind != PCK_FILTER) PcConfig_SaveKeyValue(e->key, buf);
 
         if (e->kind == PCK_FILTER) {
-            switch (dv) {
-            case 1:  g_cfg_psxDither = 1; g_cfg_textureFilter = 0; break;
-            case 2:  g_cfg_psxDither = 0; g_cfg_textureFilter = 1; break;
-            case 3:  g_cfg_psxDither = 0; g_cfg_textureFilter = 2; break;
-            case 4:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 2;  break;
-            case 5:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 4;  break;
-            case 6:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 8;  break;
-            case 7:  g_cfg_psxDither = 0; g_cfg_textureFilter = 3; g_cfg_anisoLevel = 16; break;
-            default: g_cfg_psxDither = 0; g_cfg_textureFilter = 0; break;
-            }
-            g_cfg_bilinearFiltering = (g_cfg_textureFilter > 0);
+            PcOpt_FilterApply(dv);
         } else if (e->kind == PCK_VSYNC) {
             PsyX_ApplyVsync(g_PcConfig.vsync);
         } else if (e->kind == PCK_FLMODE) {
@@ -2125,8 +2218,14 @@ void Options_MainOptionsMenu_Control(void) // 0x801E3770
                 }
                 else if (Pc_MouseCursor_LeftClicked())
                 {
-                    /* Vibration / Auto Load (Language) / Sound toggles. */
-                    PcMouse_InjectDir(1);
+                    /* Vibration / Auto Load (Language) / Sound: the side of the
+                     * value that was clicked is the direction, as the arrows
+                     * show. Every click used to step forward, so clicking the
+                     * back arrow on the Language row skipped ahead -- the
+                     * order looked random. 228 is midway between the row's
+                     * arrows (FRONT_ARROWS inner tips 48/88, +160 centre), and
+                     * the Language row centres its name there too. */
+                    PcMouse_InjectDir((mx < 228) ? -1 : 1);
                 }
                 else if (wheel != 0)
                 {
@@ -3162,7 +3261,7 @@ void Options_MainOptionsMenu_ConfigDraw(void) // 0x801E4FFC
          * arrow tables were sized for — pull its arrows outward so they
          * flank every language name instead of overlapping it. */
         s32 langDx = (g_MainOptionsMenu_SelectedEntry == MainOptionsMenuEntry_AutoLoad &&
-                      Pc_LangMenuRowActive()) ? 26 : 0;
+                      Pc_LangMenuRowActive()) ? Pc_LangSlotArrowSpread(Pc_LangSlotCurrent()) : 0;
 
         /* Volume-bar rows moved right by OPT_VOLUME_BAR_DX; their flanking
          * arrows follow so they still bracket the bar (both shift the same
@@ -3236,7 +3335,9 @@ void Options_MainOptionsMenu_ConfigDraw(void) // 0x801E4FFC
                     int slot = Pc_LangSlotCurrent();
 
                     Gfx_StringSetPosition(Pc_LangSlotNameX(slot), 136);
-                    Gfx_StringDraw(Pc_LangSlotName(slot), 10);
+                    /* A pack names itself; retail's 10 is for retail's names. */
+                    Gfx_StringDraw(Pc_LangSlotName(slot),
+                                   Pc_LangMenuGlyphCount(Pc_LangSlotName(slot)));
                     break;
                 }
 #endif
@@ -3596,7 +3697,24 @@ void Options_ScreenPosMenu_ConfigDraw(void) // 0x801E5CBC
  * Brightness / Contrast / Saturation, each driving a g_PcConfig float and the
  * matching live renderer global, saved to config on change. A procedural
  * reference bar (g_cfg_calibBar, drawn in the post shader) sits behind it. */
-static s32 g_PcBrtRow = 0; /* 0 = Brightness, 1 = Contrast, 2 = Saturation */
+/* 0 = Brightness, 1 = Contrast, 2 = Saturation, 3 = Classic level.
+ *
+ * Rows 0-2 are the PC output stage: they grade the WHOLE frame, UI, FMV and
+ * daytime exteriors included. Row 3 is the original console control
+ * (g_GameWork.config.config brightness, 0-7), which is a different thing
+ * entirely -- an additive grey quad drawn in the WORLD pass and scaled per map
+ * effect by brightnessIntensity_2E, so it lifts black level only where a map
+ * asks for it and never touches the UI or an FMV. That is what the original
+ * game's Brightness screen adjusted, and the reason "contrast 130" is not a
+ * substitute for it (issue #150). It stayed in the build and kept being applied
+ * at its default of 3, but the PC screen replaced the control, so there was no
+ * way to reach it. */
+static s32 g_PcBrtRow = 0;
+
+#define PC_BRT_ROWS 4
+/* Top row's y in percent, 8 per row after it. 52 put CLASSIC under the
+ * reference bar on a 224-line frame (bottom ~15% of the picture). */
+#define PC_BRT_ROW_Y0 40.0f
 
 static void Pc_BrightnessRowAdjust(s32 row, int dir)
 {
@@ -3607,6 +3725,22 @@ static void Pc_BrightnessRowAdjust(s32 row, int dir)
         { &g_PcConfig.saturation, &g_cfg_saturation, 0.0f,  2.0f, 0.05f, "saturation" },
     };
     float v;
+
+    if (row == 3)
+    {
+        /* The original console control. Lives in the game's own options block,
+         * so it persists with the rest of them and needs no config key. */
+        s32 lvl = (s32)g_GameWork.config.brightness + dir;
+
+        if (lvl < 0) lvl = 0;
+        if (lvl > 7) lvl = 7;
+        if (lvl == (s32)g_GameWork.config.brightness)
+            return;
+
+        g_GameWork.config.brightness = (u8)lvl;
+        Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
+        return;
+    }
 
     if (row < 0 || row > 2 || dir == 0)
         return;
@@ -3656,12 +3790,12 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
 
                 if (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickUp)
                 {
-                    g_PcBrtRow = (g_PcBrtRow + 2) % 3;
+                    g_PcBrtRow = (g_PcBrtRow + PC_BRT_ROWS - 1) % PC_BRT_ROWS;
                     Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
                 }
                 if (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickDown)
                 {
-                    g_PcBrtRow = (g_PcBrtRow + 1) % 3;
+                    g_PcBrtRow = (g_PcBrtRow + 1) % PC_BRT_ROWS;
                     Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
                 }
                 if (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickLeft)
@@ -3767,16 +3901,21 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
 void Options_BrightnessMenu_ConfigDraw(void) // 0x801E6238
 {
 #ifdef SH_PC_PORT
-    /* Three rows: Brightness / Contrast / Saturation, values shown as a
-     * percentage (100 = neutral). The selected row is gold, the highlight
-     * bracket marks it. Values read from the live renderer globals so the text
-     * always matches what is applied. */
+    /* Four rows. Brightness / Contrast / Saturation are the PC output stage,
+     * shown as a percentage (100 = neutral) and read from the live renderer
+     * globals so the text always matches what is applied. CLASSIC is the
+     * original console control on its own 0-7 scale -- see g_PcBrtRow. The
+     * selected row is gold. */
     extern float g_cfg_brightness, g_cfg_contrast, g_cfg_saturation;
     /* Trailing '_' pad the labels to equal RENDERED width so the value column
      * lines up (the font is proportional, so "CONTRAST" + 3 spaces was 9px
      * narrower than "BRIGHTNESS" + 1, pushing its number left). 5 underscores
-     * = 118px, matching BRIGHTNESS 117 / SATURATION 120. */
-    const char* const NAMES[3] = { "BRIGHTNESS_", "CONTRAST_____", "SATURATION_" };
+     * = 118px, matching BRIGHTNESS 117 / SATURATION 120. CLASSIC + 7 = 119.
+     * (Those three figures assume a 5px space; FONT_12X16_SPACE_SIZE is
+     * actually 6, so the real widths are 118 / 123 / 121 and the column was
+     * never pixel-exact to begin with. 7 underscores is the closest fit.) */
+    const char* const NAMES[PC_BRT_ROWS] = { "BRIGHTNESS_", "CONTRAST_____", "SATURATION_",
+                                             "CLASSIC_______" };
     const float*      vals[3];
     s32 i;
 
@@ -3784,13 +3923,25 @@ void Options_BrightnessMenu_ConfigDraw(void) // 0x801E6238
     vals[1] = &g_cfg_contrast;
     vals[2] = &g_cfg_saturation;
 
-    for (i = 0; i < 3; i++)
+    for (i = 0; i < PC_BRT_ROWS; i++)
     {
+        if (i == 3)
+        {
+            /* 0-7, not a percentage: this is the console control's own scale,
+             * and the reference lines behind the panel already move with it the
+             * way they did in the original screen. */
+            Gfx_StringSetColor(i == g_PcBrtRow ? StringColorId_Gold : StringColorId_White);
+            Gfx_StringSetPosition(SCREEN_POSITION_X(22.0f), SCREEN_POSITION_Y(PC_BRT_ROW_Y0 + (float)i * 8.0f));
+            Gfx_StringDraw(NAMES[i], 20);
+            Gfx_StringDrawInt(3, (s32)g_GameWork.config.brightness);
+            continue;
+        }
+
         /* Kept above the bottom reference bar (bar occupies ~the bottom 15%).
          * Selection shown by gold vs white — no bracket glyph (the menu font
          * renders '[' as a curly quote). */
         Gfx_StringSetColor(i == g_PcBrtRow ? StringColorId_Gold : StringColorId_White);
-        Gfx_StringSetPosition(SCREEN_POSITION_X(22.0f), SCREEN_POSITION_Y(52.0f + (float)i * 8.0f));
+        Gfx_StringSetPosition(SCREEN_POSITION_X(22.0f), SCREEN_POSITION_Y(PC_BRT_ROW_Y0 + (float)i * 8.0f));
         Gfx_StringDraw(NAMES[i], 20);
         Gfx_StringDrawInt(3, (s32)((*vals[i] * 100.0f) + 0.5f));
     }
@@ -3809,11 +3960,11 @@ void Options_BrightnessMenu_ArrowsDraw(void) // 0x801E628C
 #ifdef SH_PC_PORT
     /* The knobs must flank the SELECTED row's value, not sit at a fixed y=84
      * (which now lands on the reference bar as "ears"). ConfigDraw draws each
-     * row at SCREEN_POSITION_Y(52 + 8*row) in screen space; the arrow prims draw
+     * row at SCREEN_POSITION_Y(PC_BRT_ROW_Y0 + 8*row) in screen space; the arrow prims draw
      * in centre-origin space, so subtract the 112 draw-offset (+5 to centre the
      * knob on the text line, matching the original's 84 vs its 79.5% value row).
      * X (8/64) already brackets the value column. */
-    s32 yc  = (s32)(SCREEN_HEIGHT * ((52.0f + (float)g_PcBrtRow * 8.0f) / 100.0f)) - 107;
+    s32 yc  = (s32)(SCREEN_HEIGHT * ((PC_BRT_ROW_Y0 + (float)g_PcBrtRow * 8.0f) / 100.0f)) - 107;
     /* Shift both knobs right so the left one clears the label and they bracket
      * the value number (labels are longer than the retail "LEVEL"). With the
      * value column now aligned across rows, 10 sits the knobs a touch tighter

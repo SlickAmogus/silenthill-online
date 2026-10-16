@@ -31,10 +31,11 @@ extern int g_windowHeight;
 extern void vcGetNowCamPos(VECTOR3* cam_pos);
 extern void Collision_SurfaceGet(s_CollisionSurface* coll, q19_12 posX, q19_12 posZ);
 
-/* Keyframe inspector state (game_main.c). The K key toggles g_DebugAnimKfView and
- * , / . step g_DebugAnimKf; player_control.c poses Harry on that frame and publishes
- * the active anim header's keyframe count as g_DebugAnimKfMax. The anim info panel
- * below mirrors the collision panel, shown while the inspector is on. */
+/* Keyframe inspector state (game_main.c). The console kf command toggles
+ * g_DebugAnimKfView and , / . step g_DebugAnimKf; player_control.c poses Harry
+ * on that frame and publishes the active anim header's keyframe count as
+ * g_DebugAnimKfMax. The anim info panel below mirrors the collision panel,
+ * shown while the inspector is on. */
 extern int g_DebugAnimKfView;
 extern int g_DebugAnimKf;
 extern int g_DebugAnimKfMax;
@@ -121,6 +122,7 @@ int g_PcConsoleSwallowInput = 0;
 #define INPUT_BUF_CAP    (LINE_LEN - 4) /* room for "> " + "_" */
 static char          s_input_buf[INPUT_BUF_CAP];
 static int           s_input_len = 0;
+static int           s_input_cur = 0; /* caret, 0..s_input_len */
 
 /* Console command history: Up/Down recall recently entered commands. */
 #define CONSOLE_HIST_MAX 8
@@ -134,6 +136,7 @@ static void Console_LoadHist(int nav) {
     strncpy(s_input_buf, s_hist[idx], INPUT_BUF_CAP - 1);
     s_input_buf[INPUT_BUF_CAP - 1] = '\0';
     s_input_len = (int)strlen(s_input_buf);
+    s_input_cur = s_input_len;
 }
 static unsigned char s_prev_keys[128]; /* must cover arrow keys (scancodes 79-82) */
 
@@ -179,7 +182,7 @@ static GLuint s_coll_tex   = 0;
  * collision evaluates while the visualizer is on. Set by the ' toggle. */
 int g_CollVisEnabled = 0;
 
-/* ---- Animation inspector panel (shown while the K keyframe inspector is on) ----
+/* ---- Animation inspector panel (shown while the keyframe inspector is on) ----
  * Mirrors the collision panel: a live text panel surfacing the player's current
  * anim state (the forced keyframe + its max, the active anim index/flags, control
  * state) so the keyframe being scrubbed is readable next to Harry's pose. */
@@ -542,6 +545,37 @@ static void Console_CopySelection(void)
     SDL_SetClipboardText(out);
 }
 
+static void Console_InsertChar(char c)
+{
+    if (s_input_len >= INPUT_BUF_CAP - 1)
+        return;
+    memmove(&s_input_buf[s_input_cur + 1], &s_input_buf[s_input_cur], (size_t)(s_input_len - s_input_cur + 1));
+    s_input_buf[s_input_cur++] = c;
+    s_input_len++;
+    s_console_dirty = 1;
+}
+
+/* Press edge, then after a short delay a steady 25/sec while held -- the
+ * text-editor feel Backspace already had, shared by the caret keys. */
+static int Console_KeyRepeat(const Uint8* ks, const Uint8* prev, int sc, Uint32* press, Uint32* last)
+{
+    Uint32 now;
+
+    if (!ks[sc])
+        return 0;
+    now = SDL_GetTicks();
+    if (!prev[sc]) {
+        *press = now;
+        *last  = now;
+        return 1;
+    }
+    if (now - *press >= 350 && now - *last >= 40) {
+        *last = now;
+        return 1;
+    }
+    return 0;
+}
+
 static void Console_Paste(void)
 {
     char*       clip = SDL_GetClipboardText();
@@ -557,9 +591,8 @@ static void Console_Paste(void)
             continue;
         if (c >= 'a' && c <= 'z')
             c -= 32; /* commands arrive uppercase */
-        s_input_buf[s_input_len++] = (char)c;
+        Console_InsertChar((char)c);
     }
-    s_input_buf[s_input_len] = '\0';
     s_console_dirty = 1;
     SDL_free(clip);
 }
@@ -889,8 +922,19 @@ static void overlay_update_texture(void)
 
     {
         char prompt[LINE_LEN];
-        snprintf(prompt, LINE_LEN, "> %s_", s_input_buf);
+        int caretCol = 2 + s_input_cur;
+        int x, y;
+        snprintf(prompt, LINE_LEN, "> %s", s_input_buf);
         overlay_render_row(s_vis_rows, prompt);
+        if (caretCol < CON_COLS) {
+            for (y = GLYPH_H - 2; y < GLYPH_H; y++)
+                for (x = 0; x < GLYPH_W; x++) {
+                    s_pixels[s_vis_rows * GLYPH_H + y][caretCol * GLYPH_W + x][0] = 255;
+                    s_pixels[s_vis_rows * GLYPH_H + y][caretCol * GLYPH_W + x][1] = 255;
+                    s_pixels[s_vis_rows * GLYPH_H + y][caretCol * GLYPH_W + x][2] = 255;
+                    s_pixels[s_vis_rows * GLYPH_H + y][caretCol * GLYPH_W + x][3] = 255;
+                }
+        }
     }
 
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H,
@@ -1469,6 +1513,7 @@ void DbgOverlay_Update(void)
             if (s_console_open) {
                 g_PcConsoleInputActive = 1;
                 s_input_len            = 0;
+                s_input_cur            = 0;
                 s_input_buf[0]         = '\0';
                 s_scroll               = 0;
                 s_console_apply_until  = 0;
@@ -1621,20 +1666,14 @@ void DbgOverlay_Update(void)
                     c = '0';
                 else
                     c = (char)('1' + (sc - SDL_SCANCODE_1));
-                if (s_input_len < INPUT_BUF_CAP - 1) {
-                    s_input_buf[s_input_len++] = c;
-                    s_input_buf[s_input_len]   = '\0';
-                    s_console_dirty            = 1;
-                }
+                Console_InsertChar(c);
             }
         }
         /* Space separates command from argument; `-` types `_` (map and FMV
          * names use underscores, and the console has no shift handling). */
         if (ks[SDL_SCANCODE_SPACE] && !s_prev_keys[SDL_SCANCODE_SPACE] &&
-            s_input_len > 0 && s_input_len < INPUT_BUF_CAP - 1) {
-            s_input_buf[s_input_len++] = ' ';
-            s_input_buf[s_input_len]   = '\0';
-            s_console_dirty            = 1;
+            s_input_cur > 0) {
+            Console_InsertChar(' ');
         }
         /* Punctuation. Shift gives the upper glyph; there is no full shift
          * handling, just this table.
@@ -1664,12 +1703,8 @@ void DbgOverlay_Update(void)
             };
             int i;
             for (i = 0; i < (int)(sizeof(syms) / sizeof(syms[0])); i++) {
-                if (ks[syms[i].sc] && !s_prev_keys[syms[i].sc] &&
-                    s_input_len < INPUT_BUF_CAP - 1) {
-                    s_input_buf[s_input_len++] = shift ? syms[i].hi : syms[i].lo;
-                    s_input_buf[s_input_len]   = '\0';
-                    s_console_dirty            = 1;
-                }
+                if (ks[syms[i].sc] && !s_prev_keys[syms[i].sc])
+                    Console_InsertChar(shift ? syms[i].hi : syms[i].lo);
             }
         }
         /* Backspace hold-repeats like a text editor: one delete on the press
@@ -1677,22 +1712,35 @@ void DbgOverlay_Update(void)
          * than Dbg_HoldRepeat's 100ms floor, which felt sluggish for text). */
         {
             static Uint32 s_bsPress = 0, s_bsLast = 0;
-            int del = 0;
+            static Uint32 s_delPress = 0, s_delLast = 0;
+            static Uint32 s_lPress = 0, s_lLast = 0, s_rPress = 0, s_rLast = 0;
 
-            if (ks[SDL_SCANCODE_BACKSPACE]) {
-                Uint32 now = SDL_GetTicks();
-                if (!s_prev_keys[SDL_SCANCODE_BACKSPACE]) {
-                    s_bsPress = now;
-                    s_bsLast  = now;
-                    del       = 1;
-                } else if (now - s_bsPress >= 350 && now - s_bsLast >= 40) {
-                    s_bsLast = now;
-                    del      = 1;
-                }
+            if (Console_KeyRepeat(ks, s_prev_keys, SDL_SCANCODE_BACKSPACE, &s_bsPress, &s_bsLast) && s_input_cur > 0) {
+                memmove(&s_input_buf[s_input_cur - 1], &s_input_buf[s_input_cur], (size_t)(s_input_len - s_input_cur + 1));
+                s_input_cur--;
+                s_input_len--;
+                s_console_dirty = 1;
             }
-            if (del && s_input_len > 0) {
-                s_input_buf[--s_input_len] = '\0';
-                s_console_dirty            = 1;
+            if (Console_KeyRepeat(ks, s_prev_keys, SDL_SCANCODE_DELETE, &s_delPress, &s_delLast) && s_input_cur < s_input_len) {
+                memmove(&s_input_buf[s_input_cur], &s_input_buf[s_input_cur + 1], (size_t)(s_input_len - s_input_cur));
+                s_input_len--;
+                s_console_dirty = 1;
+            }
+            if (Console_KeyRepeat(ks, s_prev_keys, SDL_SCANCODE_LEFT, &s_lPress, &s_lLast) && s_input_cur > 0) {
+                s_input_cur--;
+                s_console_dirty = 1;
+            }
+            if (Console_KeyRepeat(ks, s_prev_keys, SDL_SCANCODE_RIGHT, &s_rPress, &s_rLast) && s_input_cur < s_input_len) {
+                s_input_cur++;
+                s_console_dirty = 1;
+            }
+            if (ks[SDL_SCANCODE_HOME] && !s_prev_keys[SDL_SCANCODE_HOME]) {
+                s_input_cur = 0;
+                s_console_dirty = 1;
+            }
+            if (ks[SDL_SCANCODE_END] && !s_prev_keys[SDL_SCANCODE_END]) {
+                s_input_cur = s_input_len;
+                s_console_dirty = 1;
             }
         }
         /* Up / Down: recall recently entered commands (most-recent first). */
@@ -1711,6 +1759,7 @@ void DbgOverlay_Update(void)
                 strncpy(s_input_buf, s_hist_edit, INPUT_BUF_CAP - 1);
                 s_input_buf[INPUT_BUF_CAP - 1] = '\0';
                 s_input_len = (int)strlen(s_input_buf);
+                s_input_cur = s_input_len;
             }
             s_console_dirty = 1;
         }
@@ -1738,6 +1787,7 @@ void DbgOverlay_Update(void)
                  * at the top of the function). Lets the user run several
                  * commands without reopening. */
                 s_input_len    = 0;
+                s_input_cur    = 0;
                 s_input_buf[0] = '\0';
                 s_scroll       = 0;
                 g_PcConsoleInputActive  = 0;          /* unfreeze for the window */
@@ -1781,8 +1831,8 @@ void DbgOverlay_Update(void)
             coll_gather();
     }
 
-    /* Anim inspector panel: gather live data while the K keyframe inspector is on
-     * (the K / , / . keys themselves are handled in game_main.c's DebugCamera_Update
+    /* Anim inspector panel: gather live data while the keyframe inspector is on
+     * (the , / . keys themselves are handled in game_main.c's DebugCamera_Update
      * next to the other debug toggles). */
     if (g_DebugAnimKfView)
         anim_gather();
@@ -2135,6 +2185,17 @@ void DbgOverlay_Update(void)
 
 void DbgOverlay_Render(void)
 {
+    /* Publish whether this frame renders the 3D world, for the image-adjustment
+     * scope in GR_PostProcess (which runs immediately after this hook). The
+     * movie, menu, inventory, paper-map, save and load screens draw no world,
+     * so a brightness/contrast grade has no business touching them. */
+    {
+        extern int g_cfg_sceneFrame;
+
+        g_cfg_sceneFrame = (g_GameWork.gameState == GameState_InGame ||
+                            g_GameWork.gameState == GameState_MapEvent);
+    }
+
     GLint   vp[4];
     GLint   prev_prog, prev_tex, prev_vao, prev_vbo, prev_fb;
     GLint   prev_active_tex, prev_blend_src, prev_blend_dst;
@@ -2157,6 +2218,13 @@ void DbgOverlay_Render(void)
      * inside the shared panel state block below — and above the early-out, or
      * it would never run during normal gameplay. */
     { extern void Pc_RaToast_Draw(void); Pc_RaToast_Draw(); }
+
+    /* Free camera controls panel, same self-contained-GL arrangement. */
+    { extern void Pc_FreeCamHud_Draw(void); Pc_FreeCamHud_Draw(); }
+
+    /* FPS counter (Debug Actions > FPS Display), same GL objects as the panel;
+     * drawn before the quick menu so the menu stays on top. */
+    { extern void Pc_FpsHud_Draw(void); Pc_FpsHud_Draw(); }
 
     /* Main-menu achievement browser — same self-contained-GL arrangement as the
      * toast above, and drawn after it so an unlock popup stays on top. */
@@ -2186,7 +2254,7 @@ void DbgOverlay_Render(void)
     /* Console is hidden once fully slid off-screen (toggled by `~`); the ring
      * buffer keeps filling while hidden. The collision panel draws whenever it's
      * toggled on (`'`), independent of the console. The anim panel draws while the
-     * K keyframe inspector is on. */
+     * keyframe inspector is on. */
     drawConsole = (s_console_slide > 0.0f && (s_console_count > 0 || s_console_open));
     drawColl    = (s_coll_on && s_coll_count > 0);
     drawAnim    = (g_DebugAnimKfView && s_anim_count > 0);

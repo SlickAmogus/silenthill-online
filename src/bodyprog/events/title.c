@@ -9,6 +9,7 @@
 #include "lang_text.h" /* menu translations + width for recentred entries */
 #include "pc_coop_menu.h" /* simple co-op front end (Multiplayer row) */
 #include "pc_coop_save.h" /* co-op save load for the host "Start Game" boot */
+#include "pc_title_style.h"
 #include "main/fileinfo.h" /* g_GameRegion: PAL repositions the achievements hint */
 #endif
 
@@ -722,7 +723,15 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 
                 if (g_MainMenu_SelectedEntry == MainMenuEntry_Start)
                 {
+#ifdef SH_PC_PORT
+                    /* A New Game started straight on map2_s00 (map = config):
+                     * its point 0 is a parking spot outside the town, which the
+                     * PSX never uses because Harry always arrives through the
+                     * cafe door, point 1. */
+                    Chara_PositionSet(&g_MapOverlayHdr.mapPoints[g_SavegamePtr->mapIdx == MapIdx_MAP2_S00 ? 1 : 0]);
+#else
                     Chara_PositionSet(&g_MapOverlayHdr.mapPoints[0]);
+#endif
                 }
 
 #ifdef SH_PC_PORT
@@ -1137,7 +1146,7 @@ static void MainMenu_BackgroundDraw(void) // 0x8003B758
     }
 
 #ifdef SH_PC_PORT
-    if (g_GameRegion == Region_EUR)
+    if (Pc_TitleUsesPalLogo())
     {
         Pc_TitleLogoDrawEur();
     }

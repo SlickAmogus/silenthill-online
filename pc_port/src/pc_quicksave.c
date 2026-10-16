@@ -70,6 +70,7 @@ void Pc_QuickSaveLoadUpdate(void)
     static int          prevLoad = 0;
 
     extern int g_PcConsoleInputActive;
+    extern int Pc_ConsoleIsOpen(void);
 
     const Uint8* keys;
     int          curSave;
@@ -107,7 +108,7 @@ void Pc_QuickSaveLoadUpdate(void)
      * console input line is open. */
     if (g_GameWork.gameState == GameState_InGame &&
         g_SysWork.sysState == SysState_Gameplay &&
-        !g_PcConsoleInputActive)
+        !Pc_ConsoleIsOpen())
     {
         if (curSave && !prevSave && Pc_Save_BossActive()) {
             SH_DBG_ECHO("Can't quick save during a boss fight");
