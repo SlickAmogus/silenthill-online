@@ -19,6 +19,9 @@
 #include "sh_net_proto.h"
 #include "sh_net.h"
 #include "sh_net_session.h"
+#include "sh_net_platform.h"
+
+#define ABS_I(v) ((v) < 0 ? -(v) : (v))
 #include "sh_net_steam.h"
 #include "sh_net_coopudp.h"
 #include "sh_net_coop.h"
@@ -57,7 +60,8 @@ static int Tp_Recv(unsigned long long* from, shn_u8* buf, int cap)
 #define SESSION_PING_MS   2000
 #define SESSION_LINK_MS   8000
 #define SESSION_HELLO_MS  5000
-#define SESSION_POS_MS    100  /* co-op presence broadcast rate (~10 Hz) */
+#define SESSION_POS_MS    50   /* co-op presence broadcast rate (~20 Hz); 10 Hz stepped visibly */
+#define SESSION_INTERP_MS 110  /* render partners this far behind: two send intervals plus jitter */
 #define SESSION_WORLD_MS  1000 /* host re-tells guests to boot, until they arrive */
 
 /* Requests, and the published copy. Both under s_lock. */
@@ -78,9 +82,7 @@ static struct
      * when not in a map so no pose goes out from the menus. */
     int                poseValid;
     int                poseMap, poseChara, poseFlags;
-    int                poseX, poseY, poseZ;
-    short              poseRotY;
-    unsigned short     poseAnim, poseFrame;
+    ShSessionPose      pose;
 
     int                wantWorldMap; /* host: send S_WORLD(map) to guests; -1 none */
 
@@ -338,13 +340,11 @@ void ShSession_PublishPresence(const char* area, int mapIdx)
     SDL_UnlockMutex(s_lock);
 }
 
-void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags,
-                               int x, int y, int z, short rotY,
-                               unsigned short anim, unsigned short frame)
+void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags, const ShSessionPose* pose)
 {
     if (!s_lock) return;
     SDL_LockMutex(s_lock);
-    if (mapIdx < 0)
+    if (mapIdx < 0 || !pose)
     {
         s_req.poseValid = 0;
     }
@@ -354,14 +354,95 @@ void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags,
         s_req.poseMap   = mapIdx;
         s_req.poseChara = charaId;
         s_req.poseFlags = flags;
-        s_req.poseX     = x;
-        s_req.poseY     = y;
-        s_req.poseZ     = z;
-        s_req.poseRotY  = rotY;
-        s_req.poseAnim  = anim;
-        s_req.poseFrame = frame;
+        s_req.pose      = *pose;
     }
     SDL_UnlockMutex(s_lock);
+}
+
+static void ShSession_PoseHold(const ShSessionPose* s, ShSessionPoseNow* out)
+{
+    out->x = s->x; out->y = s->y; out->z = s->z; out->rotY = s->rotY;
+    out->lowKf0 = out->lowKf1 = s->frame;   out->lowAlpha = 0;
+    out->upKf0  = out->upKf1  = s->upFrame; out->upAlpha  = 0;
+    out->weaponAnm = s->weaponAnm; out->heldItem = s->heldItem; out->handBone = s->handBone;
+}
+
+/* Blends a keyframe pair only inside one clip and over a short step; a clip
+ * change or a loop wrap shows the nearer sample instead of sweeping through
+ * every keyframe in between. */
+static void ShSession_KfPair(unsigned short animA, unsigned short kfA,
+                             unsigned short animB, unsigned short kfB, int t,
+                             int* kf0, int* kf1, int* alpha)
+{
+    int d = (int)kfB - (int)kfA;
+    if (animA == animB && d >= -8 && d <= 8)
+    {
+        *kf0 = kfA; *kf1 = kfB; *alpha = t;
+    }
+    else
+    {
+        *kf0 = *kf1 = (t < 2048) ? kfA : kfB;
+        *alpha = 0;
+    }
+}
+
+int ShSession_MemberPoseNow(int i, ShSessionPoseNow* out)
+{
+    ShSessionPose ring[SHSESSION_POSE_RING];
+    int           n, a, b, t;
+    unsigned int  at, span;
+
+    if (!s_lock || !out) return 0;
+    SDL_LockMutex(s_lock);
+    n = (i >= 0 && i < s_pub.memberCount) ? s_pub.members[i].ringCount : 0;
+    if (n > 0) memcpy(ring, s_pub.members[i].ring, sizeof(ring[0]) * (size_t)n);
+    SDL_UnlockMutex(s_lock);
+    if (n <= 0) return 0;
+
+    at = ShNetPlat_Millis() - SESSION_INTERP_MS;
+    for (b = 0; b < n && (int)(ring[b].ms - at) <= 0; b++) {}
+    if (b == 0)
+    {
+        ShSession_PoseHold(&ring[0], out);
+        return 1;
+    }
+    if (b == n)
+    {
+        /* Out of samples (a stall or packet loss): hold the newest rather than
+         * guessing ahead, which overshoots on every stop and turn. */
+        ShSession_PoseHold(&ring[n - 1], out);
+        return 1;
+    }
+    a    = b - 1;
+    span = ring[b].ms - ring[a].ms;
+    t    = (span > 0) ? (int)(((at - ring[a].ms) << 12) / span) : 4096;
+    if (t > 4096) t = 4096;
+    if (span > 400 || ABS_I(ring[b].x - ring[a].x) > (3 << 12) || ABS_I(ring[b].z - ring[a].z) > (3 << 12))
+    {
+        /* A long gap or a jump (respawn, door) is a cut, not motion. */
+        ShSession_PoseHold((t < 2048) ? &ring[a] : &ring[b], out);
+        return 1;
+    }
+
+    out->x = ring[a].x + (int)(((long long)(ring[b].x - ring[a].x) * t) >> 12);
+    out->y = ring[a].y + (int)(((long long)(ring[b].y - ring[a].y) * t) >> 12);
+    out->z = ring[a].z + (int)(((long long)(ring[b].z - ring[a].z) * t) >> 12);
+    {
+        int d = ((int)(unsigned short)ring[b].rotY - (int)(unsigned short)ring[a].rotY) & 0xFFF;
+        if (d >= 2048) d -= 4096;
+        out->rotY = (short)(((int)ring[a].rotY + ((d * t) >> 12)) & 0xFFF);
+    }
+    ShSession_KfPair(ring[a].anim, ring[a].frame, ring[b].anim, ring[b].frame, t,
+                     &out->lowKf0, &out->lowKf1, &out->lowAlpha);
+    ShSession_KfPair(ring[a].upAnim, ring[a].upFrame, ring[b].upAnim, ring[b].upFrame, t,
+                     &out->upKf0, &out->upKf1, &out->upAlpha);
+    {
+        const ShSessionPose* near = (t < 2048) ? &ring[a] : &ring[b];
+        out->weaponAnm = near->weaponAnm;
+        out->heldItem  = near->heldItem;
+        out->handBone  = near->handBone;
+    }
+    return 1;
 }
 
 void ShSession_RequestWorld(int mapIdx)
@@ -709,6 +790,10 @@ static void ShSession_Receive(unsigned int now)
                 break;
             }
             m                      = (int)ShnGetU8(p, &o);
+            if (s_members[idx].mapIdx != ((m == 0xFF) ? -1 : m))
+            {
+                s_members[idx].ringCount = 0; /* another map's coordinates */
+            }
             s_members[idx].mapIdx  = (m == 0xFF) ? -1 : m;
             s_members[idx].charaId = (int)ShnGetU8(p, &o);
             s_members[idx].flags   = (int)ShnGetU8(p, &o);
@@ -720,6 +805,53 @@ static void ShSession_Receive(unsigned int now)
             s_members[idx].anim    = (unsigned short)ShnGetU16(p, &o);
             s_members[idx].frame   = (unsigned short)ShnGetU16(p, &o);
             s_members[idx].poseMs  = now;
+            {
+                ShSessionMember* mb = &s_members[idx];
+                ShSessionPose    smp;
+                unsigned int     sent;
+                int              d;
+                memset(&smp, 0, sizeof(smp));
+                smp.x = mb->x; smp.y = mb->y; smp.z = mb->z; smp.rotY = mb->rotY;
+                smp.anim = mb->anim; smp.frame = mb->frame;
+                if (payLen >= 34)
+                {
+                    smp.upAnim    = (unsigned short)ShnGetU16(p, &o);
+                    smp.upFrame   = (unsigned short)ShnGetU16(p, &o);
+                    smp.weaponAnm = (unsigned char)ShnGetU8(p, &o);
+                    smp.heldItem  = (unsigned char)ShnGetU8(p, &o);
+                    smp.handBone  = (unsigned char)ShnGetU8(p, &o);
+                    (void)ShnGetU8(p, &o);
+                    sent          = (unsigned int)ShnGetU32(p, &o);
+                }
+                else
+                {
+                    smp.upAnim = smp.anim; smp.upFrame = smp.frame;
+                    smp.weaponAnm = smp.heldItem = 0xFF;
+                    sent = now;
+                }
+                /* Smallest one-way delay seen = the clock offset. It creeps up
+                 * slowly so a route that got permanently slower is followed. */
+                d = (int)(now - sent);
+                if (!mb->clockOk || d < mb->clockOff)
+                {
+                    mb->clockOff = d;
+                    mb->clockOk  = 1;
+                }
+                else if ((++mb->clockCreep & 3) == 0)
+                {
+                    mb->clockOff++;
+                }
+                smp.ms = sent + (unsigned int)mb->clockOff;
+                if (mb->ringCount == 0 || (int)(smp.ms - mb->ring[mb->ringCount - 1].ms) > 0)
+                {
+                    if (mb->ringCount == SHSESSION_POSE_RING)
+                    {
+                        memmove(&mb->ring[0], &mb->ring[1], sizeof(mb->ring[0]) * (SHSESSION_POSE_RING - 1));
+                        mb->ringCount--;
+                    }
+                    mb->ring[mb->ringCount++] = smp;
+                }
+            }
             break;
         }
         case SHNET_MSG_S_WORLD:
@@ -871,10 +1003,8 @@ void ShSession_Tick(unsigned int nowMs)
     char               area[64];
     int                i;
 
-    int                poseValid, poseMap, poseChara, poseFlags;
-    int                poseX, poseY, poseZ, wantWorldMap;
-    short              poseRotY;
-    unsigned short     poseAnim, poseFrame;
+    int                poseValid, poseMap, poseChara, poseFlags, wantWorldMap;
+    ShSessionPose      pose;
 
     ShSessionItem      itemOut[SESSION_ITEM_Q];
     int                itemOutN = 0;
@@ -904,8 +1034,7 @@ void ShSession_Tick(unsigned int nowMs)
     SDL_strlcpy(area, s_req.presenceArea, sizeof(area));
     poseValid = s_req.poseValid;
     poseMap   = s_req.poseMap;  poseChara = s_req.poseChara; poseFlags = s_req.poseFlags;
-    poseX     = s_req.poseX;    poseY     = s_req.poseY;     poseZ     = s_req.poseZ;
-    poseRotY  = s_req.poseRotY; poseAnim  = s_req.poseAnim;  poseFrame = s_req.poseFrame;
+    pose      = s_req.pose;
     wantWorldMap        = s_req.wantWorldMap;
     hostGuestDebug      = s_req.hostGuestDebug; /* persistent: snapshot, do not reset */
     SDL_strlcpy(coopHost, s_req.coopHost, sizeof(coopHost));
@@ -1127,7 +1256,7 @@ void ShSession_Tick(unsigned int nowMs)
         s_lastPosMs = nowMs;
         for (i = 0; i < s_memberCount; i++)
         {
-            shn_u8 buf[SHNET_HDR_SIZE + 24];
+            shn_u8 buf[SHNET_HDR_SIZE + 40];
             int    off = SHNET_HDR_SIZE;
             if (s_members[i].steamId == Tp_SelfId())
             {
@@ -1137,12 +1266,19 @@ void ShSession_Tick(unsigned int nowMs)
             ShnPutU8(buf, &off, (shn_u8)poseChara);
             ShnPutU8(buf, &off, (shn_u8)poseFlags);
             ShnPutU8(buf, &off, 0);
-            ShnPutS32(buf, &off, poseX);
-            ShnPutS32(buf, &off, poseY);
-            ShnPutS32(buf, &off, poseZ);
-            ShnPutS16(buf, &off, poseRotY);
-            ShnPutU16(buf, &off, poseAnim);
-            ShnPutU16(buf, &off, poseFrame);
+            ShnPutS32(buf, &off, pose.x);
+            ShnPutS32(buf, &off, pose.y);
+            ShnPutS32(buf, &off, pose.z);
+            ShnPutS16(buf, &off, pose.rotY);
+            ShnPutU16(buf, &off, pose.anim);
+            ShnPutU16(buf, &off, pose.frame);
+            ShnPutU16(buf, &off, pose.upAnim);
+            ShnPutU16(buf, &off, pose.upFrame);
+            ShnPutU8(buf, &off, pose.weaponAnm);
+            ShnPutU8(buf, &off, pose.heldItem);
+            ShnPutU8(buf, &off, pose.handBone);
+            ShnPutU8(buf, &off, 0);
+            ShnPutU32(buf, &off, (shn_u32)nowMs);
             ShnPutHeader(buf, SHNET_MSG_S_POS, (shn_u16)(off - SHNET_HDR_SIZE), 0);
             Tp_Send(s_members[i].steamId, buf, off, 0);
         }

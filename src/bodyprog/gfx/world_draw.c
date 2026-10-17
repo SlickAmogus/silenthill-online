@@ -1749,10 +1749,22 @@ s32 func_8003DD74(e_CharaId charaId, s32 arg1) // 0x8003DD74
 // ITEM ATTACHMENT
 // ========================================
 
+#ifdef SH_PC_PORT
+/* Last grip set on the local Harry; co-op sends it so a partner's body holds
+ * the same hand meshes (sh_net_ghost.c). */
+s32 g_PcHarryHandBone = 0;
+#endif
+
 void WorldGfx_HeldItemAttach(e_CharaId charaId, s32 arg1) // 0x8003DD80
 {
     s_CharaModel* model;
 
+#ifdef SH_PC_PORT
+    if (charaId == Chara_Harry)
+    {
+        g_PcHarryHandBone = arg1;
+    }
+#endif
     model = g_WorldGfxWork.registeredCharaModels[charaId];
 
 #ifdef SH_PC_PORT

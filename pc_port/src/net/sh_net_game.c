@@ -316,7 +316,7 @@ void ShNet_GameTick(void)
     {
         ShNet_PublishLocal(0, s_lastMap < 0 ? 0 : s_lastMap, ShNetG_LocalChara(), 0,
                            0, 0, 0, 0, 0, 0, 0);
-        ShSession_PublishLocalPos(-1, 0, 0, 0, 0, 0, 0, 0, 0); /* no pose outside a map */
+        ShSession_PublishLocalPos(-1, 0, 0, NULL); /* no pose outside a map */
         ShSession_PublishPresence("In the menus", -1);
         ShNet_PumpToGameThread();
         return;
@@ -355,13 +355,26 @@ void ShNet_GameTick(void)
                        (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx);
 
     /* Co-op presence: the same pose, to the Steam session members. */
-    ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags,
-                       (int)g_SysWork.playerWork.player.position.vx,
-                       (int)g_SysWork.playerWork.player.position.vy,
-                       (int)g_SysWork.playerWork.player.position.vz,
-                       (short)g_SysWork.playerWork.player.rotation.vy,
-                       (unsigned short)g_SysWork.playerWork.player.model.anim.status,
-                       (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx);
+    {
+        extern s32    g_PcHarryHandBone;
+        ShSessionPose pose;
+        s32           held = WorldGfx_HeldItemIdGet();
+
+        memset(&pose, 0, sizeof(pose));
+        pose.x         = (int)g_SysWork.playerWork.player.position.vx;
+        pose.y         = (int)g_SysWork.playerWork.player.position.vy;
+        pose.z         = (int)g_SysWork.playerWork.player.position.vz;
+        pose.rotY      = (short)g_SysWork.playerWork.player.rotation.vy;
+        pose.anim      = (unsigned short)g_SysWork.playerWork.player.model.anim.status;
+        pose.frame     = (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx;
+        pose.upAnim    = (unsigned short)g_SysWork.playerWork.extra.model.anim.status;
+        pose.upFrame   = (unsigned short)g_SysWork.playerWork.extra.model.anim.keyframeIdx;
+        pose.weaponAnm = (g_Player_LastWeaponSelected >= 0 && g_Player_LastWeaponSelected < 0xFF)
+                         ? (unsigned char)g_Player_LastWeaponSelected : 0xFF;
+        pose.heldItem  = (held >= 0 && held < 0xFF) ? (unsigned char)held : 0xFF;
+        pose.handBone  = (unsigned char)g_PcHarryHandBone;
+        ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags, &pose);
+    }
 
     /* Co-op shared items: hand out what we picked up, take in what others did. */
     ShNetG_SyncItems();

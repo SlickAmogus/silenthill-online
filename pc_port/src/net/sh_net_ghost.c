@@ -40,6 +40,9 @@
 #include "bodyprog/view/vw_calc.h"
 #include "bodyprog/game_boot/fs_chara_anim.h"
 #include "main/fsqueue.h"
+#include "main/fileinfo.h"
+#include "bodyprog/player.h"
+#include "lang_text.h" /* Pc_LangReadDiscFile: a partner's weapon ANM */
 
 #include "hires_override.h"
 #include "pc_config.h"
@@ -410,7 +413,144 @@ static POLY_FT4* ShNetG_EmitFootprint(GsOT* ot, POLY_FT4* poly,
  * whole body -> a translucent presence. Co-op partners leave it 0 (solid). */
 int g_PcCharaTranslucent = 0;
 
-static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, int animFrame)
+/* How to pose one remote body. Living-world ghosts carry a single keyframe
+ * (both halves equal); co-op partners carry both halves and their weapon. */
+typedef struct
+{
+    int lowKf0, lowKf1, lowAlpha;
+    int upKf0, upKf1, upAlpha;
+    int weaponAnm;  /* EquippedWeaponId whose HB_WEP*.ANM fills kf 5xx+, 0xFF unknown */
+    int heldItem;   /* InvItemId in the right hand, 0xFF none */
+    int handBone;   /* MODEL_BONE grip, 0 = leave the meshes alone */
+} ShNetGPose;
+
+static int ShNetG_WeaponAnmFile(int weapon)
+{
+    switch (weapon)
+    {
+        case EquippedWeaponId_KitchenKnife: return FILE_ANIM_HB_WEP3_ANM;
+        case EquippedWeaponId_Axe:          return FILE_ANIM_HB_WEP1_ANM;
+        case EquippedWeaponId_SteelPipe:
+        case EquippedWeaponId_Hammer:       return FILE_ANIM_HB_WEP2_ANM;
+        case EquippedWeaponId_Chainsaw:     return FILE_ANIM_HB_WEP6_ANM;
+        case EquippedWeaponId_RockDrill:    return FILE_ANIM_HB_WEP8_ANM;
+        case EquippedWeaponId_Katana:       return FILE_ANIM_HB_WEP9_ANM;
+        case EquippedWeaponId_Handgun:      return FILE_ANIM_HB_WEP4_ANM;
+        case EquippedWeaponId_HuntingRifle: return FILE_ANIM_HB_WEP51_ANM;
+        case EquippedWeaponId_Shotgun:      return FILE_ANIM_HB_WEP52_ANM;
+        case EquippedWeaponId_HyperBlaster: return FILE_ANIM_HB_WEP53_ANM;
+        default:                            return -1;
+    }
+}
+
+/* Harry's weapon keyframes are not in HB_BASE: GameFs_PlayerWeaponAnimLoad
+ * reads the equipped weapon's ANM to FS_BUFFER_12, straight after the base
+ * keyframes, so kf 568+ index into whatever weapon the LOCAL player holds.
+ * A partner holding something else needs their own file, kept here. */
+static struct { int tried; const u8* data; int size; } s_wepAnm[64];
+
+static const u8* ShNetG_WeaponAnm(int weapon, int* size)
+{
+    int file;
+    if (weapon < 0 || weapon >= 64)
+    {
+        return NULL;
+    }
+    file = ShNetG_WeaponAnmFile(weapon);
+    if (file < 0)
+    {
+        return NULL;
+    }
+    if (weapon == g_Player_LastWeaponSelected)
+    {
+        *size = (int)g_FileTable[file].blockCount << 8;
+        return (const u8*)FS_BUFFER_12;
+    }
+    if (!s_wepAnm[weapon].tried)
+    {
+        s_wepAnm[weapon].tried = 1;
+        s_wepAnm[weapon].size  = (int)g_FileTable[file].blockCount << 8;
+        s_wepAnm[weapon].data  = Pc_LangReadDiscFile(g_FileTable[file].startSector,
+                                                     (unsigned int)s_wepAnm[weapon].size);
+        SH_DBG("[NET] partner weapon anims %d: %s (%d bytes)", weapon,
+               s_wepAnm[weapon].data ? "loaded" : "unavailable", s_wepAnm[weapon].size);
+    }
+    *size = s_wepAnm[weapon].size;
+    return s_wepAnm[weapon].data;
+}
+
+/* One keyframe's bytes. Past the weapon file come the map's own clips
+ * (FS_BUFFER_4), which a partner on this map shares with us. */
+static const u8* ShNetG_HarryKeyframe(const s_AnmHeader* anm, int kf, int weapon)
+{
+    const u8* data = (const u8*)anm + anm->dataOffset;
+    int       kfSize = anm->keyframeDataSize;
+    int       wepSize = 0;
+    const u8* wep;
+
+    if (kf < 0)
+    {
+        kf = 0;
+    }
+    wep = ShNetG_WeaponAnm(weapon, &wepSize);
+    if (wep != NULL)
+    {
+        long off = (long)kf * kfSize - (long)((const u8*)FS_BUFFER_12 - data);
+        if (off >= 0 && off + kfSize <= wepSize)
+        {
+            return wep + off;
+        }
+    }
+    if (data + (long)(kf + 1) * kfSize > (const u8*)FS_BUFFER_11)
+    {
+        kf = (anm->keyframeCount > 0) ? (int)anm->keyframeCount - 1 : 0;
+    }
+    return data + (long)kf * kfSize;
+}
+
+/* Poses `bones` (a bone mask) from a keyframe pair through a private copy of
+ * the header with exactly those two keyframes after it, so the two can come
+ * from different files and the shared header's activeBones is never touched. */
+static int ShNetG_PoseBones(const s_AnmHeader* anm, GsCOORDINATE2* coords, u32 bones,
+                            int kf0, int kf1, int alpha, int weapon)
+{
+    static union { u32 align; u8 b[8192]; } s_hdr;
+    int          hdrSize = anm->dataOffset;
+    int          kfSize  = anm->keyframeDataSize;
+    s_AnmHeader* h       = (s_AnmHeader*)s_hdr.b;
+
+    if (kfSize <= 0 || hdrSize < (int)sizeof(s_AnmHeader) || hdrSize + 2 * kfSize > (int)sizeof(s_hdr.b))
+    {
+        return 0;
+    }
+    memcpy(s_hdr.b, anm, (size_t)hdrSize);
+    memcpy(s_hdr.b + hdrSize, ShNetG_HarryKeyframe(anm, kf0, weapon), (size_t)kfSize);
+    memcpy(s_hdr.b + hdrSize + kfSize, ShNetG_HarryKeyframe(anm, kf1, weapon), (size_t)kfSize);
+    h->activeBones   = bones;
+    h->keyframeCount = 2;
+    Anim_BoneUpdate(h, coords, 0, 1, alpha);
+    return 1;
+}
+
+/* Draws the local player's loaded held-item model in a partner's right hand
+ * when they hold the same item: only one item model is ever resident. */
+static void ShNetG_DrawHeldItem(GsCOORDINATE2* hand, int itemId)
+{
+    s_HeldItem* heldItem = &g_WorldGfxWork.heldItem;
+    MATRIX      viewMat;
+    MATRIX      worldMat;
+
+    if (itemId == 0xFF || heldItem->itemId == NO_VALUE || heldItem->itemId != itemId ||
+        heldItem->itemId == InvItemId_CutscenePhone || heldItem->lmHdr == NULL ||
+        !Fs_QueueIsEntryLoaded(heldItem->queueIdx) || !heldItem->lmHdr->isLoaded)
+    {
+        return;
+    }
+    Vw_CoordToWorldAndViewMatrices(hand, &worldMat, &viewMat);
+    func_80057090(&heldItem->bone.modelInfo, &g_OrderingTable0[g_ActiveBufferIdx], 1, &viewMat, &worldMat, 0);
+}
+
+static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, const ShNetGPose* pose)
 {
     static GsCOORDINATE2 s_coords[GHOST_BONE_MAX];
     s_CharaModel*  cm;
@@ -463,17 +603,16 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     /* Pose the skeleton to its resting keyframe, then plant the root at the
      * ghost's world position and heading. Both operations mirror the spawned-
      * actor path exactly. */
+    /* Two halves, as Player_AnimUpdate poses the local Harry. The old single
+     * pass clamped to HB_BASE's keyframeCount, which froze every weapon clip
+     * (kf 568+) on the last base keyframe. */
+    Anim_BoneInit(anm, s_coords);
+    if (!ShNetG_PoseBones(anm, s_coords, ~(u32)HARRY_UPPER_BODY_BONE_MASK,
+                          pose->lowKf0, pose->lowKf1, pose->lowAlpha, pose->weaponAnm) ||
+        !ShNetG_PoseBones(anm, s_coords, ~(u32)HARRY_LOWER_BODY_BONE_MASK,
+                          pose->upKf0, pose->upKf1, pose->upAlpha, pose->weaponAnm))
     {
-        /* The ghost's own keyframe, into the base ANM's shared keyframe bank,
-         * so a walking player's ghost actually walks. Clamped: a keyframe from
-         * a map-specific clip the base bank does not contain would be garbage,
-         * and clamping keeps it in-range rather than reading past the bank. */
-        int kf = animFrame;
-        int maxKf = (anm->keyframeCount > 0) ? (int)anm->keyframeCount - 1 : 0;
-        if (kf < 0)     kf = 0;
-        if (kf > maxKf) kf = maxKf;
-        Anim_BoneInit(anm, s_coords);
-        Anim_BoneUpdate(anm, s_coords, kf, kf, Q12(0.0f));
+        return 0;
     }
 
     rot.vx = 0;
@@ -490,10 +629,17 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
      * for whoever is testing it. */
     { static int s_once = 0; if (!s_once) { s_once = 1;
         SH_DBG("[NET] modeled ghosts active (chara %d, %d bones)", charaId, (int)anm->boneCount); } }
+    /* The grip meshes are hero part indices: only the hero copy takes them,
+     * and every partner sets its own since they share that one skeleton. */
+    if (charaId == Chara_Harry && pose->handBone != 0)
+    {
+        func_8003DE60(&cm->skeleton, pose->handBone);
+    }
     ret = (s16)func_8003DD74((e_CharaId)charaId, 0);
     func_80045534(&cm->skeleton, &g_OrderingTable0[g_ActiveBufferIdx], 1,
                   s_coords, Q8_TO_Q12(CHARA_FILE_INFOS[charaId].field_6),
                   (u16)ret, CHARA_FILE_INFOS[charaId].field_8);
+    ShNetG_DrawHeldItem(&s_coords[HarryBone_RightHand], pose->heldItem);
     return 1;
 }
 
@@ -642,11 +788,23 @@ void ShNet_DrawWorld(GsOT* ot)
                 {
                     break;
                 }
+                ShSessionPoseNow pn;
+                ShNetGPose       gp;
+
                 if (!m || m->poseMs == 0 || m->mapIdx != myMap) /* self/no pose/other map */
                 {
                     continue;
                 }
-                gx = m->x; gy = m->y; gz = m->z; grot = m->rotY;
+                if (!ShSession_MemberPoseNow(i, &pn))
+                {
+                    continue;
+                }
+                gx = pn.x; gy = pn.y; gz = pn.z; grot = pn.rotY;
+                gp.lowKf0 = pn.lowKf0; gp.lowKf1 = pn.lowKf1; gp.lowAlpha = pn.lowAlpha;
+                gp.upKf0  = pn.upKf0;  gp.upKf1  = pn.upKf1;  gp.upAlpha  = pn.upAlpha;
+                gp.weaponAnm = pn.weaponAnm;
+                gp.heldItem  = pn.heldItem;
+                gp.handBone  = pn.handBone;
                 if (ABS(gx - self->vx) > range || ABS(gz - self->vz) > range)
                 {
                     continue;
@@ -675,7 +833,7 @@ void ShNet_DrawWorld(GsOT* ot)
                     {
                         unsigned char* before = (unsigned char*)poly;
                         GsOUT_PACKET_P = (PACKET*)poly;
-                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, (int)m->frame);
+                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, &gp);
                         {
                             unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
                             poly     = (POLY_FT4*)after;
@@ -823,8 +981,14 @@ void ShNet_DrawWorld(GsOT* ot)
                      * model's own packets. */
                     unsigned char* before = (unsigned char*)poly;
                     GsOUT_PACKET_P = (PACKET*)poly;
+                    ShNetGPose gp;
+                    gp.lowKf0 = gp.lowKf1 = gp.upKf0 = gp.upKf1 = (int)g->animFrame;
+                    gp.lowAlpha = gp.upAlpha = 0;
+                    gp.weaponAnm = 0xFF;
+                    gp.heldItem  = 0xFF;
+                    gp.handBone  = 0;
                     g_PcCharaTranslucent = 1; /* living-world bodies are translucent */
-                    drewModel = ShNetG_TryDrawModel(g->charaId, gx, gy, gz, grot, (int)g->animFrame);
+                    drewModel = ShNetG_TryDrawModel(g->charaId, gx, gy, gz, grot, &gp);
                     g_PcCharaTranslucent = 0;
                     {
                         unsigned char* after = (unsigned char*)GsOUT_PACKET_P;

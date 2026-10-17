@@ -39,6 +39,35 @@ extern "C" {
 
 #define SHSESSION_MAX_MEMBERS 8
 #define SHSESSION_NAME_MAX    40
+#define SHSESSION_POSE_RING   8
+
+/* One co-op pose sample. Harry is posed in two halves (Player_AnimUpdate: legs
+ * from player.model, torso and arms from extra.model), and aiming, firing and
+ * reloading live only in the upper half -- a pose with one keyframe showed a
+ * shooting partner standing still with empty hands. */
+typedef struct
+{
+    int            x, y, z;           /* Q19.12 world position */
+    short          rotY;              /* Q3.12 */
+    unsigned short anim, frame;       /* lower body */
+    unsigned short upAnim, upFrame;   /* upper body */
+    unsigned char  weaponAnm;         /* weapon whose HB_WEP*.ANM fills kf 5xx+, 0xFF none */
+    unsigned char  heldItem;          /* InvItemId in hand, 0xFF none */
+    unsigned char  handBone;          /* MODEL_BONE last given to WorldGfx_HeldItemAttach(Harry) */
+    unsigned char  pad;
+    unsigned int   ms;                /* sample time on OUR clock (sender clock + offset) */
+} ShSessionPose;
+
+/* A member's pose at render time: interpolated between the two samples around
+ * it, keyframe pairs plus their Q12 blend for Anim_BoneUpdate. */
+typedef struct
+{
+    int   x, y, z;
+    short rotY;
+    int   lowKf0, lowKf1, lowAlpha;
+    int   upKf0, upKf1, upAlpha;
+    int   weaponAnm, heldItem, handBone;
+} ShSessionPoseNow;
 
 typedef struct
 {
@@ -57,6 +86,15 @@ typedef struct
     unsigned short     anim;
     unsigned short     frame;
     unsigned int       poseMs;     /* wall clock of the last pose, 0 = none */
+
+    /* Recent samples, oldest first, for ShSession_MemberPoseNow. Arrival times
+     * jitter by the network plus the worker's sleep, so samples are placed by
+     * the SENDER's clock shifted by the smallest delay seen (clockOff). */
+    ShSessionPose      ring[SHSESSION_POSE_RING];
+    int                ringCount;
+    int                clockOff;
+    int                clockOk;
+    int                clockCreep;
 } ShSessionMember;
 
 /* ------------------------------------------------------------------ */
@@ -115,9 +153,12 @@ void ShSession_PublishPresence(const char* area, int mapIdx);
  * frame; the worker broadcasts it to the other members as SHNET_MSG_S_POS, and
  * each member's incoming pose lands in its ShSessionMember for the renderer to
  * read. map < 0 means "not in a map" (menus) -- no pose is sent. */
-void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags,
-                               int x, int y, int z, short rotY,
-                               unsigned short anim, unsigned short frame);
+void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags, const ShSessionPose* pose);
+
+/* Game thread: member i's pose a fixed delay behind real time, so it is almost
+ * always BETWEEN two received samples rather than waiting on the next one.
+ * 0 when the member has no pose. */
+int  ShSession_MemberPoseNow(int i, ShSessionPoseNow* out);
 
 /* Host -> guests: everyone boot into this map for a co-op game. Sent when the
  * host presses Start Game. */

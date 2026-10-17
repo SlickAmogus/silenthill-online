@@ -148,6 +148,7 @@ void Pc_NetHit_Refresh(void)
     {
         const ShSessionMember* m = ShSession_Member(i);
         s_SubCharacter*        px;
+        ShSessionPoseNow       pn;
 
         if (m == NULL || m->poseMs == 0 || m->steamId == ShSession_SelfId() || m->mapIdx != myMap)
         {
@@ -174,11 +175,17 @@ void Pc_NetHit_Refresh(void)
             s_proxyMeleeMs[count] = 0;
             px->attackReceived    = NO_VALUE;
         }
+        /* The interpolated pose the shooter is looking at, not the newest
+         * sample: aiming at the drawn body must land on it. */
+        if (!ShSession_MemberPoseNow(i, &pn))
+        {
+            pn.x = m->x; pn.y = m->y; pn.z = m->z; pn.rotY = m->rotY;
+        }
         px->model.charaId = Chara_Harry;
-        px->position.vx   = m->x;
-        px->position.vy   = m->y;
-        px->position.vz   = m->z;
-        px->rotation.vy   = m->rotY;
+        px->position.vx   = pn.x;
+        px->position.vy   = pn.y;
+        px->position.vz   = pn.z;
+        px->rotation.vy   = pn.rotY;
         px->health        = Q12(100.0f);
         /* CharaFlag_Hit: skips the x4 "standing monster" melee multiplier that
          * the game never applies to a player target either. */
