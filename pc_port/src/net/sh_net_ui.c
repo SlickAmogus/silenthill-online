@@ -1316,81 +1316,409 @@ static void Nu_DrawCursor(void)
             1.0f, 1.0f, 1.0f, 1.0f);
 }
 
-/* The co-op front end (pc_coop_menu.c), drawn as a centred modal panel so it
- * matches the quick menu / achievements popup. Used on the title screen and in
- * game alike -- both reach here through the same post-capture hook. Mouse hover
- * drives the selection and a click confirms it, hit-tested against the same row
- * geometry the rows are drawn with. */
+/* ---- Silent Hill styled co-op front end ----------------------------------
+ * The game's own menus (inventory, save dialog) frame things with two nested
+ * one-pixel boxes in blue (96,96,255) outside and (32,32,255) inside, and
+ * light a selection with a blue gradient that fades into the dark. The layout
+ * is the classic PC server-browser one: a framed page with a header, a body
+ * of rows or a column table, buttons along the bottom and a key-hint bar. */
+
+#define NU_SH_BLUE_HI_R 0.376f
+#define NU_SH_BLUE_HI_G 0.376f
+#define NU_SH_BLUE_LO_R 0.125f
+#define NU_SH_BLUE_LO_G 0.125f
+
+typedef struct { float x, y, w, h; } NuRect;
+
+static void Nu_LinePx(float x, float y, float w, float h, float r, float g, float b, float a)
+{
+    Nu_FillPx(x, y, w, h, r, g, b, a);
+}
+
+static void Nu_BoxPx(float x, float y, float w, float h, float t, float r, float g, float b, float a)
+{
+    Nu_LinePx(x, y, w, t, r, g, b, a);
+    Nu_LinePx(x, y + h - t, w, t, r, g, b, a);
+    Nu_LinePx(x, y + t, t, h - 2.0f * t, r, g, b, a);
+    Nu_LinePx(x + w - t, y + t, t, h - 2.0f * t, r, g, b, a);
+}
+
+/* The inventory's double frame. */
+static void Nu_ShFrame(float x, float y, float w, float h, float t, float a)
+{
+    Nu_BoxPx(x, y, w, h, t, NU_SH_BLUE_HI_R, NU_SH_BLUE_HI_G, 1.0f, a);
+    Nu_BoxPx(x + 2.0f * t, y + 2.0f * t, w - 4.0f * t, h - 4.0f * t, t,
+             NU_SH_BLUE_LO_R, NU_SH_BLUE_LO_G, 1.0f, a);
+}
+
+/* Horizontal fade: the shader takes one colour per quad, so the gradient is
+ * a run of thin strips. */
+static void Nu_HFade(float x, float y, float w, float h,
+                     float r, float g, float b, float a0, float a1)
+{
+    const int strips = 24;
+    int       i;
+    for (i = 0; i < strips; i++)
+    {
+        float t  = ((float)i + 0.5f) / (float)strips;
+        float sx = (float)(int)(x + w * (float)i / (float)strips + 0.5f);
+        float ex = (float)(int)(x + w * (float)(i + 1) / (float)strips + 0.5f);
+        Nu_FillPx(sx, y, ex - sx, h, r, g, b, a0 + (a1 - a0) * t);
+    }
+}
+
+static void Nu_VFade(float x, float y, float w, float h,
+                     float r, float g, float b, float a0, float a1)
+{
+    const int strips = 24;
+    int       i;
+    for (i = 0; i < strips; i++)
+    {
+        float t  = ((float)i + 0.5f) / (float)strips;
+        float sy = (float)(int)(y + h * (float)i / (float)strips + 0.5f);
+        float ey = (float)(int)(y + h * (float)(i + 1) / (float)strips + 0.5f);
+        Nu_FillPx(x, sy, w, ey - sy, r, g, b, a0 + (a1 - a0) * t);
+    }
+}
+
+static float Nu_TextH(int px)
+{
+    int w = 0, h = 0;
+    return Nu_Text("Ag", px, &w, &h) ? (float)h : (float)px;
+}
+
+/* Text clipped to a width by dropping characters off the end. */
+static void Nu_DrawTextFit(const char* text, float x, float y, float maxW, int px,
+                           float r, float g, float b, float a)
+{
+    char buf[128];
+    int  n;
+    if (Nu_TextWidth(text, px) <= maxW)
+    {
+        Nu_DrawText(text, x, y, px, r, g, b, a);
+        return;
+    }
+    SDL_strlcpy(buf, text, sizeof(buf));
+    for (n = (int)strlen(buf); n > 1; n--)
+    {
+        buf[n - 1] = '\0';
+        buf[n - 2] = '.';
+        if (Nu_TextWidth(buf, px) <= maxW) break;
+    }
+    Nu_DrawText(buf, x, y, px, r, g, b, a);
+}
+
+/* A row's "Label:  Value" text, split for two-column drawing. */
+static int Nu_SplitRow(const char* row, char* label, int lcap, char* value, int vcap)
+{
+    const char* sep = strstr(row, ":  ");
+    if (!sep)
+    {
+        SDL_strlcpy(label, row, (size_t)lcap);
+        value[0] = '\0';
+        return 0;
+    }
+    {
+        int n = (int)(sep - row);
+        if (n >= lcap) n = lcap - 1;
+        memcpy(label, row, (size_t)n);
+        label[n] = '\0';
+    }
+    sep += 3;
+    while (*sep == ' ') sep++;
+    SDL_strlcpy(value, sep, (size_t)vcap);
+    return 1;
+}
+
+/* Rows that leave a page rather than act on it go on the button bar. */
+static int Nu_IsFooterRow(const char* row)
+{
+    return strcmp(row, "Back") == 0 || strcmp(row, "Refresh") == 0;
+}
+
+/* One line beside a plain menu choice, for a player who has never hosted. */
+static const char* Nu_RowHint(const char* row)
+{
+    if (strcmp(row, "Host Game") == 0)             return "Open a room for friends or anyone";
+    if (strcmp(row, "Join Game") == 0)             return "Find an open room, or use a code";
+    if (strcmp(row, "Browse Server Rooms") == 0)   return "Public rooms on the community server";
+    if (strcmp(row, "Join by IP...") == 0)         return "Connect straight to a friend's PC";
+    if (strcmp(row, "Enter Room Code...") == 0)    return "The four digits a host shared";
+    if (strcmp(row, "Join a Friend (Steam)") == 0) return "Through a Steam invite";
+    return NULL;
+}
+
+#define NU_COOP_MAX_ROWS 48
+
 static void Nu_DrawCoopMenu(int px)
 {
-    const int n   = Pc_CoopMenu_RowCount();
-    const float rowH   = (float)px * 1.75f;
-    const float padY   = (float)px * 1.1f;
-    const float titleH = (float)px * 1.9f;
-    char  status[128];
-    float statusH, panelW, panelH, panelX, panelY, cx, y;
-    int   i, sel;
+    const int   n        = Pc_CoopMenu_RowCount() < NU_COOP_MAX_ROWS ? Pc_CoopMenu_RowCount() : NU_COOP_MAX_ROWS;
+    const int   view     = Pc_CoopMenu_View();
+    const int   editing  = Pc_CoopMenu_Editing();
+    const int   sel      = Pc_CoopMenu_Selected();
+    const int   pxSmall  = (int)((float)px * 0.74f);
+    const int   pxTitle  = (int)((float)px * 1.30f);
+    /* The PSX frame is one pixel at 240 lines; scaled that far it reads as a
+     * slab, so it grows at half that rate. */
+    const float t        = (s_vpH / 480.0f) < 1.0f ? 1.0f : (float)(int)(s_vpH / 480.0f + 0.5f);
+    const float pad      = (float)px * 1.15f;
+    const float rowH     = (float)px * 1.85f;
+    const float btnH     = (float)px * 1.75f;
+    char        rowText[NU_COOP_MAX_ROWS][96];
+    int         footer[NU_COOP_MAX_ROWS];
+    NuRect      rect[NU_COOP_MAX_ROWS];
+    int         bodyIdx[NU_COOP_MAX_ROWS], bodyN = 0;
+    int         footIdx[NU_COOP_MAX_ROWS], footN = 0;
+    char        status[160];
+    float       panelW, panelH, panelX, panelY, headerH, bodyH, statusH, footerH, hintH;
+    float       bodyY, x0, x1, y;
+    int         i;
 
+    for (i = 0; i < n; i++)
+    {
+        Pc_CoopMenu_RowText(i, rowText[i], (int)sizeof(rowText[i]));
+        footer[i] = Nu_IsFooterRow(rowText[i]);
+        if (footer[i]) footIdx[footN++] = i;
+        else           bodyIdx[bodyN++] = i;
+    }
     Pc_CoopMenu_StatusText(status, sizeof(status));
-    statusH = status[0] ? (float)px * 1.7f : 0.0f;
 
-    panelW = s_vpW * 0.48f;
-    if (panelW < 240.0f) panelW = 240.0f;
-    panelH = titleH + rowH * (float)n + statusH + padY;
+    /* ---- geometry ---- */
+    panelW = s_vpW * (view == PC_COOP_VIEW_ROOMS ? 0.62f : 0.54f);
+    if (panelW < 440.0f) panelW = (s_vpW - 32.0f < 440.0f) ? s_vpW - 32.0f : 440.0f;
+    if (panelW > 980.0f) panelW = 980.0f;
+    headerH = pad * 0.8f + Nu_TextH(pxSmall) + (float)pxTitle * 1.15f + pad * 0.35f;
+    bodyH   = rowH * (float)(bodyN > 0 ? bodyN : 0);
+    if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS)
+    {
+        float minRows = 6.0f;
+        bodyH += rowH * 0.9f; /* column header */
+        if (bodyH < rowH * minRows) bodyH = rowH * minRows;
+    }
+    statusH = (status[0] || editing) ? (editing ? Nu_TextH(pxSmall) + rowH * 1.25f : Nu_TextH(pxSmall) + pad * 0.7f) : 0.0f;
+    footerH = footN ? btnH + pad * 0.8f : 0.0f;
+    hintH   = Nu_TextH(pxSmall) + pad * 0.7f;
+    panelH  = headerH + pad * 0.5f + bodyH + pad * 0.5f + statusH + footerH + hintH;
+    if (panelH > s_vpH - 24.0f) panelH = s_vpH - 24.0f;
     panelX = (s_vpW - panelW) * 0.5f;
     panelY = (s_vpH - panelH) * 0.5f;
-    cx     = s_vpW * 0.5f;
+    x0     = panelX + pad;
+    x1     = panelX + panelW - pad;
+    bodyY  = panelY + headerH + pad * 0.5f;
 
-    /* Which row is under the pointer, computed with the EXACT geometry the rows
-     * are drawn with just below, so the hit row can never disagree with what is
-     * on screen. We hand the menu only the row index; the click is confirmed in
-     * Pc_CoopMenu_Update (edge-latched, once per press). A row under the pointer
-     * also drives the highlight. */
+    /* Row rectangles, shared by hit-testing and drawing so they cannot drift. */
+    y = bodyY + ((view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS) ? rowH * 0.9f : 0.0f);
+    for (i = 0; i < bodyN; i++)
+    {
+        rect[bodyIdx[i]].x = x0;
+        rect[bodyIdx[i]].y = y;
+        rect[bodyIdx[i]].w = x1 - x0;
+        rect[bodyIdx[i]].h = rowH;
+        y += rowH;
+    }
+    {
+        const float bw = (float)px * 7.5f;
+        float       bx = x1;
+        const float by = bodyY + bodyH + pad * 0.5f + statusH + pad * 0.4f;
+        for (i = footN - 1; i >= 0; i--)
+        {
+            bx -= bw;
+            rect[footIdx[i]].x = bx;
+            rect[footIdx[i]].y = by;
+            rect[footIdx[i]].w = bw;
+            rect[footIdx[i]].h = btnH;
+            bx -= (float)px * 0.6f;
+        }
+    }
+
+    /* ---- pointer ---- */
     {
         float mnx, mny;
         int   hov = -1;
-        if (Pc_MouseCursor_ViewportPos(&mnx, &mny))
+        if (!editing && Pc_MouseCursor_ViewportPos(&mnx, &mny))
         {
-            float mx = mnx * s_vpW;
-            float my = mny * s_vpH;
-            if (mx >= panelX && mx <= panelX + panelW)
+            const float mx = mnx * s_vpW, my = mny * s_vpH;
+            for (i = 0; i < n; i++)
             {
-                int r = (int)((my - (panelY + titleH)) / rowH);
-                if (r >= 0 && r < n) hov = r;
+                if (mx >= rect[i].x && mx < rect[i].x + rect[i].w &&
+                    my >= rect[i].y && my < rect[i].y + rect[i].h)
+                {
+                    hov = i;
+                    break;
+                }
             }
         }
         Pc_CoopMenu_SetHover(hov);
     }
 
-    sel = Pc_CoopMenu_Selected();
+    /* ---- backdrop and panel ---- */
+    Nu_FillPx(0.0f, 0.0f, s_vpW, s_vpH, 0.0f, 0.0f, 0.0f, 0.55f);
+    Nu_FillPx(panelX, panelY, panelW, panelH, 0.0f, 0.0f, 0.02f, 0.88f);
+    Nu_VFade(panelX, panelY, panelW, headerH, 0.05f, 0.08f, 0.30f, 0.55f, 0.0f);
+    Nu_ShFrame(panelX, panelY, panelW, panelH, t, 1.0f);
 
-    Nu_Panel(panelX, panelY, panelW, panelH, 1.0f);
-    Nu_DrawTextCentered(Pc_CoopMenu_Title(), cx, panelY + padY * 0.5f,
-                        (int)((float)px * 1.08f), 0.93f, 0.87f, 0.55f, 1.0f);
-
-    y = panelY + titleH;
-    for (i = 0; i < n; i++)
+    /* ---- header ---- */
     {
-        char      row[96];
-        const int on = (i == sel);
-        Pc_CoopMenu_RowText(i, row, sizeof(row));
-        if (on)
-        {
-            Nu_FillPx(panelX + (float)px * 0.6f, y - (float)px * 0.2f,
-                      panelW - (float)px * 1.2f, rowH * 0.9f,
-                      0.32f, 0.30f, 0.17f, 0.65f);
-        }
-        Nu_DrawTextCentered(row, cx, y, px,
-                            on ? 1.00f : 0.72f,
-                            on ? 0.98f : 0.71f,
-                            on ? 0.82f : 0.62f, 1.0f);
-        y += rowH;
+        const float hy = panelY + pad * 0.8f;
+        const char* title = Pc_CoopMenu_Title();
+        Nu_DrawText(Pc_CoopMenu_IsTopLevel() ? "SILENT HILL  ONLINE" : "MULTIPLAYER", x0, hy, pxSmall,
+                    0.55f, 0.60f, 1.00f, 0.95f);
+        Nu_DrawText(title, x0, hy + Nu_TextH(pxSmall), pxTitle, 0.92f, 0.91f, 0.88f, 1.0f);
+        Nu_LinePx(x0, panelY + headerH, x1 - x0, t, NU_SH_BLUE_HI_R, NU_SH_BLUE_HI_G, 1.0f, 0.9f);
+        Nu_LinePx(x0, panelY + headerH + 2.0f * t, (x1 - x0) * 0.6f, t, NU_SH_BLUE_LO_R, NU_SH_BLUE_LO_G, 1.0f, 0.9f);
     }
 
-    if (status[0])
+    /* ---- column headers ---- */
+    if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS)
     {
-        Nu_DrawTextCentered(status, cx, panelY + panelH - statusH + (float)px * 0.3f,
-                            (int)((float)px * 0.82f), 0.80f, 0.76f, 0.64f, 0.95f);
+        const float cy = bodyY + (rowH * 0.9f - Nu_TextH(pxSmall)) * 0.5f;
+        const float w  = x1 - x0;
+        if (view == PC_COOP_VIEW_ROOMS)
+        {
+            Nu_DrawText("ROOM", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawText("HOST", x0 + w * 0.22f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawTextRight("PLAYERS", x1 - px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+        }
+        else
+        {
+            Nu_DrawText("PLAYER", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawTextRight("PING", x1 - px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+        }
+        Nu_LinePx(x0, bodyY + rowH * 0.9f - t, w, t, NU_SH_BLUE_LO_R, NU_SH_BLUE_LO_G, 1.0f, 0.8f);
+    }
+
+    /* ---- body rows ---- */
+    {
+        const int roomCount   = (view == PC_COOP_VIEW_ROOMS) ? ShSession_RoomCount() : 0;
+        const int memberCount = (view == PC_COOP_VIEW_PLAYERS) ? ShSession_MemberCount() : 0;
+        const float textH     = Nu_TextH(px);
+
+        if (view == PC_COOP_VIEW_ROOMS && roomCount == 0)
+        {
+            Nu_DrawTextCentered("No open rooms yet.  Refresh, or host one yourself.",
+                                panelX + panelW * 0.5f, bodyY + bodyH * 0.45f, px,
+                                0.55f, 0.56f, 0.62f, 0.9f);
+        }
+        for (i = 0; i < bodyN; i++)
+        {
+            const int    k  = bodyIdx[i];
+            const NuRect r  = rect[k];
+            const int    on = (k == sel) && !editing;
+            const float  ty = r.y + (r.h - textH) * 0.5f;
+            const float  lt = on ? 1.00f : 0.74f;
+
+            if (on)
+            {
+                Nu_HFade(r.x, r.y, r.w, r.h, 0.0f, 0.42f, 0.75f, 0.55f, 0.0f);
+                Nu_ShFrame(r.x, r.y, r.w, r.h, t, 0.9f);
+            }
+            else if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS)
+            {
+                if (i & 1) Nu_FillPx(r.x, r.y, r.w, r.h, 0.10f, 0.10f, 0.30f, 0.18f);
+            }
+
+            if (view == PC_COOP_VIEW_ROOMS && k < roomCount)
+            {
+                int  code = 0, players = 0, max = 0;
+                char host[SHSESSION_NAME_MAX];
+                char cell[32];
+                host[0] = '\0';
+                ShSession_RoomGet(k, &code, &players, &max, host, (int)sizeof(host));
+                snprintf(cell, sizeof(cell), "%d", code);
+                Nu_DrawText(cell, r.x + px * 0.8f, ty, px, lt, lt, lt, 1.0f);
+                Nu_DrawTextFit(host[0] ? host : "?", r.x + r.w * 0.22f, ty, r.w * 0.55f, px, lt, lt, lt, 1.0f);
+                snprintf(cell, sizeof(cell), "%d / %d", players, max);
+                Nu_DrawTextRight(cell, r.x + r.w - px * 0.8f, ty, px,
+                                 players >= max ? 0.75f : 0.62f, players >= max ? 0.45f : 0.72f,
+                                 players >= max ? 0.45f : 1.00f, 1.0f);
+            }
+            else if (view == PC_COOP_VIEW_PLAYERS && k < memberCount)
+            {
+                const ShSessionMember* m = ShSession_Member(k);
+                char                   cell[32];
+                if (m)
+                {
+                    float nw = Nu_DrawText(m->name, r.x + px * 0.8f, ty, px, lt, lt, lt, 1.0f);
+                    if (m->steamId == ShSession_HostId())
+                    {
+                        Nu_DrawText("HOST", r.x + px * 1.4f + nw, ty + (textH - Nu_TextH(pxSmall)) * 0.5f,
+                                    pxSmall, 0.55f, 0.60f, 1.0f, 0.95f);
+                    }
+                    if (m->pingMs >= 0) snprintf(cell, sizeof(cell), "%d ms", m->pingMs);
+                    else                snprintf(cell, sizeof(cell), "-");
+                    Nu_DrawTextRight(cell, r.x + r.w - px * 0.8f, ty, px, 0.62f, 0.72f, 1.0f, 1.0f);
+                }
+            }
+            else
+            {
+                char label[96], value[96];
+                if (Nu_SplitRow(rowText[k], label, (int)sizeof(label), value, (int)sizeof(value)))
+                {
+                    Nu_DrawText(label, r.x + px * 0.8f, ty, px, lt, lt, lt, 1.0f);
+                    Nu_DrawTextRight(value, r.x + r.w - px * 0.8f, ty, px,
+                                     on ? 1.0f : 0.62f, on ? 1.0f : 0.72f, 1.0f, 1.0f);
+                }
+                else
+                {
+                    const char* hint = (view == PC_COOP_VIEW_MENU) ? Nu_RowHint(label) : NULL;
+                    Nu_DrawText(label, r.x + px * 0.8f, ty, px, lt, lt, lt, 1.0f);
+                    if (hint)
+                    {
+                        Nu_DrawTextRight(hint, r.x + r.w - px * 0.8f, ty + (textH - Nu_TextH(pxSmall)) * 0.5f,
+                                         pxSmall, on ? 0.70f : 0.45f, on ? 0.76f : 0.48f, on ? 1.0f : 0.62f, 1.0f);
+                    }
+                }
+            }
+        }
+    }
+
+    /* ---- status / text entry ---- */
+    if (statusH > 0.0f)
+    {
+        const float sy = bodyY + bodyH + pad * 0.5f;
+        Nu_LinePx(x0, sy - pad * 0.25f, x1 - x0, t, NU_SH_BLUE_LO_R, NU_SH_BLUE_LO_G, 1.0f, 0.6f);
+        if (editing)
+        {
+            /* The model's line is "Label:  typed_   [keys]": label above the
+             * field, the typed text inside it, the keys on the hint bar. */
+            char        label[96], value[96];
+            const float fh = rowH;
+            const float fy = sy + Nu_TextH(pxSmall) + pad * 0.1f;
+            char*       keys;
+            Nu_SplitRow(status, label, (int)sizeof(label), value, (int)sizeof(value));
+            keys = strstr(value, "   [");
+            if (keys) *keys = '\0';
+            Nu_DrawText(label, x0, sy, pxSmall, 0.55f, 0.60f, 1.0f, 0.95f);
+            Nu_FillPx(x0, fy, x1 - x0, fh, 0.0f, 0.0f, 0.0f, 0.75f);
+            Nu_ShFrame(x0, fy, x1 - x0, fh, t, 1.0f);
+            Nu_DrawTextFit(value, x0 + px * 0.8f, fy + (fh - Nu_TextH(px)) * 0.5f, x1 - x0 - px * 1.6f, px,
+                           1.0f, 1.0f, 1.0f, 1.0f);
+        }
+        else
+        {
+            Nu_DrawTextFit(status, x0, sy + pad * 0.2f, x1 - x0, pxSmall, 0.78f, 0.76f, 0.70f, 0.95f);
+        }
+    }
+
+    /* ---- buttons ---- */
+    for (i = 0; i < footN; i++)
+    {
+        const int    k  = footIdx[i];
+        const NuRect r  = rect[k];
+        const int    on = (k == sel) && !editing;
+        Nu_FillPx(r.x, r.y, r.w, r.h, 0.0f, 0.0f, 0.05f, 0.85f);
+        if (on) Nu_VFade(r.x, r.y, r.w, r.h, 0.0f, 0.42f, 0.75f, 0.10f, 0.55f);
+        Nu_ShFrame(r.x, r.y, r.w, r.h, t, on ? 1.0f : 0.55f);
+        Nu_DrawTextCentered(rowText[k], r.x + r.w * 0.5f, r.y + (r.h - Nu_TextH(px)) * 0.5f, px,
+                            on ? 1.0f : 0.74f, on ? 1.0f : 0.74f, on ? 1.0f : 0.78f, 1.0f);
+    }
+
+    /* ---- key hints ---- */
+    {
+        const char* hint = editing ? "Type    [Enter]  Confirm    [Esc]  Cancel"
+                         : Pc_CoopMenu_IsTopLevel() ? "[Up/Down]  Select    [Enter] or Click  Choose    [Esc]  Close"
+                                                    : "[Up/Down]  Select    [Enter] or Click  Choose    [Esc]  Back";
+        Nu_DrawText(hint, x0, panelY + panelH - hintH + pad * 0.15f, pxSmall, 0.45f, 0.47f, 0.60f, 0.95f);
     }
 
     Nu_DrawCursor();

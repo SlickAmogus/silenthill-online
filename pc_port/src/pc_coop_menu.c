@@ -349,6 +349,23 @@ int Pc_CoopMenu_RowCount(void)
     }
 }
 
+int Pc_CoopMenu_View(void)
+{
+    switch (s_page)
+    {
+    case COOP_PAGE_HOST_SETUP: return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
+    case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
+    default:                   return PC_COOP_VIEW_MENU;
+    }
+}
+
+int Pc_CoopMenu_IsTopLevel(void)
+{
+    return s_page == COOP_PAGE_ROOT || s_page == COOP_PAGE_INGAME;
+}
+
 int Pc_CoopMenu_Selected(void)
 {
     return s_sel;

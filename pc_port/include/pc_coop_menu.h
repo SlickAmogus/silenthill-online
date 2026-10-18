@@ -33,14 +33,26 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm);
 int  Pc_CoopMenu_Editing(void);
 void Pc_CoopMenu_FeedKeys(const unsigned char* ks);
 
-/* Accessors for the renderer (sh_net_ui.c's Nu_DrawCoopMenu). The menu is drawn
- * with the online UI's clean panel so it matches the quick menu / achievements
- * popup, on the title screen and in game alike. */
+/* Accessors for the renderer (sh_net_ui.c's Nu_DrawCoopMenu), which draws the
+ * menu in the game's own blue double-frame style, on the title screen and in
+ * game alike. */
 int         Pc_CoopMenu_RowCount(void);
 int         Pc_CoopMenu_Selected(void);
 const char* Pc_CoopMenu_Title(void);
 void        Pc_CoopMenu_RowText(int i, char* out, int cap);
 void        Pc_CoopMenu_StatusText(char* out, int cap);
+
+/* How the current page lays out: plain buttons, label/value settings, the
+ * server room table, or the member list. */
+enum
+{
+    PC_COOP_VIEW_MENU = 0,
+    PC_COOP_VIEW_SETTINGS,
+    PC_COOP_VIEW_ROOMS,
+    PC_COOP_VIEW_PLAYERS
+};
+int         Pc_CoopMenu_View(void);
+int         Pc_CoopMenu_IsTopLevel(void); /* root / in-game page: Esc closes */
 
 /* Mouse: the renderer computes which row is under the pointer (with the exact
  * geometry it draws the rows with, so they can never disagree) and hands that
