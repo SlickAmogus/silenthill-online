@@ -34,6 +34,8 @@
 #include "pc_loose_files.h"
 #include "tex_pack.h"
 #include "sh_log.h"
+#include "sh_net_mapmark.h"
+#include "sh_net_session.h" /* SHSESSION_MAX_MEMBERS */
 #include <stdlib.h>
 #include <math.h>
 
@@ -575,6 +577,7 @@ void Pc_MinimapUpdate(void)
     static TILE     s_sqFill[2];         /* square: dark interior when no map */
     static POLY_FT4 s_sqMap[2];          /* square: the map image */
     static POLY_F3  s_mark[2];
+    static POLY_F3  s_partner[2][SHSESSION_MAX_MEMBERS];
     static DR_TPAGE s_tp[2];
     int       buf, i;
     s32       packed, px, py;
@@ -586,6 +589,7 @@ void Pc_MinimapUpdate(void)
     s32       mkScale = 4096;
     int       u0 = 0, v0 = 0, u1 = MM_UV_MAX, v1 = MM_UV_MAX;
     int       markCount = 0;
+    int       partnerCount = 0;
     GsOT_TAG* ot;
 
 
@@ -838,6 +842,64 @@ void Pc_MinimapUpdate(void)
         setXY3(&s_mark[buf], vx[0], vy[0], vx[1], vy[1], vx[2], vy[2]);
     }
 
+    /* --- co-op partners: same cell transform, window and edge clamp as
+     * Harry's arrow, in each partner's map colour, under his arrow --- */
+    partnerCount = 0;
+    if (packed != 0)
+    {
+        ShNetMapMark mk[SHSESSION_MAX_MEMBERS];
+        int          pn = ShNet_MapMarks(mk, SHSESSION_MAX_MEMBERS);
+        int          mi = mm_effective_map_idx();
+        int          k;
+        for (k = 0; k < pn; k++)
+        {
+            short pmx, pmz, pang;
+            s32   ppx, ppy, ca, sa, j;
+            s32   vx[3], vy[3];
+            static const s32 lx[3] = {  0, -3,  3 };
+            static const s32 ly[3] = { -5,  3,  3 };
+            if (mk[k].paperMap >= 0 && mk[k].paperMap != mi) continue;
+            if (!Pc_PaperMapCellAt(mi, mk[k].x, mk[k].z, mk[k].rotY, &pmx, &pmz, &pang)) continue;
+            {
+                int cu = mm_clamp((((s32)pmx + MM_HALF_X) * MM_UV_MAX) / (2 * MM_HALF_X), 0, MM_UV_MAX);
+                int cv = mm_clamp((((s32)pmz + MM_HALF_Z) * MM_UV_MAX) / (2 * MM_HALF_Z), 0, MM_UV_MAX);
+                ppx = x0 + ((cu - u0) * mmSize) / (u1 - u0);
+                ppy = y0 + ((cv - v0) * mmSize) / (v1 - v0);
+            }
+            /* Off the zoomed window: pinned to the edge, pointing the way. */
+            if (round)
+            {
+                s32 dx = ppx - cx, dy = ppy - cy;
+                s32 lim = R - mm_scaled(5, mkScale), d = dx * dx + dy * dy;
+                if (d > lim * lim)
+                {
+                    s32 q = 0;
+                    while ((q + 1) * (q + 1) <= d) q++;
+                    if (q > 0) { ppx = cx + (dx * lim) / q; ppy = cy + (dy * lim) / q; }
+                }
+            }
+            else
+            {
+                int inset = mm_scaled(4, mkScale);
+                ppx = mm_clamp(ppx, x0 + inset, x1 - inset);
+                ppy = mm_clamp(ppy, y0 + inset, y1 - inset);
+            }
+            ca = Math_Cos(pang);
+            sa = Math_Sin(pang);
+            for (j = 0; j < 3; j++)
+            {
+                vx[j] = ppx + (((lx[j] * ca - ly[j] * sa) * mkScale) >> 24);
+                vy[j] = ppy + (((lx[j] * sa + ly[j] * ca) * mkScale) >> 24);
+            }
+            setPolyF3(&s_partner[buf][partnerCount]);
+            setRGB0(&s_partner[buf][partnerCount], (u8)((mk[k].r * op) / 100),
+                    (u8)((mk[k].g * op) / 100), (u8)((mk[k].b * op) / 100));
+            if (semi) setSemiTrans(&s_partner[buf][partnerCount], 1);
+            setXY3(&s_partner[buf][partnerCount], vx[0], vy[0], vx[1], vy[1], vx[2], vy[2]);
+            partnerCount++;
+        }
+    }
+
     /* --- paper-map markings, over the map image and under Harry's arrow --- */
     if (haveMap)
     {
@@ -853,6 +915,8 @@ void Pc_MinimapUpdate(void)
 
     /* AddPrim pushes to the head: add front-to-back, tpage last. */
     AddPrim(ot, &s_mark[buf]);
+    for (i = 0; i < partnerCount; i++)
+        AddPrim(ot, &s_partner[buf][i]);
     for (i = 0; i < markCount; i++)
         AddPrim(ot, &s_markPrim[buf][i]);
     if (round)
