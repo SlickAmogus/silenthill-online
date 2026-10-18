@@ -163,6 +163,11 @@ void func_8005DC3C(e_SfxId sfxId, const VECTOR3* pos, q23_8 vol, s32 soundType, 
         extern void ShNet_LocalPlayerSfx(int sfxId, int vol, int soundType, int pitched);
         ShNet_LocalPlayerSfx(sfxId, vol, soundType, 0);
     }
+    if (!(soundType & (1 << 2)))
+    {
+        extern void Pc_NetNpc_Sfx(const void* pos, int sfxId, int vol, int pitched);
+        Pc_NetNpc_Sfx(pos, sfxId, vol, 0);
+    }
 #endif
 
     /* PC note: an early port stub forced balance=0 here claiming GTE-based
@@ -226,6 +231,10 @@ void func_8005DD44(e_SfxId sfxId, VECTOR3* pos, q23_8 vol, s8 pitch) // 0x8005DD
     {
         extern void ShNet_LocalPlayerSfx(int sfxId, int vol, int soundType, int pitched);
         ShNet_LocalPlayerSfx(sfxId, vol, 0, 1);
+    }
+    {
+        extern void Pc_NetNpc_Sfx(const void* pos, int sfxId, int vol, int pitched);
+        Pc_NetNpc_Sfx(pos, sfxId, vol, 1);
     }
 #endif
 

@@ -143,6 +143,14 @@ void Anim_BoneUpdate(s_AnmHeader* anmHdr, GsCOORDINATE2* boneCoords, s32 keyfram
     }
     if (keyframe0 < 0) keyframe0 = 0;
     if (keyframe1 < 0) keyframe1 = 0;
+    {
+        extern GsCOORDINATE2* g_PcNetNpcCapBones;
+        extern void           Pc_NetNpc_CapturePose(s32 k0, s32 k1, s32 alpha);
+        if (g_PcNetNpcCapBones != NULL && boneCoords == g_PcNetNpcCapBones)
+        {
+            Pc_NetNpc_CapturePose(keyframe0, keyframe1, alpha);
+        }
+    }
     if (boneCoords == &g_SysWork.playerBoneCoords[HarryBone_Root] && anmHdr == (s_AnmHeader*)FS_BUFFER_0)
     {
         s32 dis = g_SysWork.playerWork.extra.disabledAnimBones;

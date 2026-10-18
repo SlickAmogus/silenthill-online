@@ -160,6 +160,23 @@ static int           s_itemInCount;
  * authoritative -- the attacker never writes anyone else's health). In: hits
  * landed on us, for the game thread to apply. */
 #define SESSION_DMG_Q 16
+
+/* Game messages: a few outbound per worker tick, a backlog inbound so a
+ * frame hitch on the game thread does not drop a burst of snapshots. */
+#define SESSION_GAME_OUT 8
+#define SESSION_GAME_IN  24
+typedef struct
+{
+    unsigned long long peer;
+    int                type;
+    int                len;
+    int                reliable;
+    shn_u8             buf[SHNET_MAX_PAYLOAD - SHNET_HDR_SIZE];
+} ShSessionGameMsg;
+static ShSessionGameMsg s_gameOut[SESSION_GAME_OUT];
+static int              s_gameOutN;
+static ShSessionGameMsg s_gameIn[SESSION_GAME_IN];
+static int              s_gameInHead, s_gameInTail;
 typedef struct
 {
     unsigned long long to;
@@ -338,6 +355,44 @@ void ShSession_RequestKick(unsigned long long id)
     SDL_LockMutex(s_lock);
     s_req.wantKick = id;
     SDL_UnlockMutex(s_lock);
+}
+
+int ShSession_SendGame(int type, const void* payload, int len, unsigned long long to, int reliable)
+{
+    int ok = 0;
+    if (!s_lock || !SHNET_S_IS_GAME(type) || len < 0 || len > (int)sizeof(s_gameOut[0].buf)) return 0;
+    SDL_LockMutex(s_lock);
+    if (s_gameOutN < SESSION_GAME_OUT)
+    {
+        ShSessionGameMsg* m = &s_gameOut[s_gameOutN++];
+        m->peer     = to;
+        m->type     = type;
+        m->len      = len;
+        m->reliable = reliable;
+        if (len > 0) memcpy(m->buf, payload, (size_t)len);
+        ok = 1;
+    }
+    SDL_UnlockMutex(s_lock);
+    return ok;
+}
+
+int ShSession_TakeGame(int* type, unsigned long long* from, void* buf, int cap)
+{
+    int got = -1;
+    if (!s_lock) return -1;
+    SDL_LockMutex(s_lock);
+    if (s_gameInTail != s_gameInHead)
+    {
+        const ShSessionGameMsg* m = &s_gameIn[s_gameInTail];
+        int                     n = (m->len < cap) ? m->len : cap;
+        if (type) *type = m->type;
+        if (from) *from = m->peer;
+        if (buf && n > 0) memcpy(buf, m->buf, (size_t)n);
+        got = n > 0 ? n : 0;
+        s_gameInTail = (s_gameInTail + 1) % SESSION_GAME_IN;
+    }
+    SDL_UnlockMutex(s_lock);
+    return got;
 }
 
 void ShSession_RequestInvite(void)
@@ -1154,6 +1209,32 @@ static void ShSession_Receive(unsigned int now)
             break;
         }
         default:
+            if (SHNET_S_IS_GAME(type))
+            {
+                int next;
+                /* World-owner messages from anyone else are forged. */
+                if (SHNET_S_HOST_ONLY(type) && from != Tp_HostId())
+                {
+                    break;
+                }
+                if (payLen > sizeof(s_gameIn[0].buf))
+                {
+                    break;
+                }
+                SDL_LockMutex(s_lock);
+                next = (s_gameInHead + 1) % SESSION_GAME_IN;
+                if (next == s_gameInTail)
+                {
+                    s_gameInTail = (s_gameInTail + 1) % SESSION_GAME_IN;
+                }
+                s_gameIn[s_gameInHead].peer     = from;
+                s_gameIn[s_gameInHead].type     = type;
+                s_gameIn[s_gameInHead].len      = (int)payLen;
+                s_gameIn[s_gameInHead].reliable = 0;
+                memcpy(s_gameIn[s_gameInHead].buf, buf + SHNET_HDR_SIZE, payLen);
+                s_gameInHead = next;
+                SDL_UnlockMutex(s_lock);
+            }
             break;
         }
     }
@@ -1554,6 +1635,42 @@ void ShSession_Tick(unsigned int nowMs)
                 break;
             }
             Tp_Send(s_members[i].steamId, buf, off, 0);
+        }
+    }
+
+    /* Game messages queued by game-thread code. */
+    {
+        static ShSessionGameMsg out[SESSION_GAME_OUT];
+        int                     gn, g;
+        SDL_LockMutex(s_lock);
+        gn = s_gameOutN;
+        if (gn > 0) memcpy(out, s_gameOut, (size_t)gn * sizeof(out[0]));
+        s_gameOutN = 0;
+        SDL_UnlockMutex(s_lock);
+        for (g = 0; g < gn; g++)
+        {
+            static shn_u8 gb[SHNET_MAX_PAYLOAD];
+            int           len = SHNET_HDR_SIZE + out[g].len;
+            memcpy(gb + SHNET_HDR_SIZE, out[g].buf, (size_t)out[g].len);
+            ShnPutHeader(gb, (shn_u8)out[g].type, (shn_u16)out[g].len, 0);
+            if (out[g].peer != 0)
+            {
+                Tp_Send(out[g].peer, gb, len, out[g].reliable);
+            }
+            else if (s_backend == COOP_BACKEND_UDP)
+            {
+                Tp_Send(0, gb, len, out[g].reliable); /* one room-wide datagram */
+            }
+            else
+            {
+                for (i = 0; i < s_memberCount; i++)
+                {
+                    if (s_members[i].steamId != Tp_SelfId())
+                    {
+                        Tp_Send(s_members[i].steamId, gb, len, out[g].reliable);
+                    }
+                }
+            }
         }
     }
 

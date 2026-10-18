@@ -217,6 +217,14 @@ void ShSession_RequestWorld(int mapIdx);
  * ignored from then on either way. */
 void ShSession_RequestKick(unsigned long long id);
 
+/* Game messages (SHNET_S_IS_GAME types) carried for game-thread code such as
+ * sh_net_npc.c. SendGame queues a payload for `to` (0 = every member);
+ * TakeGame pops the oldest received one with its sender and returns its
+ * length, -1 when none is waiting. Host-only types
+ * from anyone but the host never reach TakeGame. */
+int  ShSession_SendGame(int type, const void* payload, int len, unsigned long long to, int reliable);
+int  ShSession_TakeGame(int* type, unsigned long long* from, void* buf, int cap);
+
 /* Guest poll: a map the host told us to boot into since the last call, or -1.
  * Clears the request. The game thread consumes this to launch the co-op game. */
 int  ShSession_TakeWorldRequest(void);

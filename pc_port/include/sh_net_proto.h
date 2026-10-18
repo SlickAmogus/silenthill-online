@@ -136,6 +136,9 @@ enum
     SHNET_MSG_S_ITEM     = 0x56, /* P2P  I picked this up; everyone gets it too */
     SHNET_MSG_S_DAMAGE   = 0x57, /* P2P  I hit YOU: apply this damage to yourself (friendly fire) */
     SHNET_MSG_S_KICK     = 0x58, /* P2P  host -> member: you have been removed */
+    SHNET_MSG_S_NPC_SNAP = 0x59, /* P2P  host -> all: the monsters it runs (sh_net_npc.c) */
+    SHNET_MSG_S_NPC_HIT  = 0x5A, /* P2P  member -> host: I hit your monster */
+    SHNET_MSG_S_NPC_ATK  = 0x5B, /* P2P  host -> member: your monster hit you */
 
     /* Co-op over a relay server (sh_master rooms). The transport the session layer
      * rides when it is NOT using Steam P2P: the host creates a room, guests join
@@ -423,7 +426,10 @@ SHN_FN void ShnSanitizeText(char* s)
  * change everyone's game may only come from the world's owner. */
 #define SHNET_MSG_S_FIRST 0x50
 #define SHNET_MSG_S_LAST  0x5F
-#define SHNET_S_HOST_ONLY(t) ((t) == SHNET_MSG_S_WORLD || (t) == SHNET_MSG_S_KICK)
+#define SHNET_S_HOST_ONLY(t) ((t) == SHNET_MSG_S_WORLD || (t) == SHNET_MSG_S_KICK || \
+                              (t) == SHNET_MSG_S_NPC_SNAP || (t) == SHNET_MSG_S_NPC_ATK)
+/* Types the session hands to the game thread whole (ShSession_TakeGame). */
+#define SHNET_S_IS_GAME(t)   ((t) >= SHNET_MSG_S_NPC_SNAP && (t) <= SHNET_MSG_S_LAST)
 
 #define SHNET_HELLO_LEN_OLD (2 + 1 + 1 + 4 + SHNET_NAME_MAX + SHNET_BUILD_MAX + 4)
 #define SHNET_HELLO_LEN     (SHNET_HELLO_LEN_OLD + 4)

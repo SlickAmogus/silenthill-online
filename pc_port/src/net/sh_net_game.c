@@ -21,6 +21,7 @@
 #include "bodyprog/sound/sound_system.h"     /* Sd_PlaySfx: lobby join chime */
 #include "sh_net_hit.h"                      /* friendly fire proxies + incoming hits */
 #include "sh_net_respawn.h"                  /* co-op death -> respawn instead of game over */
+#include "sh_net_npc.h"                      /* co-op: host-owned monsters */
 #include "bodyprog/sound/sfx_id_enum.h"
 #include "bodyprog/items.h"        /* INV_ITEM_COUNT_MAX, s_InventoryItem */
 #include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup */
@@ -241,7 +242,11 @@ static unsigned char s_sfxSeq;
 void ShNet_LocalPlayerSfx(int sfxId, int vol, int soundType, int pitched)
 {
     extern int g_PcCoopGame;
-    if (!g_PcCoopGame || !ShSession_Active() || g_GameWork.gameState != GameState_InGame)
+    extern int g_PcNetNpcSwapActive;
+    /* During a monster's update against a guest's proxy, "the player's
+     * position" is the guest's: those sounds are not ours to send. */
+    if (!g_PcCoopGame || !ShSession_Active() || g_GameWork.gameState != GameState_InGame ||
+        g_PcNetNpcSwapActive)
     {
         return;
     }
@@ -638,6 +643,8 @@ void ShNet_GameTick(void)
 
     /* Co-op: place a joining guest next to the host once his pose is known. */
     ShNetG_CoopGuestSpawn(mapIdx);
+    /* Co-op: the host's monsters out to everyone, puppets in from the host. */
+    Pc_NetNpc_GameTick();
     {
         extern int g_PcCoopGame;
         if (g_PcCoopGame && ShSession_Active() && g_DeltaTime != Q12(0.0f))

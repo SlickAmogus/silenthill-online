@@ -27,6 +27,7 @@ extern int g_DebugAnimKfView;
 extern int g_DebugViewNpcSlot;
 void Pc_KeyframeViewerPoseNpc(s_AnmHeader* anmHdr, GsCOORDINATE2* boneCoords);
 #include "pc_pick.h"
+#include "sh_net_npc.h" /* co-op: host-owned monsters, guest puppets */
 #endif
 
 void Savegame_EnemyStateUpdate(s_SubCharacter* chara) // 0x80037DC4
@@ -317,6 +318,9 @@ void Game_NpcRoomInitSpawn(bool cond) // 0x80037F24
                  : (!Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(22.0f)) &&
                     (!cond || Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(20.0f)))))
             && _slotSpawnCooldown[i] == 0
+            /* Co-op guest: a spawn point the host is near is the host's to
+             * fill; its monster arrives here as a puppet instead. */
+            && !Pc_NetNpc_GuestSkipRow(i, curCharaSpawn->positionX, curCharaSpawn->positionZ)
 #else
             !Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(22.0f)) &&
             (!cond || Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(20.0f)))
@@ -376,6 +380,9 @@ void Game_NpcRoomInitSpawn(bool cond) // 0x80037F24
 
             chara                    = &g_SysWork.npcs[npcIdx];
             chara->model.anim.flags |= AnimFlag_Visible;
+#ifdef SH_PC_PORT
+            Pc_NetNpc_OnSpawn(npcIdx);
+#endif
         }
     }
 
@@ -617,15 +624,20 @@ void Game_NpcUpdate(void) // 0x80038354
                 }
 
                 new_var = temp_t3;
+#ifdef SH_PC_PORT
+                new_var = Pc_NetNpc_NearestPlayerD2(npc, new_var); /* co-op host: nearest player, not just us */
+#endif
 
 #ifdef SH_PC_PORT
                 /* Thinned fog: despawn only out of view, and alive ones further
-                 * out than the 30u spawn reach. 80u frees the slot regardless. */
-                if (Pc_LongViewActive()
+                 * out than the 30u spawn reach. 80u frees the slot regardless.
+                 * A co-op puppet lives exactly as long as the host's monster. */
+                if (!Pc_NetNpc_IsPuppet(k) && Pc_LongViewActive()
                         ? (new_var > SQUARE(80) ||
                            (new_var > ((var_t5 == 0 && npc->health < Q12(0.0f)) ? SQUARE(24) : SQUARE(48)) &&
                             !Pc_WorldPointInView(npc->position.vx, npc->position.vz)))
-                        : (new_var > ((var_t5 == 0 && npc->health < Q12(0.0f)) ? SQUARE(24) : SQUARE(40))))
+                        : (!Pc_NetNpc_IsPuppet(k) &&
+                           new_var > ((var_t5 == 0 && npc->health < Q12(0.0f)) ? SQUARE(24) : SQUARE(40))))
 #else
                 if (new_var > ((var_t5 == 0 && npc->health < Q12(0.0f)) ? SQUARE(24) : SQUARE(40)))
 #endif
@@ -634,6 +646,7 @@ void Game_NpcUpdate(void) // 0x80038354
                     SysWork_NpcFlagClear(k);
                     CLEAR_FLAG(g_SysWork.field_228C, npc->field_40);
 #ifdef SH_PC_PORT
+                    Pc_NetNpc_OnFree(k);
                     /* Slot freed: drop any debug-spawn flag with it (its own
                      * Savegame_EnemyStateUpdate already ran at kill time). */
                     {
@@ -875,7 +888,13 @@ void Game_NpcUpdate(void) // 0x80038354
             }
 #endif
 #ifdef SH_PC_PORT
-            if (Pc_Pick_NpcTick(npc, (int)(npc - g_SysWork.npcs)))
+            if (Pc_NetNpc_IsPuppet(k))
+            {
+                /* Co-op guest: the host runs this monster; take its state. */
+                Pc_NetNpc_PuppetTick(npc, k, g_CharaModelAnimsData[animDataInfoIdx].activeAnmHdr, boneCoords);
+                Collision_FlagsUpdate(); /* undo Collision_FlagsLocationUpdate, as an AI tick does */
+            }
+            else if (Pc_Pick_NpcTick(npc, (int)(npc - g_SysWork.npcs)))
             {
                 /* Console FREEZE: no AI tick, so the bones keep last frame's
                  * pose and the enemy neither moves nor attacks. */
@@ -891,6 +910,9 @@ void Game_NpcUpdate(void) // 0x80038354
             else
 #endif
             {
+#ifdef SH_PC_PORT
+                Pc_NetNpc_BeginUpdate(k, boneCoords); /* co-op host: record the pose this AI sets */
+#endif
                 g_MapOverlayHdr.charaUpdateFuncs[npc->model.charaId](npc, g_CharaModelAnimsData[animDataInfoIdx].activeAnmHdr, boneCoords);
 #ifdef SH_PC_PORT
                 /* Randomizer enemy-HP scale: the AI update above sets an enemy's
@@ -904,6 +926,12 @@ void Game_NpcUpdate(void) // 0x80038354
                 Collision_FlagsUpdate();
                 func_80037E78(npc);
                 func_8008A3AC(npc);
+#ifdef SH_PC_PORT
+                /* After func_8008A3AC: a monster's swing is resolved there,
+                 * against whoever playerWork holds, so the proxy must still
+                 * be in place. */
+                Pc_NetNpc_EndUpdate();
+#endif
             }
 
             if (npc->model.anim.flags & AnimFlag_Visible)

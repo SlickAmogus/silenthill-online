@@ -168,6 +168,16 @@ void Sfx_WithFlagsAndPitchPlay(e_SfxId sfxId, const VECTOR3* pos, q23_8 vol, s32
     q23_8 adjVol;
     q23_8 balance;
 
+#ifdef SH_PC_PORT
+    /* Co-op host: a monster's sound travels with its snapshot (sh_net_npc.c).
+     * Bit 2 re-tunes a sound already playing; only key-ons travel. */
+    if (!(sfxFlags & (1 << 2)))
+    {
+        extern void Pc_NetNpc_Sfx(const void* pos, int sfxId, int vol, int pitched);
+        Pc_NetNpc_Sfx(pos, sfxId, vol, 0);
+    }
+#endif
+
     // Get stereo balance.
     if (sfxFlags & SfxFlag_Mono || g_GameWork.config.soundType)
     {
@@ -216,6 +226,13 @@ void Sfx_WithPitchPlay(e_SfxId sfxId, const VECTOR3* pos, q23_8 vol, s8 pitch) /
 {
     q23_8 volCpy;
     s32   balance;
+
+#ifdef SH_PC_PORT
+    {
+        extern void Pc_NetNpc_Sfx(const void* pos, int sfxId, int vol, int pitched);
+        Pc_NetNpc_Sfx(pos, sfxId, vol, 1);
+    }
+#endif
 
     // Get stereo balance.
     if (g_GameWork.config.soundType)
