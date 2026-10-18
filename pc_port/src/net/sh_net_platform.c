@@ -233,13 +233,38 @@ int ShNetPlat_Recv(ShNetSock* s, ShNetAddr* from, void* buf, int cap)
         return -1;
     }
 
-    n = (int)recvfrom(s->fd, (char*)buf, (size_t)cap, 0,
-                      (struct sockaddr*)stor, &slen);
+    {
+        /* An oversized datagram or an ICMP port-unreachable shows up as an
+         * error for ONE datagram; skip it rather than end the caller's drain,
+         * or a stream of them would starve every real packet behind it. */
+        int skips = 0;
+        for (;;)
+        {
+            slen = (socklen_t)sizeof(stor);
+            n = (int)recvfrom(s->fd, (char*)buf, (size_t)cap, 0,
+                              (struct sockaddr*)stor, &slen);
+#if defined(_WIN32)
+            if (n < 0 && skips < 64 &&
+                (WSAGetLastError() == WSAEMSGSIZE || WSAGetLastError() == WSAECONNRESET))
+            {
+                skips++;
+                continue;
+            }
+#else
+            if (n < 0 && skips < 64 && (errno == EMSGSIZE || errno == ECONNREFUSED))
+            {
+                skips++;
+                continue;
+            }
+#endif
+            break;
+        }
+    }
     if (n < 0)
     {
 #if defined(_WIN32)
         int err = WSAGetLastError();
-        if (err == WSAEWOULDBLOCK || err == WSAECONNRESET)
+        if (err == WSAEWOULDBLOCK || err == WSAECONNRESET || err == WSAEMSGSIZE)
         {
             return 0;
         }

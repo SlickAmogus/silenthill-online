@@ -109,6 +109,50 @@ static int ShNetG_BuildFlags(void)
  * so single-player never queues a thing. Known gap: the WORLD pickup is not yet
  * removed on the other clients, so two players walking over the same box both
  * collect it; flag-based specials (plates, stone) already de-dup themselves. */
+/* What a partner's pickup may add to OUR inventory: real items only (no
+ * cutscene props, no ids the item tables do not cover), at most what one
+ * pickup could carry. Returns the count to grant, 0 to refuse. */
+static int ShNetG_ShareableCount(int id, int cnt)
+{
+    int i, have = 0, used = 0;
+
+    if (!((id >= InvItemId_HealthDrink && id <= InvItemId_Ampoule) ||
+          (id >= InvItemId_LobbyKey && id <= InvItemId_ChannelingStone && id != 86) ||
+          (id >= InvItemId_Chemical && id <= InvItemId_DiskOfOuroboros && id != 111) ||
+          (id >= InvItemId_KitchenKnife && id <= InvItemId_Axe && id != 131) ||
+          (id >= InvItemId_Handgun && id <= InvItemId_HyperBlaster) ||
+          (id >= InvItemId_HandgunBullets && id <= InvItemId_ShotgunShells) ||
+          (id >= InvItemId_Flashlight && id <= InvItemId_GasolineTank)))
+    {
+        return 0;
+    }
+    for (i = 0; i < INV_ITEM_COUNT_MAX; i++)
+    {
+        if (g_SavegamePtr->items[i].id_0 == id) have = 1;
+        if (g_SavegamePtr->items[i].id_0 != InvItemId_Unequipped && g_SavegamePtr->items[i].id_0 != 0xFF) used++;
+    }
+    /* Inventory_AddSpecialItem appends at inventorySlotCount; a full bag
+     * would write past items[]. */
+    if (!have && (used >= INV_ITEM_COUNT_MAX - 1 || g_SavegamePtr->inventorySlotCount >= INV_ITEM_COUNT_MAX))
+    {
+        return 0;
+    }
+    if (id >= InvItemId_HandgunBullets && id <= InvItemId_ShotgunShells)
+    {
+        return cnt > 200 ? 200 : cnt;
+    }
+    if (id >= InvItemId_HealthDrink && id <= InvItemId_Ampoule)
+    {
+        return cnt > 10 ? 10 : cnt;
+    }
+    if (id >= InvItemId_Handgun && id <= InvItemId_HyperBlaster)
+    {
+        return have ? 0 : (cnt > 100 ? 100 : cnt);
+    }
+    /* Keys, puzzle items, melee weapons, tools: one, and only if missing. */
+    return have ? 0 : 1;
+}
+
 static void ShNetG_SyncItems(void)
 {
     extern int            g_PcCoopGame;
@@ -128,7 +172,12 @@ static void ShNetG_SyncItems(void)
         if (id > 0 && id < 256 && id != 0xFF && cnt > 0)
         {
             int t;
-            Inventory_AddSpecialItem((u8)id, (u8)(cnt > 255 ? 255 : cnt));
+            cnt = ShNetG_ShareableCount(id, cnt);
+            if (cnt <= 0)
+            {
+                continue;
+            }
+            Inventory_AddSpecialItem((u8)id, (u8)cnt);
             t          = (int)s_snap[id] + cnt;
             s_snap[id] = (unsigned short)(t > 65535 ? 65535 : t);
             SH_DBG("[COOP] got shared item %d x%d", id, cnt);
@@ -301,7 +350,7 @@ static void ShNetG_CoopGuestSpawn(int mapIdx)
         return;
     }
 
-    hostId = ShSteam_LobbyOwner();
+    hostId = ShSession_HostId();
     n      = ShSession_MemberCount();
     for (i = 0; i < n; i++)
     {

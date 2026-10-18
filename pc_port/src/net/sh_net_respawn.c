@@ -199,14 +199,23 @@ static int PickPartner(VECTOR3* pos, short* rot, char* how, int howCap)
     pos->vz = best->z - Q12_MULT_FLOAT_PRECISE(Math_Cos(best->rotY), 0.8f);
     pos->vy = best->y;
     {
-        /* no floor a step behind them (wall, ledge): their exact spot */
+        /* no floor a step behind them (wall, ledge): their exact spot. And the
+         * spot must be real ground near the height they report: the position
+         * is theirs to claim, and a void or a point inside geometry would put
+         * us there on every respawn. Without that, the room entry is used. */
         s_CollisionSurface coll;
         Collision_SurfaceGet(&coll, pos->vx, pos->vz);
         if (coll.groundHeight == RS_NO_FLOOR)
         {
             pos->vx = best->x;
             pos->vz = best->z;
+            Collision_SurfaceGet(&coll, pos->vx, pos->vz);
         }
+        if (coll.groundHeight == RS_NO_FLOOR || ABS(coll.groundHeight - best->y) > Q12(1.5f))
+        {
+            return 0;
+        }
+        pos->vy = coll.groundHeight;
     }
     *rot = best->rotY;
     snprintf(how, (size_t)howCap, "next to %s%s", best->name, bestSame ? "" : " (another room)");

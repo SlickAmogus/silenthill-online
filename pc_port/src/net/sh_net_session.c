@@ -24,6 +24,9 @@
 #define ABS_I(v) ((v) < 0 ? -(v) : (v))
 /* Sfx_Base (sfx_id_enum.h): ids above it index g_Vab_InfoTable[420]. */
 #define Sfx_Base_NET 1280
+/* MapIdx_MAPX_S00 (map.h): the last map index the game can load. */
+#define MAP_IDX_LAST 44
+#define CLAMP_COORD(v) ((v) > SHNET_COORD_MAX ? SHNET_COORD_MAX : (v) < -SHNET_COORD_MAX ? -SHNET_COORD_MAX : (v))
 #include "sh_net_steam.h"
 #include "sh_net_coopudp.h"
 #include "sh_net_coop.h"
@@ -48,6 +51,8 @@ static const char* Tp_NameOf(unsigned long long id)
 { return s_backend == COOP_BACKEND_UDP ? CoopUdp_NameOf(id) : ShSteam_NameOf(id); }
 static int Tp_IsHost(void)
 { return s_backend == COOP_BACKEND_UDP ? CoopUdp_IsHost() : ShSteam_IsLobbyOwner(); }
+static unsigned long long Tp_HostId(void)
+{ return s_backend == COOP_BACKEND_UDP ? CoopUdp_HostId() : ShSteam_LobbyOwner(); }
 static int Tp_Active(void)
 { return s_backend == COOP_BACKEND_UDP ? CoopUdp_Active() : (ShSteam_LobbyState() == SHSTEAM_LOBBY_IN); }
 static unsigned long long Tp_LobbyId(void)
@@ -113,6 +118,7 @@ static struct
     int                isHost;
     unsigned long long lobbyId;
     int                memberCount;
+    unsigned long long hostId;
     ShSessionMember    members[SHSESSION_MAX_MEMBERS];
     char               status[128];
     int                worldReq;    /* guest: a map the host said to boot into, -1 none */
@@ -598,6 +604,11 @@ int ShSession_IsHost(void)
     return s_pub.isHost;
 }
 
+unsigned long long ShSession_HostId(void)
+{
+    return s_pub.hostId;
+}
+
 void ShSession_SetGuestDebug(int on)
 {
     if (!s_lock) return;
@@ -700,6 +711,27 @@ static void ShSession_SyncMembers(void)
     s_memberCount = count;
 }
 
+/* A member can send as fast as its link allows; logging every one of those
+ * would let one hostile peer fill the disk. 20 lines per member per 10 s. */
+static int ShSession_LogOk(int idx)
+{
+    static unsigned int s_win[SHSESSION_MAX_MEMBERS];
+    static int          s_n[SHSESSION_MAX_MEMBERS];
+    unsigned int        now = ShNetPlat_Millis();
+    if (idx < 0 || idx >= SHSESSION_MAX_MEMBERS) return 0;
+    if (now - s_win[idx] > 10000u) { s_win[idx] = now; s_n[idx] = 0; }
+    return ++s_n[idx] <= 20;
+}
+
+/* Per-sender budget for messages that change OUR game (items, hits). */
+static int ShSession_BudgetOk(int idx, unsigned int* winMs, int* used, int perSec)
+{
+    unsigned int now = ShNetPlat_Millis();
+    if (idx < 0 || idx >= SHSESSION_MAX_MEMBERS) return 0;
+    if (now - winMs[idx] >= 1000u) { winMs[idx] = now; used[idx] = 0; }
+    return ++used[idx] <= perSec;
+}
+
 static void ShSession_SendHello(unsigned long long to)
 {
     shn_u8 buf[SHNET_HDR_SIZE + SHNET_NAME_MAX + 4];
@@ -715,7 +747,7 @@ static void ShSession_SendHello(unsigned long long to)
     ShnPutU8(buf, &off, 0);
     ShnPutU16(buf, &off, 0);
     ShnPutHeader(buf, SHNET_MSG_S_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), 0);
-    ShSteam_Send(to, buf, off, 1);
+    Tp_Send(to, buf, off, 1);
 }
 
 static void ShSession_Receive(unsigned int now)
@@ -762,16 +794,26 @@ static void ShSession_Receive(unsigned int now)
                 break;
             }
             ShnGetStr(buf + SHNET_HDR_SIZE, &off, SHNET_NAME_MAX, nm, SHNET_NAME_MAX);
-            if (nm[0])
+            ShnSanitizeText(nm);
+            /* The transport's own name for a member (Steam persona, relay
+             * roster) wins: a self-announced name would let anyone call
+             * themselves the host. */
             {
-                SDL_strlcpy(s_members[idx].name, nm, SHSESSION_NAME_MAX);
+                const char* tn = Tp_NameOf(from);
+                if (nm[0] && !(tn && tn[0]))
+                {
+                    SDL_strlcpy(s_members[idx].name, nm, SHSESSION_NAME_MAX);
+                }
             }
             {
                 int m = (int)ShnGetU8(buf + SHNET_HDR_SIZE, &off);
-                s_members[idx].mapIdx = (m == 0xFF) ? -1 : m;
+                s_members[idx].mapIdx = (m == 0xFF || m > MAP_IDX_LAST) ? -1 : m;
             }
-            SH_DBG("[SESSION] %s is in the session (map %d)",
-                   s_members[idx].name, s_members[idx].mapIdx);
+            if (ShSession_LogOk(idx))
+            {
+                SH_DBG("[SESSION] %s is in the session (map %d)",
+                       s_members[idx].name, s_members[idx].mapIdx);
+            }
             break;
         }
         case SHNET_MSG_S_PING:
@@ -789,7 +831,7 @@ static void ShSession_Receive(unsigned int now)
             stamp = ShnGetU32(buf + SHNET_HDR_SIZE, &ro);
             ShnPutU32(out, &o, stamp);
             ShnPutHeader(out, SHNET_MSG_S_PONG, (shn_u16)(o - SHNET_HDR_SIZE), 0);
-            ShSteam_Send(from, out, o, 0);
+            Tp_Send(from, out, o, 0);
             break;
         }
         case SHNET_MSG_S_PONG:
@@ -810,7 +852,7 @@ static void ShSession_Receive(unsigned int now)
             break;
         }
         case SHNET_MSG_S_BYE:
-            SH_DBG("[SESSION] %s left the session", s_members[idx].name);
+            if (ShSession_LogOk(idx)) SH_DBG("[SESSION] %s left the session", s_members[idx].name);
             s_members[idx].linked = 0;
             break;
         case SHNET_MSG_S_POS:
@@ -823,6 +865,7 @@ static void ShSession_Receive(unsigned int now)
                 break;
             }
             m                      = (int)ShnGetU8(p, &o);
+            if (m > MAP_IDX_LAST) m = 0xFF;
             if (s_members[idx].mapIdx != ((m == 0xFF) ? -1 : m))
             {
                 s_members[idx].ringCount = 0; /* another map's coordinates */
@@ -838,6 +881,11 @@ static void ShSession_Receive(unsigned int now)
             s_members[idx].anim    = (unsigned short)ShnGetU16(p, &o);
             s_members[idx].frame   = (unsigned short)ShnGetU16(p, &o);
             s_members[idx].poseMs  = now;
+            /* Everything downstream (interpolation, distance tests, respawn
+             * placement) assumes a coordinate inside the world. */
+            s_members[idx].x = CLAMP_COORD(s_members[idx].x);
+            s_members[idx].y = CLAMP_COORD(s_members[idx].y);
+            s_members[idx].z = CLAMP_COORD(s_members[idx].z);
             {
                 ShSessionMember* mb = &s_members[idx];
                 ShSessionPose    smp;
@@ -981,10 +1029,16 @@ static void ShSession_Receive(unsigned int now)
                 break;
             }
             m = (int)ShnGetU8(p, &o);
+            /* Only the world's owner picks the map, and only a real one: the
+             * index reaches GameBoot_MapLoad, which selects a file by it. */
+            if (from != Tp_HostId() || m > MAP_IDX_LAST)
+            {
+                break;
+            }
             if (!s_declineWorld)
             {
-                s_worldReqIn = (m == 0xFF) ? -1 : m;
-                SH_DBG("[SESSION] host says: boot into map %d", s_worldReqIn);
+                s_worldReqIn = m;
+                if (ShSession_LogOk(idx)) SH_DBG("[SESSION] host says: boot into map %d", s_worldReqIn);
             }
             break;
         }
@@ -1000,6 +1054,11 @@ static void ShSession_Receive(unsigned int now)
             id = (int)ShnGetU8(p, &o);
             (void)ShnGetU8(p, &o); /* pad */
             n  = (int)ShnGetU16(p, &o);
+            {
+                static unsigned int s_itWin[SHSESSION_MAX_MEMBERS];
+                static int          s_itUsed[SHSESSION_MAX_MEMBERS];
+                if (!ShSession_BudgetOk(idx, s_itWin, s_itUsed, 8)) break;
+            }
             SDL_LockMutex(s_lock);
             if (s_itemInCount < SESSION_ITEM_Q && n > 0)
             {
@@ -1008,7 +1067,7 @@ static void ShSession_Receive(unsigned int now)
                 s_itemInCount++;
             }
             SDL_UnlockMutex(s_lock);
-            SH_DBG("[SESSION] %s picked up item %d x%d", s_members[idx].name, id, n);
+            if (ShSession_LogOk(idx)) SH_DBG("[SESSION] %s picked up item %d x%d", s_members[idx].name, id, n);
             break;
         }
         case SHNET_MSG_S_DAMAGE:
@@ -1028,14 +1087,33 @@ static void ShSession_Receive(unsigned int now)
             d.reaction = ShnGetU8(p, &o);
             (void)ShnGetU8(p, &o);
             d.yaw      = (short)ShnGetU16(p, &o);
+            /* A hit only counts from someone who opted into friendly fire
+             * themselves, is on our map, and is not firing faster than any
+             * weapon can. */
+            {
+                static unsigned int s_dmWin[SHSESSION_MAX_MEMBERS];
+                static int          s_dmUsed[SHSESSION_MAX_MEMBERS];
+                int                 myMap;
+                SDL_LockMutex(s_lock);
+                myMap = s_req.poseValid ? s_req.poseMap : -1;
+                SDL_UnlockMutex(s_lock);
+                if (!(s_members[idx].flags & SHNET_PF_FFIRE) || s_members[idx].mapIdx != myMap ||
+                    !ShSession_BudgetOk(idx, s_dmWin, s_dmUsed, 10))
+                {
+                    break;
+                }
+            }
             SDL_LockMutex(s_lock);
             if (s_dmgInCount < SESSION_DMG_Q)
             {
                 s_dmgIn[s_dmgInCount++] = d;
             }
             SDL_UnlockMutex(s_lock);
-            SH_DBG("[SESSION] %s hit me for %d.%03d HP", s_members[idx].name,
-                   d.amount >> 12, ((d.amount & 0xFFF) * 1000) >> 12);
+            if (ShSession_LogOk(idx))
+            {
+                SH_DBG("[SESSION] %s hit me for %d.%03d HP", s_members[idx].name,
+                       d.amount >> 12, ((d.amount & 0xFFF) * 1000) >> 12);
+            }
             break;
         }
         default:
@@ -1051,6 +1129,7 @@ static void ShSession_Publish(void)
     SDL_LockMutex(s_lock);
     s_pub.active      = Tp_Active();
     s_pub.isHost      = Tp_IsHost();
+    s_pub.hostId      = Tp_HostId();
     s_pub.lobbyId     = Tp_LobbyId();
     s_pub.memberCount = s_memberCount;
     for (i = 0; i < s_memberCount; i++)

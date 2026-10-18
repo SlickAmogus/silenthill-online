@@ -294,7 +294,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                         skipToGameStep = 1; /* load failed -> fresh game */
                     }
                 }
-                else if (guestMap >= 0)
+                else if (guestMap >= 0 && guestMap <= MapIdx_MAPX_S00)
                 {
                     /* Guest: the host is in this map -- boot a fresh game into it
                      * (coopGuestMap overrides the New Game start map). Flag that

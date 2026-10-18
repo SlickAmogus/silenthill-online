@@ -245,6 +245,8 @@ void* Pc_NetHit_BulletTrace(void* attacker, const void* from, void* offset, void
     return trace->character;
 }
 
+#define CLAMP_KB(v) ((v) > Q12(1.0f) ? Q12(1.0f) : (v) < -Q12(1.0f) ? -Q12(1.0f) : (v))
+
 void Pc_NetHit_ApplyIncoming(void)
 {
     s_SubCharacter* me = &g_SysWork.playerWork.player;
@@ -267,10 +269,18 @@ void Pc_NetHit_ApplyIncoming(void)
         {
             continue;
         }
-        if (reaction < 40 || reaction > 69 || amount <= 0 || amount > Q12(1000.0f))
+        /* Only the reactions HitReaction sends: the rest of 40..69 includes
+         * grabs whose handlers expect a live monster and would hold the
+         * player with nobody to let go. One hit can at most empty a full
+         * health bar, and knockback stays within a monster blow's range. */
+        if ((reaction != 43 && reaction != 57 && reaction != 64 && reaction != 65) ||
+            amount <= 0 || amount > Q12(100.0f))
         {
             continue;
         }
+        kbx = CLAMP_KB(kbx);
+        kby = CLAMP_KB(kby);
+        kbz = CLAMP_KB(kbz);
 
         /* Exactly what func_8008B714 writes for a monster's hit; the player
          * update consumes it next frame (Player_ReceiveDamage). There is no

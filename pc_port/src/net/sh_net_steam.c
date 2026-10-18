@@ -330,7 +330,19 @@ int ShSteam_Init(unsigned int appId)
         appId = SHSTEAM_DEFAULT_APPID;
     }
 
-    s_dll = LoadLibraryA("steam_api64.dll");
+    /* From the exe's own folder only: a bare name also searches the working
+     * directory and PATH, where a planted steam_api64.dll would run as us. */
+    {
+        char  path[MAX_PATH];
+        DWORD n = GetModuleFileNameA(NULL, path, (DWORD)sizeof(path));
+        char* slash;
+        s_dll = NULL;
+        if (n > 0 && n < sizeof(path) - 20 && (slash = strrchr(path, 0x5C)) != NULL)
+        {
+            strcpy(slash + 1, "steam_api64.dll");
+            s_dll = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        }
+    }
     if (!s_dll)
     {
         SH_DBG("[STEAM] steam_api64.dll not found next to the exe - Steam features off. "
@@ -409,6 +421,31 @@ int ShSteam_Init(unsigned int appId)
     s_iMatchmaking = ShSteam_Interface(mmNames,     (int)(sizeof(mmNames) / sizeof(mmNames[0])),       "ISteamMatchmaking");
     s_iUtils       = ShSteam_Interface(utilNames,   (int)(sizeof(utilNames) / sizeof(utilNames[0])),   "ISteamUtils");
     s_iMessages    = ShSteam_Interface(msgNames,    (int)(sizeof(msgNames) / sizeof(msgNames[0])),     "ISteamNetworkingMessages");
+
+    /* Relay-only P2P. With ICE allowed, Steam may connect lobby members
+     * directly, and a direct route means each side learns the other's public
+     * IP. Valve's relays (SDR) carry everything instead; the cost is a few ms.
+     * k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable = 104, Disable = 0. */
+    {
+        static const char* const nuNames[] = {
+            "SteamAPI_SteamNetworkingUtils_SteamAPI_v004",
+            "SteamAPI_SteamNetworkingUtils_SteamAPI_v003"
+        };
+        typedef unsigned char (*PFN_NU_SetGlobalInt32)(void* self, int value, int v);
+        void*                 nu  = ShSteam_Interface(nuNames, 2, "ISteamNetworkingUtils");
+        PFN_NU_SetGlobalInt32 set = (PFN_NU_SetGlobalInt32)ShSteam_Sym("SteamAPI_ISteamNetworkingUtils_SetGlobalConfigValueInt32");
+        if (nu && set && set(nu, 104, 0))
+        {
+            SH_DBG("[STEAM] P2P is relay-only (direct connections off: peers never see your IP)");
+        }
+        else
+        {
+            /* Without the switch there is no way to promise IP privacy, so
+             * Steam co-op stays off rather than quietly connecting directly. */
+            SH_WARN("[STEAM] could not force relay-only P2P - Steam co-op disabled to keep your IP private");
+            s_iMessages = NULL;
+        }
+    }
 
     s_UserGetSteamID    = (PFN_User_GetSteamID)ShSteam_Sym("SteamAPI_ISteamUser_GetSteamID");
     s_GetPersonaName    = (PFN_Friends_GetPersonaName)ShSteam_Sym("SteamAPI_ISteamFriends_GetPersonaName");

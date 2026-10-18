@@ -28,6 +28,12 @@
  * keep every player on the same LAN.
  */
 
+/* rand_s is only declared when this is set before the first stdlib.h, and
+ * windows.h pulls stdlib.h in, so it has to precede every include. */
+#if defined(_WIN32) && !defined(_CRT_RAND_S)
+#define _CRT_RAND_S
+#endif
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -48,6 +54,12 @@ typedef int       ShSockLen;
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#if defined(__linux__) && defined(__has_include)
+#if __has_include(<sys/random.h>)
+#include <sys/random.h>
+#define SH_HAVE_GETRANDOM 1
+#endif
+#endif
 typedef int       ShSock;
 typedef socklen_t ShSockLen;
 #define SH_INVALID_SOCK (-1)
@@ -93,6 +105,35 @@ typedef socklen_t ShSockLen;
 #define SRV_DEATH_DEDUPE_DIST (((1 << 12) * 3) / 2)
 #define SRV_DEATH_DEDUPE_MS   30000
 
+/* A HELLO cookie is valid for its 30 s bucket and the one before, so a client
+ * that got its CHALLENGE just before a bucket edge still gets in. */
+#define SRV_COOKIE_BUCKET_MS  30000
+
+/* REJECTs go to an address that has not proven it receives there; a global
+ * cap keeps the server useless as a reflector however many sources are forged. */
+#define SRV_REJECTS_PER_SEC   50
+
+/* Online password guessing: a few typos per minute, then silence. */
+#define SRV_PASS_FAILS_PER_MIN 5
+#define SRV_PASS_TABLE        64
+
+#define SRV_WELCOME_GAP_MS    500
+#define SRV_MAX_PER_IP_DEFAULT 8
+
+/* Datagrams handled per select() pass: enough for a full server's normal
+ * traffic, few enough that a junk flood cannot starve the timers below it. */
+#define SRV_RX_PER_PASS       256
+
+#define SRV_MEMO_GAP_MS       5000
+#define SRV_RATING_CLAMP      1000
+#define SRV_VOTE_BUCKETS      1024
+#define SRV_VOTE_WAYS         4
+
+#define SRV_JOIN_FAILS_MAX    10
+#define SRV_JOIN_BLOCK_MS     60000
+
+#define SRV_CHARA_MAX         64
+
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
@@ -127,6 +168,13 @@ typedef struct
     int                memoCount;
     int                loggedSnap;
 
+    unsigned int       lastWelcomeMs;
+    unsigned int       lastMemoMs;
+    int                memoPlaced;   /* lastMemoMs is meaningful */
+    int                joinFails;
+    unsigned int       joinBlockUntilMs;
+    int                joinBlocked;
+
     /* Co-op room. room == 0 means not in one. The host is the client that
      * created it (roomHost); roomMax is the player cap, kept on every member. */
     shn_u16            room;
@@ -147,6 +195,10 @@ typedef struct
     shn_s16 rating;
     shn_u16 phraseA, wordA, phraseB, wordB;
     long    placedUnix;
+    /* Placer's IPv4 (network order), memory only: the quota is per address
+     * because a playerId is fresh on every HELLO. Never sent, never saved, so
+     * markers loaded from disk carry 0 and count against nobody. */
+    shn_u32 ownerIp;
 } Memo;
 
 static Client        g_clients[SRV_MAX_CLIENTS];
@@ -154,14 +206,34 @@ static Memo*         g_memos;
 static int           g_memoCount;
 static shn_u32       g_nextMemoId = 1;
 static shn_u32       g_nextPlayerId = 1;
-static shn_u32       g_sessionSeed;
+static shn_u8        g_cookieKey[16];
 
 static ShSock        g_sock = SH_INVALID_SOCK;
 static unsigned short g_port = SHNET_DEFAULT_PORT;
 static char          g_serverName[SHNET_SERVER_MAX] = "Silent Hill";
 static char          g_motd[SHNET_MOTD_MAX]         = "";
-static shn_u32       g_passHash;
+static char          g_password[256];
 static int           g_maxClients = 64;
+static int           g_maxPerIp   = SRV_MAX_PER_IP_DEFAULT;
+
+static unsigned int  g_rejectWindowMs;
+static int           g_rejectCount;
+
+typedef struct
+{
+    shn_u32      ip;
+    unsigned int windowMs;
+    int          fails;
+} PassFail;
+static PassFail      g_passFails[SRV_PASS_TABLE];
+
+typedef struct
+{
+    shn_u32 ip;
+    shn_u32 memoId;
+} Vote;
+static Vote          g_votes[SRV_VOTE_BUCKETS][SRV_VOTE_WAYS];
+static unsigned char g_voteNext[SRV_VOTE_BUCKETS];
 static int           g_featureFlags = SHNET_SF_GHOSTS | SHNET_SF_MEMOS |
                                       SHNET_SF_DEATHS | SHNET_SF_EVENTS;
 static char          g_dbPath[512] = "memos.db";
@@ -178,6 +250,7 @@ static int           g_verbose;
 static char g_allowedBuilds[SRV_BUILDS_MAX][SHNET_BUILD_MAX];
 static int  g_allowedBuildCount;
 
+#ifndef SH_MASTER_EMBED /* the allow-list is set from the command line only */
 static void SrvAllowBuild(const char* id)
 {
     char tmp[SHNET_BUILD_MAX];
@@ -208,6 +281,7 @@ static void SrvLoadBuildsFile(const char* path)
     }
     fclose(f);
 }
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Platform odds and ends                                              */
@@ -254,6 +328,93 @@ static void SrvLog(const char* fmt, ...)
     printf("\n");
     fflush(stdout);
 #endif
+}
+
+static int SrvOsRandom(shn_u8* buf, int n)
+{
+#if defined(_WIN32)
+    int i = 0;
+    while (i < n)
+    {
+        unsigned int v;
+        int          k;
+        if (rand_s(&v) != 0)
+        {
+            return 0;
+        }
+        for (k = 0; k < 4 && i < n; k++, i++)
+        {
+            buf[i] = (shn_u8)(v >> (8 * k));
+        }
+    }
+    return 1;
+#else
+    int   got = 0;
+    FILE* f;
+#ifdef SH_HAVE_GETRANDOM
+    while (got < n)
+    {
+        ssize_t r = getrandom(buf + got, (size_t)(n - got), 0);
+        if (r <= 0)
+        {
+            break;
+        }
+        got += (int)r;
+    }
+    if (got == n)
+    {
+        return 1;
+    }
+    got = 0;
+#endif
+    f = fopen("/dev/urandom", "rb");
+    if (!f)
+    {
+        return 0;
+    }
+    got = (int)fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    return got == n;
+#endif
+}
+
+/* Session ids, room codes and the cookie key must not be predictable from
+ * anything a client can observe, which rules out any PRNG whose output is its
+ * state. The xorshift fallback only exists so a box with no usable OS source
+ * still runs; it is said loudly because it reopens session guessing. */
+static void SrvRandomBytes(void* out, int n)
+{
+    static int     warned;
+    static shn_u32 fb;
+    shn_u8*        buf = (shn_u8*)out;
+    int            i;
+
+    if (SrvOsRandom(buf, n))
+    {
+        return;
+    }
+    if (!warned)
+    {
+        warned = 1;
+        SrvLog("WARNING: no OS random source; session ids and cookies are guessable");
+    }
+    if (fb == 0)
+    {
+#if defined(_WIN32)
+        fb = (shn_u32)time(NULL) ^ ((shn_u32)GetCurrentProcessId() << 16) ^ SrvMillis();
+#else
+        fb = (shn_u32)time(NULL) ^ ((shn_u32)getpid() << 16) ^ SrvMillis();
+#endif
+        fb ^= (shn_u32)(size_t)&warned * 2654435761u;
+        if (fb == 0) fb = 0x9E3779B9u;
+    }
+    for (i = 0; i < n; i++)
+    {
+        fb ^= fb << 13;
+        fb ^= fb >> 17;
+        fb ^= fb << 5;
+        buf[i] = (shn_u8)(fb >> 24);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -304,20 +465,101 @@ static Client* SrvFindBySession(shn_u32 session)
 }
 
 /* Session ids authorise the reconnect path, which rebinds a live session to a
- * new address. A sequential id would make that path a takeover primitive for
- * anyone who can count, so ids come out of a seeded xorshift instead. Not
- * cryptographic; enough that guessing one is not a matter of trying id+1. */
+ * new address, so one player's id must say nothing about anyone else's. */
 static shn_u32 SrvNewSession(void)
 {
     shn_u32 v;
     do
     {
-        g_sessionSeed ^= g_sessionSeed << 13;
-        g_sessionSeed ^= g_sessionSeed >> 17;
-        g_sessionSeed ^= g_sessionSeed << 5;
-        v = g_sessionSeed;
+        SrvRandomBytes(&v, (int)sizeof(v));
     } while (v == 0 || SrvFindBySession(v) != NULL);
     return v;
+}
+
+static int SrvClientsFromIp(shn_u32 ip)
+{
+    int i, n = 0;
+    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    {
+        if (g_clients[i].used && g_clients[i].addr.sin_addr.s_addr == ip) n++;
+    }
+    return n;
+}
+
+static shn_u32 SrvCookie(const struct sockaddr_in* a, unsigned int bucket)
+{
+    shn_u8  d[10];
+    shn_u32 ip = a->sin_addr.s_addr;
+    shn_u16 pt = a->sin_port;
+    shn_u32 v;
+
+    memcpy(d, &ip, 4);
+    memcpy(d + 4, &pt, 2);
+    d[6] = (shn_u8)bucket;
+    d[7] = (shn_u8)(bucket >> 8);
+    d[8] = (shn_u8)(bucket >> 16);
+    d[9] = (shn_u8)(bucket >> 24);
+    v = (shn_u32)ShnSipHash(g_cookieKey, d, (int)sizeof(d));
+    return v ? v : 1u; /* 0 is what a client sends when it has no cookie yet */
+}
+
+static int SrvCookieValid(const struct sockaddr_in* a, shn_u32 cookie)
+{
+    unsigned int bucket = SrvMillis() / SRV_COOKIE_BUCKET_MS;
+    if (cookie == 0)
+    {
+        return 0;
+    }
+    return cookie == SrvCookie(a, bucket) || cookie == SrvCookie(a, bucket - 1u);
+}
+
+/* Returns 1 while this address may still try a password. */
+static int SrvPassAllowed(shn_u32 ip, unsigned int now)
+{
+    int i;
+    for (i = 0; i < SRV_PASS_TABLE; i++)
+    {
+        PassFail* f = &g_passFails[i];
+        if (f->fails && f->ip == ip && (now - f->windowMs) < 60000u)
+        {
+            return f->fails < SRV_PASS_FAILS_PER_MIN;
+        }
+    }
+    return 1;
+}
+
+static void SrvPassFailed(shn_u32 ip, unsigned int now)
+{
+    int i, oldest = -1;
+    for (i = 0; i < SRV_PASS_TABLE; i++)
+    {
+        PassFail* f = &g_passFails[i];
+        if (f->fails && f->ip == ip)
+        {
+            if ((now - f->windowMs) >= 60000u)
+            {
+                f->windowMs = now;
+                f->fails    = 0;
+            }
+            f->fails++;
+            return;
+        }
+    }
+    for (i = 0; i < SRV_PASS_TABLE; i++)
+    {
+        if (!g_passFails[i].fails)
+        {
+            oldest = i;
+            break;
+        }
+        if (oldest < 0 || (now - g_passFails[i].windowMs) > (now - g_passFails[oldest].windowMs))
+        {
+            oldest = i;
+        }
+    }
+    g_passFails[oldest].ip       = ip;
+    g_passFails[oldest].windowMs = now;
+    g_passFails[oldest].fails    = 1;
 }
 
 static int SrvClientCount(void)
@@ -351,6 +593,43 @@ static void SrvSanitize(char* s, int cap)
     {
         snprintf(s, (size_t)cap, "Wanderer");
     }
+}
+
+/* Chat must not share SrvSanitize's default: a blank line has to stay blank so
+ * the caller drops it, instead of broadcasting the word "Wanderer". */
+static void SrvSanitizeChat(char* s, int cap)
+{
+    int i;
+    int keep = 0;
+    for (i = 0; i < cap - 1 && s[i]; i++)
+    {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 32 || c > 126)
+        {
+            s[i] = '?';
+        }
+        if (s[i] != ' ')
+        {
+            keep = 1;
+        }
+    }
+    s[cap - 1] = '\0';
+    if (!keep)
+    {
+        s[0] = '\0';
+    }
+}
+
+static shn_s32 SrvClampCoord(shn_s32 v)
+{
+    if (v > SHNET_COORD_MAX)  return SHNET_COORD_MAX;
+    if (v < -SHNET_COORD_MAX) return -SHNET_COORD_MAX;
+    return v;
+}
+
+static int SrvCoordOk(shn_s32 v)
+{
+    return v >= -SHNET_COORD_MAX && v <= SHNET_COORD_MAX;
 }
 
 /* ------------------------------------------------------------------ */
@@ -427,7 +706,7 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
     (void)ShnGetU8(p, &off);
     (void)ShnGetU16(p, &off);
     ShnGetStr(p, &off, SHNET_CHAT_MAX, text, sizeof(text));
-    SrvSanitize(text, SHNET_CHAT_MAX);
+    SrvSanitizeChat(text, SHNET_CHAT_MAX);
     if (text[0] == '\0')
     {
         return;
@@ -458,14 +737,34 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
 
 static void SrvSendReject(const struct sockaddr_in* to, int reason, const char* text)
 {
-    shn_u8 buf[SHNET_HDR_SIZE + 4 + SHNET_REJECT_MAX];
-    int    off = SHNET_HDR_SIZE;
+    shn_u8       buf[SHNET_HDR_SIZE + 4 + SHNET_REJECT_MAX];
+    int          off = SHNET_HDR_SIZE;
+    unsigned int now = SrvMillis();
 
+    if (now - g_rejectWindowMs >= 1000u)
+    {
+        g_rejectWindowMs = now;
+        g_rejectCount    = 0;
+    }
+    if (++g_rejectCount > SRV_REJECTS_PER_SEC)
+    {
+        return;
+    }
     ShnPutU8(buf, &off, (shn_u8)reason);
     ShnPutU8(buf, &off, 0);
     ShnPutU16(buf, &off, 0);
     ShnPutStr(buf, &off, text, SHNET_REJECT_MAX);
     ShnPutHeader(buf, SHNET_MSG_REJECT, (shn_u16)(off - SHNET_HDR_SIZE), 0);
+    SrvSend(to, buf, off);
+}
+
+static void SrvSendChallenge(const struct sockaddr_in* to)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 4];
+    int    off = SHNET_HDR_SIZE;
+
+    ShnPutU32(buf, &off, SrvCookie(to, SrvMillis() / SRV_COOKIE_BUCKET_MS));
+    ShnPutHeader(buf, SHNET_MSG_CHALLENGE, 4, 0);
     SrvSend(to, buf, off);
 }
 
@@ -591,6 +890,19 @@ static void SrvLoadDb(void)
         {
             break;
         }
+        /* A store written before the server checked template indices may
+         * still hold bad ones; they must not be served again. */
+        if (map < 0 || map >= SRV_MAP_COUNT ||
+            !SrvCoordOk(x) || !SrvCoordOk(y) || !SrvCoordOk(z) ||
+            ((kind & 0x0F) == SHNET_MARK_MEMO &&
+             (pa >= SHNET_MEMO_PHRASE_MAX || wa >= SHNET_MEMO_WORD_MAX ||
+              (pb != SHNET_MEMO_NONE && pb >= SHNET_MEMO_PHRASE_MAX) ||
+              (wb != SHNET_MEMO_NONE && wb >= SHNET_MEMO_WORD_MAX))))
+        {
+            continue;
+        }
+        if (rating > SRV_RATING_CLAMP)  rating = SRV_RATING_CLAMP;
+        if (rating < -SRV_RATING_CLAMP) rating = -SRV_RATING_CLAMP;
         memset(&m, 0, sizeof(m));
         m.memoId  = id;
         m.ownerId = owner;
@@ -631,13 +943,23 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     shn_u32  reconnect;
     char     name[SHNET_NAME_MAX];
     char     build[SHNET_BUILD_MAX];
-    shn_u32  pass;
+    shn_u32  proof;
+    shn_u32  cookie;
     Client*  c;
     char     addr[64];
     char     text[SHNET_EVENT_MAX];
+    unsigned int now = SrvMillis();
+    int      fresh = 0;
 
-    if (len < 2 + 1 + 1 + 4 + SHNET_NAME_MAX + SHNET_BUILD_MAX + 4)
+    /* Shorter than even the old layout is not a HELLO; answering it at all
+     * would turn a 12-byte datagram into a 112-byte one. */
+    if (len < SHNET_HELLO_LEN_OLD)
     {
+        return;
+    }
+    if (len < SHNET_HELLO_LEN)
+    {
+        SrvSendReject(from, SHNET_REJ_VERSION, "Update your game to play online");
         return;
     }
     ver       = ShnGetU16(p, &off);
@@ -646,21 +968,38 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     reconnect = ShnGetU32(p, &off);
     ShnGetStr(p, &off, SHNET_NAME_MAX, name, SHNET_NAME_MAX);
     ShnGetStr(p, &off, SHNET_BUILD_MAX, build, SHNET_BUILD_MAX);
-    pass = ShnGetU32(p, &off);
-
-    SrvAddrStr(from, addr, (int)sizeof(addr));
+    proof  = ShnGetU32(p, &off);
+    cookie = ShnGetU32(p, &off);
 
     if (ver != SHNET_PROTO_VER)
     {
         SrvSendReject(from, SHNET_REJ_VERSION, "Wrong protocol version");
-        SrvLog("rejected %s: protocol v%u", addr, (unsigned)ver);
         return;
     }
-    if (g_passHash && pass != g_passHash)
+    /* Nothing below runs, logs or allocates for a sender that has not shown it
+     * receives at its source address; forged sources stop here. */
+    if (!SrvCookieValid(from, cookie))
     {
+        SrvSendChallenge(from);
+        return;
+    }
+
+    SrvAddrStr(from, addr, (int)sizeof(addr));
+
+    if (g_password[0] && proof != ShnPasswordProof(g_password, cookie))
+    {
+        if (!SrvPassAllowed(from->sin_addr.s_addr, now))
+        {
+            return;
+        }
+        SrvPassFailed(from->sin_addr.s_addr, now);
         SrvSendReject(from, SHNET_REJ_PASSWORD, "Password required or incorrect");
         SrvLog("rejected %s: bad password", addr);
         return;
+    }
+    if (charaId >= SRV_CHARA_MAX)
+    {
+        charaId = 0;
     }
     /* Build allow-list: a deterrent against casually modified clients (the id
      * is the client exe's hash). Off unless the admin listed at least one id. */
@@ -687,7 +1026,13 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     c = SrvFindByAddr(from);
     if (!c && reconnect)
     {
+        /* A NAT rebinding changes the port, not the address. Requiring the
+         * same IP means a leaked session id is useless from anywhere else. */
         c = SrvFindBySession(reconnect);
+        if (c && c->addr.sin_addr.s_addr != from->sin_addr.s_addr)
+        {
+            c = NULL;
+        }
     }
 
     if (!c)
@@ -696,6 +1041,12 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         if (SrvClientCount() >= g_maxClients)
         {
             SrvSendReject(from, SHNET_REJ_FULL, "Server is full");
+            return;
+        }
+        if (SrvClientsFromIp(from->sin_addr.s_addr) >= g_maxPerIp)
+        {
+            SrvSendReject(from, SHNET_REJ_FULL, "Too many players from your address");
+            SrvLog("rejected %s: %d players already on that address", addr, g_maxPerIp);
             return;
         }
         for (i = 0; i < SRV_MAX_CLIENTS; i++)
@@ -718,6 +1069,8 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         c->joinMs   = SrvMillis();
         c->mapIdx   = -1;
 
+        fresh       = 1;
+
         snprintf(text, sizeof(text), "%s entered the fog", name);
         SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
         SrvLog("+ %s joined from %s (id %u, build %s)", name, addr, c->playerId, build);
@@ -725,11 +1078,18 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
 
     c->addr    = *from;
     c->charaId = charaId;
-    c->lastRxMs = SrvMillis();
+    c->lastRxMs = now;
     memcpy(c->name, name, SHNET_NAME_MAX);
 
+    /* A client retries HELLO until it hears WELCOME; one answer per gap is
+     * enough to get through loss and keeps a HELLO loop from being a pump. */
+    if (!fresh && (now - c->lastWelcomeMs) < SRV_WELCOME_GAP_MS)
+    {
+        return;
+    }
+    c->lastWelcomeMs = now;
     SrvSendWelcome(c);
-    if (g_motd[0])
+    if (fresh && g_motd[0])
     {
         SrvSendEvent(c, SHNET_EV_SERVER, 0, g_motd);
     }
@@ -759,6 +1119,13 @@ static void SrvHandleState(Client* c, const shn_u8* p, int len)
     {
         c->mapIdx = -1;
     }
+    if (c->charaId >= SRV_CHARA_MAX)
+    {
+        c->charaId = 0;
+    }
+    c->x = SrvClampCoord(c->x);
+    c->y = SrvClampCoord(c->y);
+    c->z = SrvClampCoord(c->z);
 }
 
 static void SrvHandlePing(Client* c, const shn_u8* p, int len)
@@ -960,6 +1327,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     int     ao = SHNET_HDR_SIZE;
     int     mine = 0;
     int     i;
+    shn_u32 ip;
 
     if (!(g_featureFlags & SHNET_SF_MEMOS))
     {
@@ -1000,6 +1368,42 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     {
         return;
     }
+    if (!SrvCoordOk(m.x) || !SrvCoordOk(m.y) || !SrvCoordOk(m.z))
+    {
+        return;
+    }
+    /* Template indices are persisted and replayed to every later visitor, so
+     * an out-of-table one would be a stored attack on clients that index with
+     * it. Only memos use them; the other kinds carry none. */
+    if ((m.kind & 0x0F) == SHNET_MARK_MEMO)
+    {
+        if (m.phraseA >= SHNET_MEMO_PHRASE_MAX || m.wordA >= SHNET_MEMO_WORD_MAX)
+        {
+            return;
+        }
+        if (m.phraseB != SHNET_MEMO_NONE && m.phraseB >= SHNET_MEMO_PHRASE_MAX)
+        {
+            return;
+        }
+        if (m.wordB != SHNET_MEMO_NONE && m.wordB >= SHNET_MEMO_WORD_MAX)
+        {
+            return;
+        }
+    }
+    else
+    {
+        m.phraseA = m.wordA = m.phraseB = m.wordB = SHNET_MEMO_NONE;
+    }
+    /* Deaths are exempt: they are already one per death by the dedupe below,
+     * and dying twice in five seconds is a real thing that happens. */
+    if ((m.kind & 0x0F) != SHNET_MARK_DEATH)
+    {
+        unsigned int now = SrvMillis();
+        if (c->memoPlaced && (now - c->lastMemoMs) < SRV_MEMO_GAP_MS)
+        {
+            return;
+        }
+    }
 
     /* The client latches its death report, but a reconnect or a replayed
      * datagram can still produce a second one; collapse those here so a single
@@ -1021,18 +1425,21 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
         c->lastDeathZ  = m.z;
     }
 
+    /* Keyed on the address, not the playerId: a playerId is new on every
+     * HELLO, so a per-id cap was reset by simply reconnecting. */
+    ip = c->addr.sin_addr.s_addr;
     for (i = 0; i < g_memoCount; i++)
     {
-        if (g_memos[i].ownerId == c->playerId) mine++;
+        if (g_memos[i].ownerIp == ip) mine++;
     }
     if (mine >= SRV_MEMOS_PER_USER)
     {
-        /* Retire this player's oldest rather than refusing: a session that hit
-         * its cap should still be able to leave a message. */
+        /* Retire this address's oldest rather than refusing: a player who hit
+         * the cap should still be able to leave a message. */
         int oldest = -1;
         for (i = 0; i < g_memoCount; i++)
         {
-            if (g_memos[i].ownerId != c->playerId)
+            if (g_memos[i].ownerIp != ip)
             {
                 continue;
             }
@@ -1062,12 +1469,18 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
 
     m.memoId     = g_nextMemoId++;
     m.ownerId    = c->playerId;
+    m.ownerIp    = ip;
     m.rating     = 0;
     m.placedUnix = (long)time(NULL);
     memcpy(m.ownerName, c->name, SHNET_NAME_MAX);
 
     g_memos[g_memoCount++] = m;
     g_dbDirty = 1;
+    if ((m.kind & 0x0F) != SHNET_MARK_DEATH)
+    {
+        c->lastMemoMs = SrvMillis();
+        c->memoPlaced = 1;
+    }
 
     ShnPutU32(ack, &ao, m.memoId);
     ShnPutU32(ack, &ao, (shn_u32)m.mapIdx);
@@ -1088,6 +1501,33 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     }
 }
 
+/* One vote per (address, memo). A small set-associative table rather than an
+ * exact record: it forgets old votes once it fills, which bounds memory and
+ * still turns a vote flood into one vote per memo per address. */
+static int SrvVoteOnce(shn_u32 ip, shn_u32 memoId)
+{
+    shn_u8  key[8];
+    int     b, w;
+    Vote*   set;
+
+    memcpy(key, &ip, 4);
+    memcpy(key + 4, &memoId, 4);
+    b   = (int)(ShnSipHash(g_cookieKey, key, 8) % SRV_VOTE_BUCKETS);
+    set = g_votes[b];
+    for (w = 0; w < SRV_VOTE_WAYS; w++)
+    {
+        if (set[w].memoId == memoId && set[w].ip == ip)
+        {
+            return 0;
+        }
+    }
+    w = g_voteNext[b];
+    g_voteNext[b] = (unsigned char)((w + 1) % SRV_VOTE_WAYS);
+    set[w].ip     = ip;
+    set[w].memoId = memoId;
+    return 1;
+}
+
 static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
 {
     int     off = 0;
@@ -1104,6 +1544,7 @@ static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
 
     for (i = 0; i < g_memoCount; i++)
     {
+        int r;
         if (g_memos[i].memoId != id)
         {
             continue;
@@ -1112,7 +1553,20 @@ static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
         {
             return; /* no self-rating */
         }
-        g_memos[i].rating = (shn_s16)(g_memos[i].rating + (delta >= 0 ? 1 : -1));
+        /* You rate what you are reading, which means standing on its map;
+         * this also stops one client sweeping ratings across the whole store. */
+        if (c->mapIdx != g_memos[i].mapIdx)
+        {
+            return;
+        }
+        if (!SrvVoteOnce(c->addr.sin_addr.s_addr, id))
+        {
+            return;
+        }
+        r = (int)g_memos[i].rating + (delta >= 0 ? 1 : -1);
+        if (r >  SRV_RATING_CLAMP) r =  SRV_RATING_CLAMP;
+        if (r < -SRV_RATING_CLAMP) r = -SRV_RATING_CLAMP;
+        g_memos[i].rating = (shn_s16)r;
         g_dbDirty = 1;
         return;
     }
@@ -1184,14 +1638,20 @@ static void SrvSendSnapshots(unsigned int now)
             {
                 Client* o = &g_clients[j];
                 long long dx, dz;
+                unsigned long long ux, uz;
                 if (!o->used || o == c || o->mapIdx != c->mapIdx)
                 {
                     continue;
                 }
+                /* Coordinates are clamped on receipt, so |d| < 2^25 and the
+                 * squares cannot overflow; squaring unsigned keeps it defined
+                 * even if that clamp is ever loosened. */
                 dx = (long long)o->x - c->x;
                 dz = (long long)o->z - c->z;
+                ux = (unsigned long long)(dx < 0 ? -dx : dx);
+                uz = (unsigned long long)(dz < 0 ? -dz : dz);
                 picks[n].idx = j;
-                picks[n].d2  = (unsigned long long)(dx * dx) + (unsigned long long)(dz * dz);
+                picks[n].d2  = ux * ux + uz * uz;
                 n++;
             }
             if (n > SHNET_SNAP_MAX)
@@ -1303,7 +1763,9 @@ static void SrvSendRoomRoster(Client* c, int joined)
     ShnPutU16(buf, &off, c->room);
     ShnPutU32(buf, &off, hostId);
     cntOff = off; ShnPutU8(buf, &off, 0);
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    /* room 0 is "not in a room", which every un-roomed player shares; listing
+     * it would hand a kicked member the names of strangers server-wide. */
+    for (i = 0; c->room && i < SRV_MAX_CLIENTS; i++)
     {
         Client* m = &g_clients[i];
         if (!m->used || m->room != c->room) continue;
@@ -1337,12 +1799,13 @@ static void SrvSendRoomReject(Client* c, int reason, const char* text)
 
 static shn_u16 SrvNewRoomCode(void)
 {
-    static int seeded = 0;
     int tries;
-    if (!seeded) { srand((unsigned)time(NULL)); seeded = 1; }
     for (tries = 0; tries < 10000; tries++)
     {
-        shn_u16 code = (shn_u16)(1000 + (rand() % 9000)); /* shareable 4-digit */
+        shn_u32 r;
+        shn_u16 code;
+        SrvRandomBytes(&r, (int)sizeof(r));
+        code = (shn_u16)(1000 + (r % 9000)); /* shareable 4-digit */
         if (SrvRoomCount(code) == 0) return code;
     }
     return 0;
@@ -1394,26 +1857,55 @@ static void SrvHandleRoomCreate(Client* c, const shn_u8* p, int len)
     SrvSendRoomRoster(c, 1);
 }
 
+static void SrvRoomJoinFailed(Client* c, unsigned int now)
+{
+    if (++c->joinFails >= SRV_JOIN_FAILS_MAX)
+    {
+        c->joinBlocked      = 1;
+        c->joinBlockUntilMs = now + SRV_JOIN_BLOCK_MS;
+        SrvLog("  %s (id %u) missed %d room joins; ignoring joins for %d s",
+               c->name, c->playerId, c->joinFails, SRV_JOIN_BLOCK_MS / 1000);
+    }
+}
+
 static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
 {
     int     off  = 0;
     shn_u16 code = (len >= 2) ? (shn_u16)ShnGetU16(p, &off) : 0;
     Client* host;
+    unsigned int now = SrvMillis();
+
+    /* 9000 codes fall to a patient guesser; past a run of misses this client
+     * goes quiet for a minute, which puts a sweep at hours, not seconds. */
+    if (c->joinBlocked)
+    {
+        if ((int)(now - c->joinBlockUntilMs) < 0)
+        {
+            return;
+        }
+        c->joinBlocked = 0;
+        c->joinFails   = 0;
+    }
     /* Code 0 means "whatever room is open here" -- the Join-by-IP path, which
-     * reaches a host directly and need not know a code. Take the first open one. */
+     * reaches a host directly and need not know a code. Take the first open
+     * one the host chose to list; a hidden room is joined by its code only. */
     if (code == 0)
     {
         int i;
         for (i = 0; i < SRV_MAX_CLIENTS; i++)
         {
             Client* h = &g_clients[i];
-            if (h->used && h->roomHost && SrvRoomCount(h->room) < h->roomMax) { code = h->room; break; }
+            if (h->used && h->roomHost && !h->roomHidden && SrvRoomCount(h->room) < h->roomMax)
+            {
+                code = h->room;
+                break;
+            }
         }
-        if (code == 0) { SrvSendRoomReject(c, 2, "no open room here"); return; }
+        if (code == 0) { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 2, "no open room here"); return; }
     }
     host = SrvRoomHost(code);
-    if (!host)                                   { SrvSendRoomReject(c, 2, "no such room");  return; }
-    if (SrvRoomCount(code) >= host->roomMax)     { SrvSendRoomReject(c, 3, "room is full");  return; }
+    if (!host)                               { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 2, "no such room"); return; }
+    if (SrvRoomCount(code) >= host->roomMax) { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 3, "room is full"); return; }
     SrvRoomLeave(c, 1);
     c->room = code; c->roomHost = 0; c->roomMax = host->roomMax;
     SrvLog("  %s (id %u) joined room %u", c->name, c->playerId, code);
@@ -1442,18 +1934,27 @@ static void SrvHandleRoomList(Client* c)
 }
 
 /* Forward a member's co-op packet to the rest of its room (target 0) or to one
- * member (target == their id). The payload is an opaque S_* message; the server
- * never parses it, it only prefixes the sender id. */
+ * member (target == their id). The payload is an S_* message relayed byte for
+ * byte; the server checks only its framing and who may send it, so that what
+ * arrives at a peer is at least a well-formed co-op packet. */
 static void SrvHandleCoopRelay(Client* c, const shn_u8* p, int len)
 {
     int           off = 0, innerLen, i;
     shn_u32       target;
     const shn_u8* inner;
+    shn_u8        iType;
+    shn_u16       iPay;
+    shn_u32       iSess;
     if (!c->room || len < 4) return;
     target   = ShnGetU32(p, &off);
     inner    = p + off;
     innerLen = len - off;
     if (innerLen <= 0 || innerLen > SHNET_MTU - SHNET_HDR_SIZE - 4) return;
+    if (!ShnParseHeader(inner, innerLen, &iType, &iPay, &iSess)) return;
+    if (iType < SHNET_MSG_S_HELLO || iType > SHNET_MSG_S_DAMAGE) return;
+    if (SHNET_HDR_SIZE + (int)iPay != innerLen) return;
+    /* S_WORLD boots every guest into a map; only the host may say that. */
+    if (iType == SHNET_MSG_S_WORLD && !c->roomHost) return;
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
         Client* m = &g_clients[i];
@@ -1509,6 +2010,16 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
 
     c->lastRxMs = now;
 
+#ifdef SH_MASTER_EMBED
+    /* A This-PC co-op host is a relay for one room of friends, not a living
+     * world: chat and the marker store have no business on it. */
+    if (type == SHNET_MSG_CHAT_SAY || type == SHNET_MSG_MEMO_PLACE ||
+        type == SHNET_MSG_MEMO_QUERY || type == SHNET_MSG_MEMO_RATE)
+    {
+        return;
+    }
+#endif
+
     switch (type)
     {
     case SHNET_MSG_STATE:      SrvHandleState(c, pay, (int)payLen);      break;
@@ -1557,6 +2068,7 @@ static void SrvUsage(const char* argv0)
     printf("               (a client's id is logged on every join: \"build ...\")\n");
     printf("  -d FILE      marker store path (default memos.db)\n");
     printf("  --max N      maximum simultaneous players (default 64)\n");
+    printf("  -i N         maximum players from one IP address (default %d)\n", SRV_MAX_PER_IP_DEFAULT);
     printf("  --no-ghosts  do not fan out positions\n");
     printf("  --no-memos   do not accept or serve messages\n");
     printf("  --no-deaths  do not accept or serve death markers\n");
@@ -1585,7 +2097,13 @@ int main(int argc, char** argv)
         }
         else if (!strcmp(a, "-w") && i + 1 < argc)
         {
-            g_passHash = ShnHashPassword(argv[++i]);
+            snprintf(g_password, sizeof(g_password), "%s", argv[++i]);
+        }
+        else if (!strcmp(a, "-i") && i + 1 < argc)
+        {
+            g_maxPerIp = atoi(argv[++i]);
+            if (g_maxPerIp < 1)               g_maxPerIp = 1;
+            if (g_maxPerIp > SRV_MAX_CLIENTS) g_maxPerIp = SRV_MAX_CLIENTS;
         }
         else if (!strcmp(a, "-b") && i + 1 < argc)
         {
@@ -1629,11 +2147,9 @@ int ShMaster_Serve(void)
     struct sockaddr_in bindAddr;
     unsigned int       lastExpire = 0;
 
-    g_sessionSeed = (shn_u32)time(NULL) ^ ((shn_u32)(size_t)&bindAddr * 2654435761u) ^ 0x9E3779B9u;
-    if (g_sessionSeed == 0)
-    {
-        g_sessionSeed = 0x1234567u;
-    }
+    /* Fresh every start: a restart invalidates outstanding cookies, which only
+     * costs a client one extra CHALLENGE round trip. */
+    SrvRandomBytes(g_cookieKey, (int)sizeof(g_cookieKey));
 
     g_memos = (Memo*)calloc(SRV_MAX_MEMOS, sizeof(Memo));
     if (!g_memos)
@@ -1708,9 +2224,9 @@ int ShMaster_Serve(void)
     SrvLoadDb();
     g_lastSaveMs = SrvMillis();
 
-    SrvLog("\"%s\" listening on UDP %u  (max %d players%s%s%s%s)",
-           g_serverName, (unsigned)g_port, g_maxClients,
-           g_passHash ? ", password" : "",
+    SrvLog("\"%s\" listening on UDP %u  (max %d players, %d per address%s%s%s%s)",
+           g_serverName, (unsigned)g_port, g_maxClients, g_maxPerIp,
+           g_password[0] ? ", password" : "",
            (g_featureFlags & SHNET_SF_GHOSTS) ? "" : ", no ghosts",
            (g_featureFlags & SHNET_SF_MEMOS)  ? "" : ", no memos",
            (g_featureFlags & SHNET_SF_DEATHS) ? "" : ", no deaths");
@@ -1728,7 +2244,8 @@ int ShMaster_Serve(void)
 
         if (select((int)g_sock + 1, &rd, NULL, NULL, &tv) > 0 && FD_ISSET(g_sock, &rd))
         {
-            for (;;)
+            int budget;
+            for (budget = 0; budget < SRV_RX_PER_PASS; budget++)
             {
                 shn_u8             buf[SHNET_MTU];
                 struct sockaddr_in from;
@@ -1786,6 +2303,9 @@ void ShMaster_SetConfig(unsigned short port, int maxPlayers, const char* name)
     }
     if (name && name[0]) snprintf(g_serverName, sizeof(g_serverName), "%s", name);
     g_dbPath[0] = '\0';   /* no marker store on disk when embedded */
+    /* Advertise only what this relay serves, so clients do not wait on ghost
+     * snapshots or marker lists that will never come. */
+    g_featureFlags &= ~(SHNET_SF_MEMOS | SHNET_SF_GHOSTS);
     g_running   = 1;
 }
 

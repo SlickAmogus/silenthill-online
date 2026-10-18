@@ -82,6 +82,15 @@ typedef char shn_static_assert_widths[
 #define SHNET_REJECT_MAX   96
 #define SHNET_EVENT_MAX    96
 
+/* Upper bounds the server enforces on memo template indices. The tables live
+ * in sh_net_memo.c and are append-only; it asserts it stays under these. */
+#define SHNET_MEMO_PHRASE_MAX 64
+#define SHNET_MEMO_WORD_MAX   256
+#define SHNET_MEMO_NONE       0xFFFF /* second half of a memo left empty */
+
+/* World coordinates any sane pose stays within (Q19.12, +-2048 m). */
+#define SHNET_COORD_MAX    (2048 << 12)
+
 /* ------------------------------------------------------------------ */
 /* Message types                                                       */
 /* ------------------------------------------------------------------ */
@@ -93,6 +102,7 @@ enum
     SHNET_MSG_PONG       = 0x04, /* S->C */
     SHNET_MSG_BYE        = 0x05, /* C->S  clean disconnect */
     SHNET_MSG_REJECT     = 0x06, /* S->C  refused, with a reason */
+    SHNET_MSG_CHALLENGE  = 0x07, /* S->C  echo this cookie in your HELLO (u32) */
 
     SHNET_MSG_STATE      = 0x10, /* C->S  this player's position, ~10Hz */
     SHNET_MSG_SNAPSHOT   = 0x11, /* S->C  everyone else on this map, ~10Hz */
@@ -381,6 +391,114 @@ SHN_FN shn_u32 ShnHashPassword(const char* s)
         h *= 16777619u;
     }
     return h ? h : 1u;
+}
+
+/* Printable ASCII only, in place: anything a peer or server names (players,
+ * rooms, servers, MOTD, chat) reaches the font, the UI and the log, and must
+ * not carry control bytes, newlines or bytes the font has no glyph for. */
+SHN_FN void ShnSanitizeText(char* s)
+{
+    if (s == 0) return;
+    for (; *s; s++)
+    {
+        unsigned char c = (unsigned char)*s;
+        if (c < 32 || c > 126) *s = '?';
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Handshake                                                           */
+/* ------------------------------------------------------------------ */
+
+/* HELLO = ver u16, pad u8, chara u8, reconnect u32, name, build, proof u32,
+ * cookie u32. A HELLO without the cookie field is an outdated client. The
+ * server answers a HELLO whose cookie is not the one it would issue to that
+ * address with a 16-byte CHALLENGE (smaller than the HELLO, so it cannot be
+ * used to amplify), and allocates nothing until the cookie comes back, which
+ * proves the sender really receives at the address it claims. */
+#define SHNET_HELLO_LEN_OLD (2 + 1 + 1 + 4 + SHNET_NAME_MAX + SHNET_BUILD_MAX + 4)
+#define SHNET_HELLO_LEN     (SHNET_HELLO_LEN_OLD + 4)
+
+/* SipHash-2-4 (Aumasson and Bernstein), the standard keyed hash for exactly
+ * this: short inputs, a secret key, outputs an attacker must not predict. */
+#define SHN_ROTL64(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+#define SHN_SIPROUND(v0, v1, v2, v3) do { \
+    v0 += v1; v1 = SHN_ROTL64(v1, 13); v1 ^= v0; v0 = SHN_ROTL64(v0, 32); \
+    v2 += v3; v3 = SHN_ROTL64(v3, 16); v3 ^= v2; \
+    v0 += v3; v3 = SHN_ROTL64(v3, 21); v3 ^= v0; \
+    v2 += v1; v1 = SHN_ROTL64(v1, 17); v1 ^= v2; v2 = SHN_ROTL64(v2, 32); } while (0)
+
+SHN_FN unsigned long long ShnSipHash(const shn_u8 key[16], const void* data, int len)
+{
+    const shn_u8*      in = (const shn_u8*)data;
+    unsigned long long k0 = 0, k1 = 0, m, b;
+    unsigned long long v0, v1, v2, v3;
+    int                i, left;
+
+    for (i = 0; i < 8; i++)
+    {
+        k0 |= (unsigned long long)key[i] << (8 * i);
+        k1 |= (unsigned long long)key[8 + i] << (8 * i);
+    }
+    v0 = 0x736f6d6570736575ULL ^ k0;
+    v1 = 0x646f72616e646f6dULL ^ k1;
+    v2 = 0x6c7967656e657261ULL ^ k0;
+    v3 = 0x7465646279746573ULL ^ k1;
+    if (len < 0) len = 0;
+    b = (unsigned long long)len << 56;
+    for (; len >= 8; len -= 8, in += 8)
+    {
+        m = 0;
+        for (i = 0; i < 8; i++) m |= (unsigned long long)in[i] << (8 * i);
+        v3 ^= m;
+        SHN_SIPROUND(v0, v1, v2, v3);
+        SHN_SIPROUND(v0, v1, v2, v3);
+        v0 ^= m;
+    }
+    left = len;
+    for (i = 0; i < left; i++) b |= (unsigned long long)in[i] << (8 * i);
+    v3 ^= b;
+    SHN_SIPROUND(v0, v1, v2, v3);
+    SHN_SIPROUND(v0, v1, v2, v3);
+    v0 ^= b;
+    v2 ^= 0xff;
+    SHN_SIPROUND(v0, v1, v2, v3);
+    SHN_SIPROUND(v0, v1, v2, v3);
+    SHN_SIPROUND(v0, v1, v2, v3);
+    SHN_SIPROUND(v0, v1, v2, v3);
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+/* What a client sends in HELLO's proof field: the password bound to this
+ * server's cookie, so a captured HELLO is useless against any other cookie
+ * and the password itself never crosses the wire. 0 = no password. Weak
+ * passwords can still be guessed offline from a capture; that is the limit
+ * of any shared-secret scheme without a PAKE. */
+SHN_FN shn_u32 ShnPasswordProof(const char* pw, shn_u32 cookie)
+{
+    static const shn_u8 kDeriveA[16] = { 'S','H','O','1','-','p','w','-','d','e','r','i','v','e','-','A' };
+    static const shn_u8 kDeriveB[16] = { 'S','H','O','1','-','p','w','-','d','e','r','i','v','e','-','B' };
+    shn_u8              key[16];
+    shn_u8              c[8];
+    unsigned long long  h0, h1;
+    int                 n = 0, i;
+
+    if (pw == 0 || pw[0] == 0)
+    {
+        return 0;
+    }
+    while (pw[n] && n < 256) n++;
+    h0 = ShnSipHash(kDeriveA, pw, n);
+    h1 = ShnSipHash(kDeriveB, pw, n);
+    for (i = 0; i < 8; i++)
+    {
+        key[i]     = (shn_u8)(h0 >> (8 * i));
+        key[8 + i] = (shn_u8)(h1 >> (8 * i));
+    }
+    for (i = 0; i < 4; i++) c[i] = (shn_u8)(cookie >> (8 * i));
+    c[4] = 'p'; c[5] = 'r'; c[6] = 'o'; c[7] = 'f';
+    h0 = ShnSipHash(key, c, 8) & 0xFFFFFFFFULL;
+    return h0 ? (shn_u32)h0 : 1u;
 }
 
 #ifdef __cplusplus

@@ -41,6 +41,8 @@ static int          s_haveServer;
 static int          s_connected;
 static int          s_shared;        /* 1 = riding the living-world link, not our socket */
 static shn_u32      s_session;
+static shn_u32      s_cookie;        /* the relay's CHALLENGE, echoed in HELLO */
+static int          s_sendPassword;  /* only to the configured community server */
 static shn_u32      s_selfId;
 static char         s_name[SHNET_NAME_MAX];
 
@@ -91,7 +93,7 @@ static void CoopUdp_SendRaw(const shn_u8* buf, int len)
 
 static void CoopUdp_SendHello(void)
 {
-    shn_u8 buf[SHNET_HDR_SIZE + 2 + 1 + 1 + 4 + SHNET_NAME_MAX + SHNET_BUILD_MAX + 4];
+    shn_u8 buf[SHNET_HDR_SIZE + SHNET_HELLO_LEN];
     int    off = SHNET_HDR_SIZE;
     ShnPutU16(buf, &off, SHNET_PROTO_VER);
     ShnPutU8(buf, &off, 0);
@@ -99,9 +101,11 @@ static void CoopUdp_SendHello(void)
     ShnPutU32(buf, &off, s_session);     /* reconnect (0 while fresh) */
     ShnPutStr(buf, &off, s_name, SHNET_NAME_MAX);
     ShnPutStr(buf, &off, ShBuild_Short(), SHNET_BUILD_MAX);
-    /* Same password as the living world: a password-protected server must
-     * accept a direct co-op link too (the embedded This-PC relay has none). */
-    ShnPutU32(buf, &off, g_PcConfig.onlinePassword[0] ? ShnHashPassword(g_PcConfig.onlinePassword) : 0);
+    /* The community server's password, bound to this relay's cookie, and only
+     * when this relay IS that server: a stranger's This-PC relay reached by IP
+     * must not be handed something to guess the password from. */
+    ShnPutU32(buf, &off, s_sendPassword ? ShnPasswordProof(g_PcConfig.onlinePassword, s_cookie) : 0);
+    ShnPutU32(buf, &off, s_cookie);
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), s_session);
     CoopUdp_SendRaw(buf, off);
 }
@@ -169,9 +173,10 @@ static void CoopUdp_ReadRoster(const shn_u8* p, int len, int joined)
     {
         shn_u32 id;
         char    name[SHNET_NAME_MAX];
-        if (off + 4 + 1 > len) break;
+        if (off + 4 + SHNET_NAME_MAX + 1 > len) break;
         id = ShnGetU32(p, &off);
         ShnGetStr(p, &off, SHNET_NAME_MAX, name, SHNET_NAME_MAX);
+        ShnSanitizeText(name);
         (void)ShnGetU8(p, &off); /* isHost flag (derivable from s_hostId) */
         s_members[s_memberCount].id = id;
         SDL_strlcpy(s_members[s_memberCount].name, name, SHNET_NAME_MAX);
@@ -190,9 +195,12 @@ static void CoopUdp_OnReject(const shn_u8* p, int len)
 {
     int  off = 0;
     char text[SHNET_REJECT_MAX];
-    if (len < 1) return;
+    if (len < 4 + SHNET_REJECT_MAX) return;
     (void)ShnGetU8(p, &off);
+    (void)ShnGetU8(p, &off);
+    (void)ShnGetU16(p, &off);
     ShnGetStr(p, &off, SHNET_REJECT_MAX, text, SHNET_REJECT_MAX);
+    ShnSanitizeText(text);
     s_room = 0; s_memberCount = 0;
     CoopUdp_SetStatus(text[0] ? text : "Room refused");
     SH_DBG("[COOPUDP] room refused: %s", text);
@@ -207,11 +215,12 @@ static void CoopUdp_OnRoomList(const shn_u8* p, int len)
     s_roomCount = 0;
     for (i = 0; i < n; i++)
     {
-        if (off + 2 + 1 + 1 > len) break;
+        if (off + 2 + 1 + 1 + SHNET_NAME_MAX > len) break;
         s_rooms[s_roomCount].code    = ShnGetU16(p, &off);
         s_rooms[s_roomCount].players = ShnGetU8(p, &off);
         s_rooms[s_roomCount].max     = ShnGetU8(p, &off);
         ShnGetStr(p, &off, SHNET_NAME_MAX, s_rooms[s_roomCount].host, SHNET_NAME_MAX);
+        ShnSanitizeText(s_rooms[s_roomCount].host);
         s_roomCount++;
     }
 }
@@ -280,10 +289,25 @@ static void CoopUdp_Drain(unsigned int now)
         int n = ShNetPlat_Recv(s_sock, &from, buf, (int)sizeof(buf));
         if (n <= 0) break;
         if (!ShnParseHeader(buf, n, &type, &payLen, &session)) continue;
+        /* Only the relay we connected to speaks on this socket, and once it
+         * admitted us, only with our session: anything else could forge a
+         * roster (or a host) and then relay as any member of it. */
+        if (!s_haveServer || !ShNetPlat_AddrEqual(&from, &s_server)) continue;
+        if (s_connected && session != s_session &&
+            type != SHNET_MSG_WELCOME && type != SHNET_MSG_REJECT && type != SHNET_MSG_CHALLENGE) continue;
         pay = buf + SHNET_HDR_SIZE;
         s_lastRxMs = now;
         switch (type)
         {
+        case SHNET_MSG_CHALLENGE:
+            if (payLen >= 4 && !s_connected)
+            {
+                int co = 0;
+                s_cookie = ShnGetU32(pay, &co);
+                s_lastHelloMs = now;
+                CoopUdp_SendHello();
+            }
+            break;
         case SHNET_MSG_WELCOME:     CoopUdp_OnWelcome(pay, (int)payLen);     break;
         case SHNET_MSG_REJECT:      CoopUdp_SetStatus("Server refused the connection"); break;
         case SHNET_MSG_ROOM_JOINED: CoopUdp_ReadRoster(pay, (int)payLen, 1); break;
@@ -368,6 +392,10 @@ int CoopUdp_SetServer(const char* host, unsigned short port)
     s_haveServer  = 1;
     s_connected   = 0;
     s_session     = 0;
+    s_cookie      = 0;
+    s_sendPassword = g_PcConfig.onlinePassword[0] && g_PcConfig.onlineServer[0] &&
+                     SDL_strcasecmp(host, g_PcConfig.onlineServer) == 0 &&
+                     port == (unsigned short)(g_PcConfig.onlinePort > 0 ? g_PcConfig.onlinePort : SHNET_DEFAULT_PORT);
     s_selfId      = 0;
     s_room        = 0;
     s_memberCount = 0;
@@ -478,6 +506,7 @@ void CoopUdp_Tick(unsigned int nowMs)
 int                CoopUdp_Connected(void) { return s_connected; }
 int                CoopUdp_Active(void)    { return s_connected && s_room != 0; }
 int                CoopUdp_IsHost(void)    { return s_room != 0 && s_hostId == s_selfId; }
+unsigned long long CoopUdp_HostId(void)    { return s_room != 0 ? (unsigned long long)s_hostId : 0; }
 unsigned long long CoopUdp_SelfId(void)    { return (unsigned long long)s_selfId; }
 unsigned long long CoopUdp_RoomId(void)    { return (unsigned long long)s_room; }
 int                CoopUdp_MemberCount(void) { return s_memberCount; }

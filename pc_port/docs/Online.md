@@ -40,6 +40,7 @@ to the machine running it; on a LAN nothing needs forwarding.
 | `-w WORD` | require a password |
 | `-d FILE` | marker store path (default `memos.db`) |
 | `--max N` | player cap (default 64) |
+| `-i N` | players allowed from one IP address (default 8; raise it for a LAN party behind one router) |
 | `--no-ghosts` / `--no-memos` / `--no-deaths` | serve a subset |
 | `-v` | log every query |
 

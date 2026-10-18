@@ -151,7 +151,7 @@ static int          s_masterOn;  /* the master-server half is wanted */
 static char           s_host[128];
 static unsigned short s_port;
 static char           s_name[SHNET_NAME_MAX];
-static unsigned int   s_passHash;
+static char           s_password[64];
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -217,6 +217,7 @@ typedef struct
     ShNetSock*   sock;
     ShNetAddr    server;
     unsigned int session;
+    unsigned int cookie;       /* from the server's CHALLENGE, echoed in HELLO */
     unsigned int lastStateMs;
     unsigned int lastPingMs;
     unsigned int lastHelloMs;
@@ -265,7 +266,8 @@ static void ShNetW_SendHello(ShNetWorker* w, int charaId)
     ShnPutU32(buf, &off, w->session);
     ShnPutStr(buf, &off, s_name, SHNET_NAME_MAX);
     ShnPutStr(buf, &off, ShBuild_Short(), SHNET_BUILD_MAX); /* exe hash: the server may allow-list it */
-    ShnPutU32(buf, &off, s_passHash);
+    ShnPutU32(buf, &off, ShnPasswordProof(s_password, w->cookie));
+    ShnPutU32(buf, &off, w->cookie);
 
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), w->session);
     ShNetW_Send(w, buf, off);
@@ -387,6 +389,11 @@ static void ShNetW_GhostUpdate(unsigned int playerId, int charaId, int flags,
     int i;
     ShNetGhost* g = NULL;
 
+    /* The renderer's distance tests subtract these from our position. */
+    if (x > SHNET_COORD_MAX) x = SHNET_COORD_MAX; else if (x < -SHNET_COORD_MAX) x = -SHNET_COORD_MAX;
+    if (y > SHNET_COORD_MAX) y = SHNET_COORD_MAX; else if (y < -SHNET_COORD_MAX) y = -SHNET_COORD_MAX;
+    if (z > SHNET_COORD_MAX) z = SHNET_COORD_MAX; else if (z < -SHNET_COORD_MAX) z = -SHNET_COORD_MAX;
+
     for (i = 0; i < s_sh.ghostCount; i++)
     {
         if (s_sh.ghosts[i].playerId == playerId)
@@ -507,6 +514,8 @@ static void ShNetW_HandleWelcome(ShNetWorker* w, const unsigned char* p, int len
     s_sh.serverFlags = (int)ShnGetU16(p, &off);
     ShnGetStr(p, &off, SHNET_SERVER_MAX, s_sh.serverName, sizeof(s_sh.serverName));
     ShnGetStr(p, &off, SHNET_MOTD_MAX, s_sh.motd, sizeof(s_sh.motd));
+    ShnSanitizeText(s_sh.serverName);
+    ShnSanitizeText(s_sh.motd);
 
     if (s_sh.tickMs < 33)  s_sh.tickMs = 33;
     if (s_sh.tickMs > 1000) s_sh.tickMs = 1000;
@@ -781,6 +790,24 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
         {
             continue;
         }
+        /* Once admitted, everything the server sends us carries our session;
+         * a datagram spoofed from the server's address without it is not
+         * from the server. */
+        if (w->session != 0 && session != w->session &&
+            type != SHNET_MSG_WELCOME && type != SHNET_MSG_REJECT && type != SHNET_MSG_CHALLENGE)
+        {
+            continue;
+        }
+        if (type == SHNET_MSG_CHALLENGE)
+        {
+            if (payLen >= 4)
+            {
+                int co = 0;
+                w->cookie      = ShnGetU32(buf + SHNET_HDR_SIZE, &co);
+                w->lastHelloMs = 0; /* answer it now, not on the next retry tick */
+            }
+            continue;
+        }
 
         pay        = buf + SHNET_HDR_SIZE;
         w->lastRxMs = now;
@@ -839,6 +866,7 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
                 s_sh.chatIn[s_sh.chatInHead].fromId = fromId;
                 ShnGetStr(pay, &off, SHNET_NAME_MAX, s_sh.chatIn[s_sh.chatInHead].name, SHNET_NAME_MAX);
                 ShnGetStr(pay, &off, SHNET_CHAT_MAX, s_sh.chatIn[s_sh.chatInHead].text, SHNET_CHAT_MAX);
+                ShnSanitizeText(s_sh.chatIn[s_sh.chatInHead].text);
                 ShNet_SanitizeName(s_sh.chatIn[s_sh.chatInHead].name);
                 s_sh.chatInHead = next;
             }
@@ -899,7 +927,7 @@ static int SDLCALL ShNet_Worker(void* unused)
     /* Prefer the Steam persona for the name others see, so a Steam player shows
      * up as their real handle rather than the config default. Done here, on the
      * worker, after Steam is up and BEFORE the first HELLO carries the name. */
-    if (ShSteam_Available() && ShSteam_PersonaName()[0])
+    if (!g_PcConfig.onlineName[0] && ShSteam_Available() && ShSteam_PersonaName()[0])
     {
         SDL_strlcpy(s_name, ShSteam_PersonaName(), sizeof(s_name));
         ShNet_SanitizeName(s_name);
@@ -1163,7 +1191,7 @@ void ShNet_Init(void)
     SDL_strlcpy(s_name, g_PcConfig.onlineName[0] ? g_PcConfig.onlineName : "Wanderer",
                 sizeof(s_name));
     ShNet_SanitizeName(s_name);
-    s_passHash = g_PcConfig.onlinePassword[0] ? ShnHashPassword(g_PcConfig.onlinePassword) : 0;
+    SDL_strlcpy(s_password, g_PcConfig.onlinePassword, sizeof(s_password));
     /* Logged so an admin can read the id of an approved build straight off a
      * client log (the server also logs it on every join). */
     SH_DBG("[NET] build id %s  (sha256 %s)", ShBuild_Short(), ShBuild_Hash());

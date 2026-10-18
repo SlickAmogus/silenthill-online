@@ -181,6 +181,8 @@ int                ShSession_MemberCount(void);
 const ShSessionMember* ShSession_Member(int i);
 unsigned long long ShSession_LobbyId(void);
 int                ShSession_IsHost(void);
+/* The member who owns the world (lobby owner / room host), 0 = none. */
+unsigned long long ShSession_HostId(void);
 /* One line for the console and the player list panel. */
 void               ShSession_StatusLine(char* out, int cap);
 

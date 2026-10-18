@@ -48,6 +48,7 @@ void CoopUdp_Disconnect(void);               /* leave the room AND drop the serv
 int                CoopUdp_Connected(void);  /* WELCOME received from the server */
 int                CoopUdp_Active(void);     /* in a room */
 int                CoopUdp_IsHost(void);
+unsigned long long CoopUdp_HostId(void);  /* 0 = no room */
 unsigned long long CoopUdp_SelfId(void);
 unsigned long long CoopUdp_RoomId(void);     /* the room code, 0 if none */
 int                CoopUdp_MemberCount(void);

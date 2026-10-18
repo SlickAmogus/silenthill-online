@@ -99,6 +99,10 @@ static const struct { int first; const char* name; } s_groups[] = {
 
 #define PHRASE_COUNT ((int)(sizeof(s_phrases) / sizeof(s_phrases[0])))
 #define WORD_COUNT   ((int)(sizeof(s_words)   / sizeof(s_words[0])))
+/* The server refuses indices at or past these (sh_net_proto.h); raise them
+ * there, and redeploy, before a table outgrows them. */
+typedef char shnet_memo_phrases_fit[(PHRASE_COUNT <= SHNET_MEMO_PHRASE_MAX) ? 1 : -1];
+typedef char shnet_memo_words_fit[(WORD_COUNT <= SHNET_MEMO_WORD_MAX) ? 1 : -1];
 #define GROUP_COUNT  ((int)(sizeof(s_groups)  / sizeof(s_groups[0])))
 
 int ShNetMemo_PhraseCount(void)

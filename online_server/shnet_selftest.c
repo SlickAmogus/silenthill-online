@@ -10,8 +10,11 @@
  * ten-minute build and a manual playthrough.
  *
  *   gcc -O2 -I../pc_port/include shnet_selftest.c -o shnet_selftest.exe -lws2_32
- *   sh_master -p 27899 -d selftest.db &
- *   shnet_selftest 127.0.0.1 27899
+ *   sh_master -p 27899 -d selftest.db -i 100 --max 128 &
+ *   shnet_selftest 127.0.0.1 27899 [password]
+ *
+ * -i 100 because every synthetic player shares 127.0.0.1, and the crowd test
+ * needs more of them than the default per-address cap allows.
  */
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -116,34 +119,86 @@ static int PeerWait(Peer* p, int want, int ms, shn_u8* payOut, int payCap)
     return -1;
 }
 
-static int PeerHello(Peer* p)
+static const char* g_password = ""; /* argv[3], when the server runs with -w */
+
+static void PeerSimple(Peer* p, int type);
+
+/* withCookie = 0 sends the outdated layout (no cookie field at all). */
+static void PeerSendHello(Peer* p, shn_u32 reconnect, int withCookie, shn_u32 cookie)
 {
     shn_u8 buf[SHNET_HDR_SIZE + 128];
-    shn_u8 pay[SHNET_MAX_PAYLOAD];
     int    off = SHNET_HDR_SIZE;
-    int    n;
 
     ShnPutU16(buf, &off, SHNET_PROTO_VER);
     ShnPutU8(buf, &off, 0);
     ShnPutU8(buf, &off, 0);
-    ShnPutU32(buf, &off, 0);
+    ShnPutU32(buf, &off, reconnect);
     ShnPutStr(buf, &off, p->name, SHNET_NAME_MAX);
     ShnPutStr(buf, &off, "selftest", SHNET_BUILD_MAX);
-    ShnPutU32(buf, &off, 0);
+    ShnPutU32(buf, &off, withCookie ? ShnPasswordProof(g_password, cookie) : 0);
+    if (withCookie)
+    {
+        ShnPutU32(buf, &off, cookie);
+    }
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), 0);
     PeerSend(p, buf, off);
+}
 
-    n = PeerWait(p, SHNET_MSG_WELCOME, 2000, pay, sizeof(pay));
-    if (n < 0)
+/* The real handshake: HELLO with no cookie, CHALLENGE back, HELLO again
+ * echoing it, then WELCOME. */
+static int PeerHelloAs(Peer* p, shn_u32 reconnect)
+{
+    shn_u8  pay[SHNET_MAX_PAYLOAD];
+    shn_u32 cookie;
+    int     n, o = 0;
+
+    PeerSendHello(p, reconnect, 1, 0);
+    n = PeerWait(p, SHNET_MSG_CHALLENGE, 2000, pay, sizeof(pay));
+    if (n < 4)
     {
         return 0;
     }
+    cookie = ShnGetU32(pay, &o);
+
+    PeerSendHello(p, reconnect, 1, cookie);
+    n = PeerWait(p, SHNET_MSG_WELCOME, 2000, pay, sizeof(pay));
+    if (n < 8)
     {
-        int o = 0;
-        p->session  = ShnGetU32(pay, &o);
-        p->playerId = ShnGetU32(pay, &o);
+        return 0;
     }
+    o = 0;
+    p->session  = ShnGetU32(pay, &o);
+    p->playerId = ShnGetU32(pay, &o);
     return 1;
+}
+
+static int PeerHello(Peer* p)
+{
+    return PeerHelloAs(p, 0);
+}
+
+static int RosterTotal(Peer* p)
+{
+    shn_u8 pay[SHNET_MAX_PAYLOAD];
+    int    n, o = 0;
+    PeerSimple(p, SHNET_MSG_ROSTER_REQ);
+    n = PeerWait(p, SHNET_MSG_ROSTER, 1500, pay, sizeof(pay));
+    if (n < 2)
+    {
+        return -1;
+    }
+    return (int)ShnGetU16(pay, &o);
+}
+
+static void PeerRelay(Peer* p, const shn_u8* inner, int innerLen)
+{
+    shn_u8 buf[SHNET_MTU];
+    int    off = SHNET_HDR_SIZE;
+    ShnPutU32(buf, &off, 0);
+    memcpy(buf + off, inner, (size_t)innerLen);
+    off += innerLen;
+    ShnPutHeader(buf, SHNET_MSG_COOP_RELAY, (shn_u16)(off - SHNET_HDR_SIZE), p->session);
+    PeerSend(p, buf, off);
 }
 
 static void PeerState(Peer* p, int mapIdx, int x, int y, int z, int rotY, int flags)
@@ -233,6 +288,10 @@ int main(int argc, char** argv)
     { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); }
 #endif
 
+    if (argc > 3)
+    {
+        g_password = argv[3];
+    }
     printf("Silent Hill Online protocol self-test against %s:%u\n\n", host, (unsigned)port);
 
     /* --- entry sizes must agree with what both ends serialize --- */
@@ -294,6 +353,26 @@ int main(int argc, char** argv)
     {
         printf("\nno server on %s:%u - start sh_master first\n", host, (unsigned)port);
         return 1;
+    }
+    {
+        Peer x;
+        int  before, after;
+
+        PeerOpen(&x, host, port, "TestOldClient");
+        PeerSendHello(&x, 0, 0, 0);
+        n = PeerWait(&x, SHNET_MSG_REJECT, 1500, pay, sizeof(pay));
+        CHECK(n >= 1 && pay[0] == SHNET_REJ_VERSION,
+              "an old-layout HELLO (no cookie) is told to update (REJECT_VERSION)");
+
+        before = RosterTotal(&a);
+        PeerOpen(&x, host, port, "TestForger");
+        PeerSendHello(&x, 0, 1, 0x12345678u);
+        n = PeerWait(&x, SHNET_MSG_CHALLENGE, 1500, pay, sizeof(pay));
+        CHECK(n == 4, "a HELLO with a wrong cookie gets a 4-byte CHALLENGE");
+        n = PeerWait(&x, SHNET_MSG_WELCOME, 300, pay, sizeof(pay));
+        after = RosterTotal(&a);
+        CHECK(n < 0 && before >= 2 && after == before,
+              "and no WELCOME and no slot (roster %d -> %d)", before, after);
     }
 
     printf("\nping\n");
@@ -387,9 +466,26 @@ int main(int argc, char** argv)
     }
 
     printf("\nmarkers\n");
+    /* Rejected placements must not start the per-player placement timer, or
+     * the valid one right after would be refused too. */
+    PeerPlace(&a, SHNET_MARK_MEMO, 5, 11 << 12, 0, 21 << 12, SHNET_MEMO_PHRASE_MAX, 7);
+    n = PeerWait(&a, SHNET_MSG_MEMO_ACK, 600, pay, sizeof(pay));
+    CHECK(n < 0, "a memo with an out-of-range phrase index is not accepted");
+    PeerPlace(&a, SHNET_MARK_MEMO, 5, 11 << 12, 0, 21 << 12, 3, SHNET_MEMO_WORD_MAX);
+    n = PeerWait(&a, SHNET_MSG_MEMO_ACK, 600, pay, sizeof(pay));
+    CHECK(n < 0, "a memo with an out-of-range word index is not accepted");
+    PeerPlace(&a, SHNET_MARK_MEMO, 5, SHNET_COORD_MAX + 1, 0, 21 << 12, 3, 7);
+    n = PeerWait(&a, SHNET_MSG_MEMO_ACK, 600, pay, sizeof(pay));
+    CHECK(n < 0, "a memo outside the world bounds is not accepted");
     PeerPlace(&a, SHNET_MARK_MEMO, 5, 11 << 12, 0, 21 << 12, 3, 7);
     n = PeerWait(&a, SHNET_MSG_MEMO_ACK, 1500, pay, sizeof(pay));
     CHECK(n >= 8, "the server acknowledged the placement");
+    {
+        shn_u8 extra[SHNET_MAX_PAYLOAD];
+        PeerPlace(&a, SHNET_MARK_MEMO, 5, 12 << 12, 0, 22 << 12, 4, 8);
+        CHECK(PeerWait(&a, SHNET_MSG_MEMO_ACK, 600, extra, sizeof(extra)) < 0,
+              "a second memo within the placement gap is not accepted");
+    }
     {
         shn_u32 placedId = 0;
         int     o = 0;
@@ -479,6 +575,74 @@ int main(int argc, char** argv)
     CHECK(n < 0, "game chat does not cross to another map");
     n = PeerWait(&a, SHNET_MSG_CHAT_MSG, 1000, pay, sizeof(pay));
     CHECK(n > 0, "the sender hears their own game-chat line (echo)");
+    PeerChat(&a, SHNET_CHAT_GLOBAL, "    ");
+    n = PeerWait(&b, SHNET_MSG_CHAT_MSG, 500, pay, sizeof(pay));
+    CHECK(n < 0, "a blank chat line is dropped, not broadcast");
+
+    printf("\nco-op relay\n");
+    {
+        shn_u8  inner[64];
+        int     io;
+        shn_u16 code = 0;
+
+        {
+            shn_u8 buf[SHNET_HDR_SIZE + 4];
+            int    off = SHNET_HDR_SIZE;
+            ShnPutU8(buf, &off, 4);
+            ShnPutU8(buf, &off, 0);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_CREATE, (shn_u16)(off - SHNET_HDR_SIZE), a.session);
+            PeerSend(&a, buf, off);
+            n = PeerWait(&a, SHNET_MSG_ROOM_JOINED, 1500, pay, sizeof(pay));
+            if (n >= 6)
+            {
+                int o = 4;
+                code = ShnGetU16(pay, &o);
+            }
+        }
+        CHECK(code != 0, "A opened a room (code %u)", (unsigned)code);
+        {
+            shn_u8 buf[SHNET_HDR_SIZE + 4];
+            int    off = SHNET_HDR_SIZE;
+            ShnPutU16(buf, &off, code);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_JOIN, (shn_u16)(off - SHNET_HDR_SIZE), b.session);
+            PeerSend(&b, buf, off);
+            n = PeerWait(&b, SHNET_MSG_ROOM_JOINED, 1500, pay, sizeof(pay));
+        }
+        CHECK(n > 0, "B joined it by code");
+
+        io = SHNET_HDR_SIZE;
+        ShnPutU32(inner, &io, 77u);
+        ShnPutHeader(inner, SHNET_MSG_S_PING, (shn_u16)(io - SHNET_HDR_SIZE), 0);
+        PeerRelay(&a, inner, io);
+        n = PeerWait(&b, SHNET_MSG_COOP_RELAY, 1000, pay, sizeof(pay));
+        CHECK(n == 4 + io, "a well-formed S_PING is relayed to the room");
+
+        inner[0] = 'X';
+        PeerRelay(&a, inner, io);
+        n = PeerWait(&b, SHNET_MSG_COOP_RELAY, 400, pay, sizeof(pay));
+        CHECK(n < 0, "an inner packet with bad magic is not relayed");
+
+        inner[0] = SHNET_MAGIC0;
+        PeerRelay(&a, inner, io + 3);
+        n = PeerWait(&b, SHNET_MSG_COOP_RELAY, 400, pay, sizeof(pay));
+        CHECK(n < 0, "an inner packet with trailing bytes past its length is not relayed");
+
+        ShnPutHeader(inner, SHNET_MSG_STATE, (shn_u16)(io - SHNET_HDR_SIZE), 0);
+        PeerRelay(&a, inner, io);
+        n = PeerWait(&b, SHNET_MSG_COOP_RELAY, 400, pay, sizeof(pay));
+        CHECK(n < 0, "an inner packet that is not an S_* type is not relayed");
+
+        ShnPutHeader(inner, SHNET_MSG_S_WORLD, (shn_u16)(io - SHNET_HDR_SIZE), 0);
+        PeerRelay(&b, inner, io);
+        n = PeerWait(&a, SHNET_MSG_COOP_RELAY, 400, pay, sizeof(pay));
+        CHECK(n < 0, "S_WORLD from a guest is not relayed");
+        PeerRelay(&a, inner, io);
+        n = PeerWait(&b, SHNET_MSG_COOP_RELAY, 1000, pay, sizeof(pay));
+        CHECK(n == 4 + io, "S_WORLD from the host is relayed");
+
+        PeerSimple(&b, SHNET_MSG_ROOM_LEAVE);
+        PeerSimple(&a, SHNET_MSG_ROOM_LEAVE);
+    }
 
     printf("\nhostile input\n");
     {
@@ -534,6 +698,18 @@ int main(int argc, char** argv)
             n = PeerWait(&a, SHNET_MSG_ROSTER, 1500, pay, sizeof(pay));
             CHECK(n > 0, "the server is still answering after truncated and unknown datagrams");
         }
+    }
+
+    printf("\nreconnect\n");
+    {
+        /* Same IP, new source port: what a NAT rebinding looks like. A
+         * different IP is refused by the server but cannot be produced from
+         * one loopback test, so only the allowed case is checked here. */
+        Peer a2;
+        PeerOpen(&a2, host, port, "TestHarry");
+        CHECK(PeerHelloAs(&a2, a.session) && a2.session == a.session && a2.playerId == a.playerId,
+              "a HELLO carrying A's session from a new port resumes A's identity");
+        a = a2;
     }
 
     PeerSimple(&a, SHNET_MSG_BYE);
