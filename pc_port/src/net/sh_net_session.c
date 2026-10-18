@@ -80,6 +80,7 @@ static struct
 {
     int                wantHost;
     int                wantLeave;
+    unsigned long long wantKick;
     int                wantInvite;
     unsigned long long wantJoin;
 
@@ -328,6 +329,14 @@ void ShSession_RequestLeave(void)
     if (!s_lock) return;
     SDL_LockMutex(s_lock);
     s_req.wantLeave = 1;
+    SDL_UnlockMutex(s_lock);
+}
+
+void ShSession_RequestKick(unsigned long long id)
+{
+    if (!s_lock) return;
+    SDL_LockMutex(s_lock);
+    s_req.wantKick = id;
     SDL_UnlockMutex(s_lock);
 }
 
@@ -632,6 +641,18 @@ void ShSession_StatusLine(char* out, int cap)
 /* Worker                                                              */
 /* ------------------------------------------------------------------ */
 
+/* Host: members removed from this session, kept out of the roster (so we
+ * neither draw, hear nor send to them) until the session ends. */
+static unsigned long long s_kicked[SHSESSION_MAX_MEMBERS];
+static int                s_kickedN;
+
+static int ShSession_IsKicked(unsigned long long id)
+{
+    int i;
+    for (i = 0; i < s_kickedN; i++) if (s_kicked[i] == id) return 1;
+    return 0;
+}
+
 static int ShSession_IndexOf(unsigned long long id)
 {
     int i;
@@ -673,7 +694,7 @@ static void ShSession_SyncMembers(void)
         int                old = ShSession_IndexOf(id);
         const char*        nm;
 
-        if (!id)
+        if (!id || ShSession_IsKicked(id))
         {
             continue;
         }
@@ -851,6 +872,17 @@ static void ShSession_Receive(unsigned int now)
             }
             break;
         }
+        case SHNET_MSG_S_KICK:
+            /* Only the world's owner can send us home. */
+            if (from == Tp_HostId() && !Tp_IsHost())
+            {
+                SDL_LockMutex(s_lock);
+                s_req.wantLeave = 1;
+                SDL_UnlockMutex(s_lock);
+                ShNet_PostLocalEvent("The host removed you from the game");
+                SH_DBG("[SESSION] removed from the session by the host");
+            }
+            break;
         case SHNET_MSG_S_BYE:
             if (ShSession_LogOk(idx)) SH_DBG("[SESSION] %s left the session", s_members[idx].name);
             s_members[idx].linked = 0;
@@ -873,7 +905,12 @@ static void ShSession_Receive(unsigned int now)
             s_members[idx].mapIdx  = (m == 0xFF) ? -1 : m;
             s_members[idx].charaId = (int)ShnGetU8(p, &o);
             s_members[idx].flags   = (int)ShnGetU8(p, &o);
-            (void)ShnGetU8(p, &o); /* pad */
+            {
+                /* paperMapIdx + 1; was a zero pad, so 0 = a build that does
+                 * not say which floor it is on. */
+                int pm = (int)ShnGetU8(p, &o);
+                s_members[idx].paperMapIdx = (pm >= 1 && pm <= 32) ? pm - 1 : -1;
+            }
             s_members[idx].x       = (int)ShnGetS32(p, &o);
             s_members[idx].y       = (int)ShnGetS32(p, &o);
             s_members[idx].z       = (int)ShnGetS32(p, &o);
@@ -1195,6 +1232,7 @@ int ShSession_RoomGet(int i, int* code, int* players, int* max, char* host, int 
 void ShSession_Tick(unsigned int nowMs)
 {
     int                wantHost, wantLeave, wantInvite, presenceDirty;
+    unsigned long long wantKick;
     unsigned long long wantJoin;
     char               area[64];
     int                i;
@@ -1225,6 +1263,8 @@ void ShSession_Tick(unsigned int nowMs)
     SDL_LockMutex(s_lock);
     wantHost      = s_req.wantHost;
     wantLeave     = s_req.wantLeave;
+    wantKick      = s_req.wantKick;
+    s_req.wantKick = 0;
     wantInvite    = s_req.wantInvite;
     wantJoin      = s_req.wantJoin;
     presenceDirty = s_req.presenceDirty;
@@ -1277,6 +1317,19 @@ void ShSession_Tick(unsigned int nowMs)
         }
     }
 
+    if (!Tp_Active())
+    {
+        s_kickedN = 0;
+    }
+    if (wantKick && Tp_IsHost() && wantKick != Tp_SelfId() && !ShSession_IsKicked(wantKick))
+    {
+        shn_u8 kb[SHNET_HDR_SIZE];
+        ShnPutHeader(kb, SHNET_MSG_S_KICK, 0, 0);
+        Tp_Send(wantKick, kb, SHNET_HDR_SIZE, 1);
+        if (s_backend == COOP_BACKEND_UDP) CoopUdp_Kick(wantKick);
+        if (s_kickedN < SHSESSION_MAX_MEMBERS) s_kicked[s_kickedN++] = wantKick;
+        SH_DBG("[SESSION] host removed member %llu", wantKick);
+    }
     if (wantLeave)
     {
         if (s_backend == COOP_BACKEND_UDP) CoopUdp_Leave();
@@ -1465,7 +1518,7 @@ void ShSession_Tick(unsigned int nowMs)
             ShnPutU8(buf, &off, (shn_u8)((poseMap > 255) ? 0xFF : poseMap));
             ShnPutU8(buf, &off, (shn_u8)poseChara);
             ShnPutU8(buf, &off, (shn_u8)poseFlags);
-            ShnPutU8(buf, &off, 0);
+            ShnPutU8(buf, &off, pose.paperMap);
             ShnPutS32(buf, &off, pose.x);
             ShnPutS32(buf, &off, pose.y);
             ShnPutS32(buf, &off, pose.z);

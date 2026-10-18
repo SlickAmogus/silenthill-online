@@ -82,6 +82,7 @@ typedef struct
     unsigned char  heldItem;          /* InvItemId in hand, 0xFF none */
     unsigned char  handBone;          /* MODEL_BONE last given to WorldGfx_HeldItemAttach(Harry) */
     unsigned char  sfxCount;
+    unsigned char  paperMap;          /* sender's paperMapIdx + 1 (its floor), 0 unknown */
     unsigned int   ms;                /* sender: capture time; ring: time on OUR clock */
     ShSessionSfx   sfx[SHSESSION_POSE_SFX];
 } ShSessionPose;
@@ -114,6 +115,7 @@ typedef struct
     unsigned short     anim;
     unsigned short     frame;
     unsigned int       poseMs;     /* wall clock of the last pose, 0 = none */
+    int                paperMapIdx; /* their paper-map page (floor), -1 unknown */
 
     /* Recent samples, oldest first, for ShSession_MemberPoseNow. Arrival times
      * jitter by the network plus the worker's sleep, so samples are placed by
@@ -209,6 +211,11 @@ int  ShSession_MemberTakeSfx(int i, unsigned int* serial, ShSessionSfxEv* out, i
 /* Host -> guests: everyone boot into this map for a co-op game. Sent when the
  * host presses Start Game. */
 void ShSession_RequestWorld(int mapIdx);
+
+/* Host: remove a member from the game. The relay drops them from the room
+ * and refuses their address; on Steam they are told to leave and are
+ * ignored from then on either way. */
+void ShSession_RequestKick(unsigned long long id);
 
 /* Guest poll: a map the host told us to boot into since the last call, or -1.
  * Clears the request. The game thread consumes this to launch the co-op game. */

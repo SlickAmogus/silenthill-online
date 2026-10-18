@@ -93,7 +93,7 @@ static int ShNetG_BuildFlags(void)
     {
         flags |= SHNET_PF_MENU;
     }
-    if (g_PcConfig.onlineFriendlyFire)
+    if (ShNet_CoopFriendlyFire())
     {
         flags |= SHNET_PF_FFIRE; /* others may shoot me; I would apply it */
     }
@@ -287,6 +287,46 @@ static void ShNetG_SfxAttach(ShSessionPose* pose)
     pose->sfxCount = (unsigned char)n;
 }
 
+/* The weapon sound bank func_8007F14C loads for a weapon: one VAB of
+ * AudioType_Weapon sounds per weapon family, swapped in on equip. */
+static int ShNetG_WeaponSoundBank(int weapon)
+{
+    switch (weapon)
+    {
+        case EquippedWeaponId_KitchenKnife:
+        case EquippedWeaponId_SteelPipe:
+        case EquippedWeaponId_Hammer:
+        case EquippedWeaponId_Katana:
+        case EquippedWeaponId_Axe:          return 164;
+        case EquippedWeaponId_Chainsaw:     return 169;
+        case EquippedWeaponId_RockDrill:    return 163;
+        case EquippedWeaponId_Handgun:      return 166;
+        case EquippedWeaponId_HuntingRifle: return 167;
+        case EquippedWeaponId_Shotgun:      return 168;
+        case EquippedWeaponId_HyperBlaster: return 165;
+        default:                            return -1;
+    }
+}
+
+/* A weapon sound plays a slot of whichever weapon bank WE have loaded, so a
+ * partner's knife swish played over our handgun bank came out as a gunshot.
+ * Only play it when both banks are the same family; silence beats a wrong
+ * sample. */
+static int ShNetG_PartnerSfxPlayable(int sfx, int partnerWeapon)
+{
+    int idx = sfx - Sfx_Base;
+    if (idx <= 0 || idx >= (int)(sizeof(g_Vab_InfoTable) / sizeof(g_Vab_InfoTable[0])))
+    {
+        return 0;
+    }
+    if ((g_Vab_InfoTable[idx].vab_progIdx_2 >> 8) != AudioType_Weapon)
+    {
+        return 1;
+    }
+    return ShNetG_WeaponSoundBank(partnerWeapon) >= 0 &&
+           ShNetG_WeaponSoundBank(partnerWeapon) == ShNetG_WeaponSoundBank(g_Player_LastWeaponSelected);
+}
+
 /* Partners' sounds, at the partner's drawn position on the same delayed clock
  * as their body, so a footstep lands with the foot. */
 static void ShNetG_PlayPartnerSfx(int myMap)
@@ -324,6 +364,10 @@ static void ShNetG_PlayPartnerSfx(int myMap)
         for (k = 0; k < got; k++)
         {
             VECTOR3 at;
+            if (!ShNetG_PartnerSfxPlayable(ev[k].sfx, pn.weaponAnm))
+            {
+                continue;
+            }
             at.vx = pn.x; at.vy = pn.y; at.vz = pn.z;
             /* Always with distance falloff and stereo placement: a sound the
              * sender heard at full level is still out where the partner is. */
@@ -337,6 +381,57 @@ static void ShNetG_PlayPartnerSfx(int myMap)
             }
         }
     }
+}
+
+/* Our pose for the co-op members, exactly as this frame posed us. */
+static void ShNetG_PublishPose(int mapIdx, int flags)
+{
+    extern s32    g_PcHarryHandBone;
+    extern s32    g_PcHarryPoseKf[2][3];
+    ShSessionPose pose;
+    s32           held = WorldGfx_HeldItemIdGet();
+    int           h;
+
+    memset(&pose, 0, sizeof(pose));
+    pose.ms        = ShNetPlat_Millis();
+    for (h = 0; h < 2; h++)
+    {
+        pose.kf[h][0] = (unsigned short)g_PcHarryPoseKf[h][0];
+        pose.kf[h][1] = (unsigned short)g_PcHarryPoseKf[h][1];
+        pose.alpha[h] = (unsigned short)g_PcHarryPoseKf[h][2];
+    }
+    ShNetG_SfxAttach(&pose);
+    pose.x         = (int)g_SysWork.playerWork.player.position.vx;
+    pose.y         = (int)g_SysWork.playerWork.player.position.vy;
+    pose.z         = (int)g_SysWork.playerWork.player.position.vz;
+    pose.rotY      = (short)g_SysWork.playerWork.player.rotation.vy;
+    pose.anim      = (unsigned short)g_SysWork.playerWork.player.model.anim.status;
+    pose.frame     = (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx;
+    pose.weaponAnm = (g_Player_LastWeaponSelected >= 0 && g_Player_LastWeaponSelected < 0xFF)
+                     ? (unsigned char)g_Player_LastWeaponSelected : 0xFF;
+    pose.heldItem  = (held >= 0 && held < 0xFF) ? (unsigned char)held : 0xFF;
+    pose.handBone  = (unsigned char)g_PcHarryHandBone;
+    pose.paperMap  = (unsigned char)(g_SavegamePtr->paperMapIdx + 1);
+    ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags, &pose);
+}
+
+int ShNet_CoopFriendlyFire(void)
+{
+    int i, n;
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineFriendlyFire;
+    }
+    n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && m->steamId == ShSession_HostId() && m->poseMs != 0)
+        {
+            return (m->flags & SHNET_PF_FFIRE) != 0;
+        }
+    }
+    return 0;
 }
 
 static void ShNetG_CoopGuestSpawn(int mapIdx)
@@ -475,6 +570,20 @@ void ShNet_GameTick(void)
               (g_SavegamePtr != NULL) &&
               !(g_SysWork.sysFlags & SysFlag_DemoActive);
 
+    /* Co-op inventory: the world keeps running and we are still standing in
+     * it, so keep sending where we are (flagged MENU) rather than vanishing
+     * from our partners' screens. Items, hits and sounds wait for gameplay. */
+    {
+        extern int g_PcCoopGame;
+        if (!inWorld && g_PcCoopGame && g_SavegamePtr != NULL &&
+            g_GameWork.gameState == GameState_InventoryScreen && (int)g_SavegamePtr->mapIdx == s_lastMap)
+        {
+            ShNetG_PublishPose((int)g_SavegamePtr->mapIdx, ShNetG_BuildFlags() | SHNET_PF_MENU);
+            ShNet_PumpToGameThread();
+            return;
+        }
+    }
+
     if (!inWorld)
     {
         ShNet_PublishLocal(0, s_lastMap < 0 ? 0 : s_lastMap, ShNetG_LocalChara(), 0,
@@ -518,34 +627,7 @@ void ShNet_GameTick(void)
                        (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx);
 
     /* Co-op presence: the same pose, to the Steam session members. */
-    {
-        extern s32    g_PcHarryHandBone;
-        extern s32    g_PcHarryPoseKf[2][3];
-        ShSessionPose pose;
-        s32           held = WorldGfx_HeldItemIdGet();
-        int           h;
-
-        memset(&pose, 0, sizeof(pose));
-        pose.ms        = ShNetPlat_Millis();
-        for (h = 0; h < 2; h++)
-        {
-            pose.kf[h][0] = (unsigned short)g_PcHarryPoseKf[h][0];
-            pose.kf[h][1] = (unsigned short)g_PcHarryPoseKf[h][1];
-            pose.alpha[h] = (unsigned short)g_PcHarryPoseKf[h][2];
-        }
-        ShNetG_SfxAttach(&pose);
-        pose.x         = (int)g_SysWork.playerWork.player.position.vx;
-        pose.y         = (int)g_SysWork.playerWork.player.position.vy;
-        pose.z         = (int)g_SysWork.playerWork.player.position.vz;
-        pose.rotY      = (short)g_SysWork.playerWork.player.rotation.vy;
-        pose.anim      = (unsigned short)g_SysWork.playerWork.player.model.anim.status;
-        pose.frame     = (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx;
-        pose.weaponAnm = (g_Player_LastWeaponSelected >= 0 && g_Player_LastWeaponSelected < 0xFF)
-                         ? (unsigned char)g_Player_LastWeaponSelected : 0xFF;
-        pose.heldItem  = (held >= 0 && held < 0xFF) ? (unsigned char)held : 0xFF;
-        pose.handBone  = (unsigned char)g_PcHarryHandBone;
-        ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags, &pose);
-    }
+    ShNetG_PublishPose(mapIdx, flags);
 
     /* Co-op shared items: hand out what we picked up, take in what others did. */
     ShNetG_SyncItems();

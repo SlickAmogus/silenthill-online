@@ -110,22 +110,40 @@ void GameState_ItemScreens_Update(void) // 0x8004C9B0
 #ifdef SH_PC_PORT
     /* Co-op: the inventory does not pause the world. While the inventory is
      * actually up (steps 1..16, not the load/exit/save steps), step the gameplay
-     * sim and draw the world behind the menu, so enemies keep acting and can
-     * reach Harry while he is in his pack. His own control is frozen only across
-     * the sim call and restored right after, so he is never left frozen when the
-     * menu closes. Single-player leaves g_PcCoopGame 0 and keeps the classic
-     * frozen inventory. The world draws first; the inventory UI draws over it. */
+     * sim so enemies keep acting and can reach Harry while he is in his pack.
+     * His own control is frozen only across the sim call and restored right
+     * after, so he is never left frozen when the menu closes. Single-player
+     * leaves g_PcCoopGame 0 and keeps the classic frozen inventory.
+     *
+     * The sim runs SIM-ONLY: no alt camera, crosshair or combat input, and
+     * everything it drew is thrown away before the inventory draws. Drawing it
+     * showed the world through the menu, squashed into the inventory's
+     * interlaced screen mode, while the mouse still turned the camera behind
+     * it. Characters draw from inside their own updates, so skipping the draw
+     * call alone would not keep them out; clearing the frame's OTs does. */
     {
         extern int  g_PcCoopGame;
+        extern int  g_PcSimOnly;
+        extern int  g_PcWorldDrawnThisFrame, g_PcHorPlusEnabled, g_PcWorldHorPlus;
         extern u8   g_Player_DisableControl;
         extern void InGame_SimAndDraw(void);
         if (g_PcCoopGame &&
             g_GameWork.gameStateSteps[1] >= 1 && g_GameWork.gameStateSteps[1] <= 16)
         {
-            u8 savedDisable = g_Player_DisableControl;
+            u8  savedDisable = g_Player_DisableControl;
+            int savedDrawn   = g_PcWorldDrawnThisFrame;
+            int savedHor     = g_PcHorPlusEnabled;
+            int savedWorldHor = g_PcWorldHorPlus;
             g_Player_DisableControl = true;
+            g_PcSimOnly             = 1;
             InGame_SimAndDraw();
+            g_PcSimOnly             = 0;
             g_Player_DisableControl = savedDisable;
+            GsClearOt(0, 0, &g_OrderingTable0[g_ActiveBufferIdx]);
+            GsClearOt(0, 0, &g_OrderingTable2[g_ActiveBufferIdx]);
+            g_PcWorldDrawnThisFrame = savedDrawn;
+            g_PcHorPlusEnabled      = savedHor;
+            g_PcWorldHorPlus        = savedWorldHor;
         }
     }
 #endif

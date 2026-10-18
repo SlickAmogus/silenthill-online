@@ -280,6 +280,13 @@ void GameState_InGame_Update(void) // 0x80038BD4
  * co-op inventory can run it behind the menu (enemies act, Harry frozen) without
  * re-entering that function's one-shot step-0 init. Single-player reaches it in
  * exactly the same place and order, so its behaviour is unchanged. */
+#ifdef SH_PC_PORT
+/* Set while InGame_SimAndDraw runs only to keep the world going under a menu
+ * (the co-op inventory): its picture is discarded, so nothing that serves
+ * the picture or reads the player's look/aim input should run. */
+int g_PcSimOnly = 0;
+#endif
+
 void InGame_SimAndDraw(void)
 {
     s_SubCharacter* player;
@@ -293,7 +300,7 @@ void InGame_SimAndDraw(void)
 
     Screen_CutsceneCameraStateUpdate();
 #ifdef SH_PC_PORT
-    { extern void Pc_CrosshairDraw(void); Pc_CrosshairDraw(); }
+    { extern int g_PcSimOnly; extern void Pc_CrosshairDraw(void); if (!g_PcSimOnly) Pc_CrosshairDraw(); }
 #endif
     Bgm_TrackUpdate(false);
     Demo_DemoRandSeedRestore();
@@ -320,8 +327,11 @@ void InGame_SimAndDraw(void)
          * of the room orbited. (Was below func_44; also the reason the free cam
          * never moved those effects.) */
         {
+            /* Sim-only (the co-op inventory): nobody sees this camera, and
+             * its look input belongs to the menu. */
+            extern int  g_PcSimOnly;
             extern void DebugCamera_Update(void);
-            DebugCamera_Update();
+            if (!g_PcSimOnly) DebugCamera_Update();
         }
 #endif
 
@@ -389,7 +399,13 @@ void InGame_SimAndDraw(void)
             func_8003DA9C(Chara_Harry, g_SysWork.playerBoneCoords, 1, g_SysWork.playerWork.player.timer_C6, 0);
 #endif
             Chara_Flag8Clear(&g_SysWork.playerWork.player);
+#ifdef SH_PC_PORT
+            { extern int g_PcSimOnly; if (!g_PcSimOnly)
+#endif
             Player_CombatUpdate(&g_SysWork.playerWork, g_SysWork.playerBoneCoords);
+#ifdef SH_PC_PORT
+            }
+#endif
             func_8008A3AC(&g_SysWork.playerWork.player);
         }
 

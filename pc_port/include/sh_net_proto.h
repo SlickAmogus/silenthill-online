@@ -135,6 +135,7 @@ enum
     SHNET_MSG_S_WORLD    = 0x55, /* P2P  host -> guests: boot into this map */
     SHNET_MSG_S_ITEM     = 0x56, /* P2P  I picked this up; everyone gets it too */
     SHNET_MSG_S_DAMAGE   = 0x57, /* P2P  I hit YOU: apply this damage to yourself (friendly fire) */
+    SHNET_MSG_S_KICK     = 0x58, /* P2P  host -> member: you have been removed */
 
     /* Co-op over a relay server (sh_master rooms). The transport the session layer
      * rides when it is NOT using Steam P2P: the host creates a room, guests join
@@ -149,7 +150,8 @@ enum
     SHNET_MSG_ROOM_ROSTER   = 0x65, /* S->C  the room roster changed */
     SHNET_MSG_ROOM_REJECT   = 0x66, /* S->C  create/join refused (reason) */
     SHNET_MSG_ROOM_LIST     = 0x67, /* S->C  one page of open rooms */
-    SHNET_MSG_COOP_RELAY    = 0x68  /* C->S fromMe / S->C fromPeer: (u32 peerId, S_* payload) */
+    SHNET_MSG_COOP_RELAY    = 0x68, /* C->S fromMe / S->C fromPeer: (u32 peerId, S_* payload) */
+    SHNET_MSG_ROOM_KICK     = 0x69  /* C->S  room host removes a member (u32 playerId) */
 };
 
 /* Marker kinds. */
@@ -416,6 +418,13 @@ SHN_FN void ShnSanitizeText(char* s)
  * address with a 16-byte CHALLENGE (smaller than the HELLO, so it cannot be
  * used to amplify), and allocates nothing until the cookie comes back, which
  * proves the sender really receives at the address it claims. */
+/* Co-op peer messages own 0x50..0x5F; the relay forwards that whole range
+ * (framing checked) so a new S_* type needs no server change. The ones that
+ * change everyone's game may only come from the world's owner. */
+#define SHNET_MSG_S_FIRST 0x50
+#define SHNET_MSG_S_LAST  0x5F
+#define SHNET_S_HOST_ONLY(t) ((t) == SHNET_MSG_S_WORLD || (t) == SHNET_MSG_S_KICK)
+
 #define SHNET_HELLO_LEN_OLD (2 + 1 + 1 + 4 + SHNET_NAME_MAX + SHNET_BUILD_MAX + 4)
 #define SHNET_HELLO_LEN     (SHNET_HELLO_LEN_OLD + 4)
 

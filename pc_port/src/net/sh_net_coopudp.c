@@ -430,6 +430,16 @@ void CoopUdp_RequestRoomList(void)
     else             s_pendList = 1;
 }
 
+void CoopUdp_Kick(unsigned long long id)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 4];
+    int    off = SHNET_HDR_SIZE;
+    if (!s_connected || !s_room || s_hostId != s_selfId) return;
+    ShnPutU32(buf, &off, (shn_u32)id);
+    ShnPutHeader(buf, SHNET_MSG_ROOM_KICK, (shn_u16)(off - SHNET_HDR_SIZE), s_session);
+    CoopUdp_SendRaw(buf, off);
+}
+
 void CoopUdp_Leave(void)
 {
     if (s_connected && s_room) CoopUdp_SendSimple(SHNET_MSG_ROOM_LEAVE);

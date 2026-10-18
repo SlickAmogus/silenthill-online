@@ -126,6 +126,11 @@ int         ShNet_Enabled(void);
  * connected to a master server. Pausing such a world is no longer a purely
  * local act, so the pause button and the console both consult this. */
 int         ShNet_LiveWorld(void);
+
+/* Friendly fire for the co-op game we are in: the host's setting, for
+ * everyone. The host reads its own config; a guest reads the flag the host's
+ * pose carries. Outside a session, the local config. */
+int         ShNet_CoopFriendlyFire(void);
 int         ShNet_Status(void);        /* SHNET_ST_* */
 const char* ShNet_StatusText(void);    /* one short line for the UI */
 const char* ShNet_ServerName(void);
@@ -193,6 +198,9 @@ void             ShNet_RequestRoster(void);
 /* Pops the oldest unread server event line into `out`, returning 1 when one
  * was waiting. Drives the toast. */
 int ShNet_PopEvent(char* out, int cap);
+
+/* A line of our own for the same toast feed (game or worker thread). */
+void ShNet_PostLocalEvent(const char* line);
 
 /* ------------------------------------------------------------------ */
 /* Chat                                                                */

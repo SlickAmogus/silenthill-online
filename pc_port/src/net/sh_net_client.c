@@ -1622,6 +1622,17 @@ int ShNet_PopChat(int* outScope, unsigned int* outFromId, char* outName, int nam
     return got;
 }
 
+void ShNet_PostLocalEvent(const char* line)
+{
+    if (!s_lock || !line)
+    {
+        return;
+    }
+    SDL_LockMutex(s_lock);
+    ShNet_PushEvent(line);
+    SDL_UnlockMutex(s_lock);
+}
+
 int ShNet_PopEvent(char* out, int cap)
 {
     int got = 0;

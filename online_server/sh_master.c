@@ -173,6 +173,10 @@ typedef struct
     int                memoPlaced;   /* lastMemoMs is meaningful */
     int                joinFails;
     unsigned int       joinBlockUntilMs;
+
+    /* Room host: addresses it removed, refused if they try to come back. */
+    struct in_addr     kickedIp[8];
+    int                kickedN;
     int                joinBlocked;
 
     /* Co-op room. room == 0 means not in one. The host is the client that
@@ -1905,12 +1909,47 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
     }
     host = SrvRoomHost(code);
     if (!host)                               { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 2, "no such room"); return; }
+    {
+        int k;
+        for (k = 0; k < host->kickedN; k++)
+        {
+            if (host->kickedIp[k].s_addr == c->addr.sin_addr.s_addr)
+            {
+                SrvSendRoomReject(c, 4, "removed by the host");
+                return;
+            }
+        }
+    }
     if (SrvRoomCount(code) >= host->roomMax) { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 3, "room is full"); return; }
     SrvRoomLeave(c, 1);
     c->room = code; c->roomHost = 0; c->roomMax = host->roomMax;
     SrvLog("  %s (id %u) joined room %u", c->name, c->playerId, code);
     SrvSendRoomRoster(c, 1);
     SrvBroadcastRoomRoster(code, c);
+}
+
+/* The room host removes a member: out of the room on the server's word, so a
+ * modified client cannot stay by ignoring the host's S_KICK, and its address
+ * is refused on this room until the host closes it. */
+static void SrvHandleRoomKick(Client* c, const shn_u8* p, int len)
+{
+    int     off = 0, i;
+    shn_u32 who;
+    if (!c->room || !c->roomHost || len < 4) return;
+    who = ShnGetU32(p, &off);
+    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    {
+        Client* m = &g_clients[i];
+        if (!m->used || m == c || m->room != c->room || m->playerId != who) continue;
+        if (c->kickedN < (int)(sizeof(c->kickedIp) / sizeof(c->kickedIp[0])))
+        {
+            c->kickedIp[c->kickedN++] = m->addr.sin_addr;
+        }
+        SrvLog("  %s removed %s (id %u) from room %u", c->name, m->name, m->playerId, c->room);
+        SrvRoomLeave(m, 1);
+        SrvSendRoomReject(m, 4, "removed by the host");
+        break;
+    }
 }
 
 static void SrvHandleRoomList(Client* c)
@@ -1951,10 +1990,11 @@ static void SrvHandleCoopRelay(Client* c, const shn_u8* p, int len)
     innerLen = len - off;
     if (innerLen <= 0 || innerLen > SHNET_MTU - SHNET_HDR_SIZE - 4) return;
     if (!ShnParseHeader(inner, innerLen, &iType, &iPay, &iSess)) return;
-    if (iType < SHNET_MSG_S_HELLO || iType > SHNET_MSG_S_DAMAGE) return;
+    if (iType < SHNET_MSG_S_FIRST || iType > SHNET_MSG_S_LAST) return;
     if (SHNET_HDR_SIZE + (int)iPay != innerLen) return;
-    /* S_WORLD boots every guest into a map; only the host may say that. */
-    if (iType == SHNET_MSG_S_WORLD && !c->roomHost) return;
+    /* S_WORLD boots every guest into a map, S_KICK removes one; only the host
+     * may say either. */
+    if (SHNET_S_HOST_ONLY(iType) && !c->roomHost) return;
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
         Client* m = &g_clients[i];
@@ -2034,6 +2074,7 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     case SHNET_MSG_ROOM_LEAVE:    SrvRoomLeave(c, 1);                       break;
     case SHNET_MSG_ROOM_LIST_REQ: SrvHandleRoomList(c);                     break;
     case SHNET_MSG_COOP_RELAY:    SrvHandleCoopRelay(c, pay, (int)payLen);  break;
+    case SHNET_MSG_ROOM_KICK:     SrvHandleRoomKick(c, pay, (int)payLen);   break;
     case SHNET_MSG_BYE:
     {
         char text[SHNET_EVENT_MAX];

@@ -43,6 +43,7 @@ void CoopUdp_CreateRoom(int maxPlayers, int hidden); /* host a room (hidden = no
 void CoopUdp_JoinRoom(unsigned short code);  /* join a room by its shareable code */
 void CoopUdp_RequestRoomList(void);          /* ask the server for open rooms */
 void CoopUdp_Leave(void);                    /* leave the room (stays connected) */
+void CoopUdp_Kick(unsigned long long id);    /* room host: have the relay remove a member */
 void CoopUdp_Disconnect(void);               /* leave the room AND drop the server link */
 
 int                CoopUdp_Connected(void);  /* WELCOME received from the server */

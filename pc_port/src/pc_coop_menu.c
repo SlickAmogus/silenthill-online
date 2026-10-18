@@ -16,6 +16,7 @@
 #include "pc_coop_save.h"
 #include "pc_config.h"
 #include "pc_mouse_cursor.h" /* hover/click hit-test in Update, like the other windows */
+#include "sh_net.h"
 #include "sh_net_session.h"
 #include "sh_net_steam.h"
 #include "sh_log.h"
@@ -275,7 +276,7 @@ static void Coop_EnterHostSetup(void)
     if (s_setMaxPlayers < 2) s_setMaxPlayers = 2;
     if (s_setMaxPlayers > 4) s_setMaxPlayers = 4;
     s_setPublic   = 1; /* "Room List: Listed" by default so friends can browse to you */
-    s_setFps      = (g_PcConfig.fpsCap >= 60) ? 60 : 30;
+    s_setFps      = 60; /* co-op poses stream every frame; 60 is the smooth default */
     s_saveCount   = Pc_CoopSave_List(s_saves, (int)(sizeof(s_saves) / sizeof(s_saves[0])));
     s_loadIdx     = -1; /* default: start a fresh game */
     s_page        = COOP_PAGE_HOST_SETUP;
@@ -449,8 +450,9 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 3) snprintf(out, cap, "Save & Exit");
         else if (i == 4) snprintf(out, cap, "Nameplates:  %s",
                                   g_PcConfig.onlineNameplates ? "On" : "Off");
-        else if (i == 5) snprintf(out, cap, "Friendly Fire:  %s",
-                                  g_PcConfig.onlineFriendlyFire ? "On" : "Off");
+        else if (i == 5) snprintf(out, cap, "Friendly Fire:  %s%s",
+                                  ShNet_CoopFriendlyFire() ? "On" : "Off",
+                                  (ShSession_Active() && !ShSession_IsHost()) ? "  (host's choice)" : "");
         else if (i == 6) snprintf(out, cap, "Players");
         else snprintf(out, cap, "Leave to Title");
         break;
@@ -580,6 +582,10 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         break;
 
     case COOP_PAGE_PLAYERS:
+        if (s_msg[0])                 snprintf(out, cap, "%s", s_msg);
+        else if (ShSession_IsHost())  snprintf(out, cap, "Select a player to remove them from the game.");
+        break;
+
     default:
         break;
     }
@@ -655,7 +661,14 @@ static void Coop_Confirm(void)
         else if (s_sel == 2) { Coop_DoSave(0); }                            /* Save */
         else if (s_sel == 3) { Coop_DoSave(1); }                            /* Save & Exit */
         else if (s_sel == 4) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
-        else if (s_sel == 5) { g_PcConfig.onlineFriendlyFire = !g_PcConfig.onlineFriendlyFire; } /* both sides must enable */
+        else if (s_sel == 5)
+        {
+            /* One rule for the whole game, set by the world's owner. */
+            if (ShSession_Active() && !ShSession_IsHost())
+                snprintf(s_msg, sizeof(s_msg), "Only the host can change friendly fire.");
+            else
+                g_PcConfig.onlineFriendlyFire = !g_PcConfig.onlineFriendlyFire;
+        }
         else if (s_sel == 6) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
         else
         {
@@ -667,10 +680,35 @@ static void Coop_Confirm(void)
         break;
 
     case COOP_PAGE_PLAYERS:
-        /* Rows above Back are members; host-kick lands with the session kick
-         * API. Back returns to the in-game root (the Players row). */
+        if (s_sel < ShSession_MemberCount())
+        {
+            /* Host: remove a player, on a second press of the same row so a
+             * stray click cannot kick a friend. */
+            static int          s_armRow = -1;
+            static unsigned int s_armMs;
+            const ShSessionMember* m = ShSession_Member(s_sel);
+            if (!ShSession_IsHost() || !m || m->steamId == ShSession_SelfId())
+            {
+                break;
+            }
+            if (s_armRow == s_sel && SDL_GetTicks() - s_armMs < 4000u)
+            {
+                ShSession_RequestKick(m->steamId);
+                snprintf(s_msg, sizeof(s_msg), "Removed %s.", m->name);
+                s_armRow = -1;
+            }
+            else
+            {
+                s_armRow = s_sel;
+                s_armMs  = SDL_GetTicks();
+                snprintf(s_msg, sizeof(s_msg), "Press again to remove %s from the game.", m->name);
+            }
+            break;
+        }
+        /* Back returns to the in-game root (the Players row). */
         s_page = COOP_PAGE_INGAME;
         s_sel  = 6;
+        s_msg[0] = '\0';
         break;
 
     case COOP_PAGE_JOIN:

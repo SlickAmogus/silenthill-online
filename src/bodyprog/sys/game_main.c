@@ -658,8 +658,11 @@ static void Pc_TpsCamera_Apply(void)
         extern int g_PcConsoleInputActive;
         extern int g_PcQuickOptionsActive;
         extern int ShNet_LiveWorld(void);
-        int frozen = (g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
-                     !ShNet_LiveWorld();
+        extern int Pc_CoopMenu_InGame(void);
+        /* The co-op menu leaves the world running, but the view is ours: it
+         * holds still while the menu has the mouse. */
+        int frozen = ((g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
+                      !ShNet_LiveWorld()) || Pc_CoopMenu_InGame();
 
         SDL_GetRelativeMouseState(&mdx, &mdy);
         if (frozen) { mdx = 0; mdy = 0; }
@@ -2539,11 +2542,12 @@ void MainLoop(void) // 0x80032EE0
         {
             extern int g_cfg_disableDpadMovement;
             extern int g_PcQuickOptionsActive;
+            extern int Pc_CoopMenu_InGame(void);
             g_cfg_disableDpadMovement =
                 (g_PcConfig.disableDpadMovement &&
                  g_GameWork.gameState == GameState_InGame &&
                  g_SysWork.sysState   == SysState_Gameplay &&
-                 !g_PcQuickOptionsActive) ? 1 : 0;
+                 !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame()) ? 1 : 0;
         }
 
         /* Mouse cursor: drive free-cursor puzzles + the main menu from the mouse.

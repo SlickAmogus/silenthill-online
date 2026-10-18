@@ -19,6 +19,7 @@
 #include "pc_config.h"
 #include "sh_net_proto.h"
 #include "sh_net_session.h"
+#include "sh_net.h" /* ShNet_CoopFriendlyFire */
 #include "sh_net_platform.h"
 #include "sh_net_hit.h"
 #include "sh_log.h"
@@ -136,7 +137,7 @@ void Pc_NetHit_Refresh(void)
         HarvestProxy(i, now);
     }
 
-    if (!g_PcConfig.onlineFriendlyFire || !ShSession_Active() || g_SavegamePtr == NULL)
+    if (!ShNet_CoopFriendlyFire() || !ShSession_Active() || g_SavegamePtr == NULL)
     {
         s_proxyCount = 0;
         return;
@@ -255,7 +256,7 @@ void Pc_NetHit_ApplyIncoming(void)
 
     while (ShSession_TakeDamage(&amount, &kbx, &kby, &kbz, &reaction, &yaw))
     {
-        if (!g_PcConfig.onlineFriendlyFire)
+        if (!ShNet_CoopFriendlyFire())
         {
             static int s_said = 0;
             if (!s_said)
