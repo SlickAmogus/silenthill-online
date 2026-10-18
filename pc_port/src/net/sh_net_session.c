@@ -22,6 +22,8 @@
 #include "sh_net_platform.h"
 
 #define ABS_I(v) ((v) < 0 ? -(v) : (v))
+/* Sfx_Base (sfx_id_enum.h): ids above it index g_Vab_InfoTable[420]. */
+#define Sfx_Base_NET 1280
 #include "sh_net_steam.h"
 #include "sh_net_coopudp.h"
 #include "sh_net_coop.h"
@@ -60,8 +62,10 @@ static int Tp_Recv(unsigned long long* from, shn_u8* buf, int cap)
 #define SESSION_PING_MS   2000
 #define SESSION_LINK_MS   8000
 #define SESSION_HELLO_MS  5000
-#define SESSION_POS_MS    50   /* co-op presence broadcast rate (~20 Hz); 10 Hz stepped visibly */
-#define SESSION_INTERP_MS 110  /* render partners this far behind: two send intervals plus jitter */
+#define SESSION_POS_MS    14   /* co-op pose: every game frame, up to ~60 Hz */
+#define SESSION_DELAY_MIN 30   /* render-behind window bounds, ms; the window itself */
+#define SESSION_DELAY_MAX 200  /* adapts to each member's send interval and jitter */
+#define SESSION_EXTRAP_MS 100  /* past the newest sample, coast this long, then hold */
 #define SESSION_WORLD_MS  1000 /* host re-tells guests to boot, until they arrive */
 
 /* Requests, and the published copy. Both under s_lock. */
@@ -83,6 +87,7 @@ static struct
     int                poseValid;
     int                poseMap, poseChara, poseFlags;
     ShSessionPose      pose;
+    unsigned int       poseSeq;     /* bumps once per published game frame */
 
     int                wantWorldMap; /* host: send S_WORLD(map) to guests; -1 none */
 
@@ -126,6 +131,7 @@ static unsigned int    s_lastHelloMs;
 static unsigned int    s_lastSeenMs[SHSESSION_MAX_MEMBERS];
 static unsigned int    s_pingSentMs[SHSESSION_MAX_MEMBERS];
 static unsigned int    s_lastPosMs;   /* last co-op pose broadcast */
+static unsigned int    s_lastPosSeq;  /* the published frame it carried */
 static int             s_worldReqIn = -1; /* a map the host told us to boot into */
 static int             s_declineWorld = 0; /* guest chose to leave: ignore the host's
                                             * resent S_WORLD so it cannot drag them back,
@@ -355,51 +361,50 @@ void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags, const ShSessi
         s_req.poseChara = charaId;
         s_req.poseFlags = flags;
         s_req.pose      = *pose;
+        s_req.poseSeq++;
     }
     SDL_UnlockMutex(s_lock);
+}
+
+/* Position and heading come from the caller; the body shows one sample's
+ * exact pose. Samples arrive every frame, so the nearest one IS the frame the
+ * sender drew, and blending two already-blended poses has no single
+ * Anim_BoneUpdate form anyway. */
+static void ShSession_PoseBody(const ShSessionPose* s, ShSessionPoseNow* out)
+{
+    out->lowKf0 = s->kf[0][0]; out->lowKf1 = s->kf[0][1]; out->lowAlpha = s->alpha[0];
+    out->upKf0  = s->kf[1][0]; out->upKf1  = s->kf[1][1]; out->upAlpha  = s->alpha[1];
+    out->weaponAnm = s->weaponAnm; out->heldItem = s->heldItem; out->handBone = s->handBone;
 }
 
 static void ShSession_PoseHold(const ShSessionPose* s, ShSessionPoseNow* out)
 {
     out->x = s->x; out->y = s->y; out->z = s->z; out->rotY = s->rotY;
-    out->lowKf0 = out->lowKf1 = s->frame;   out->lowAlpha = 0;
-    out->upKf0  = out->upKf1  = s->upFrame; out->upAlpha  = 0;
-    out->weaponAnm = s->weaponAnm; out->heldItem = s->heldItem; out->handBone = s->handBone;
+    ShSession_PoseBody(s, out);
 }
 
-/* Blends a keyframe pair only inside one clip and over a short step; a clip
- * change or a loop wrap shows the nearer sample instead of sweeping through
- * every keyframe in between. */
-static void ShSession_KfPair(unsigned short animA, unsigned short kfA,
-                             unsigned short animB, unsigned short kfB, int t,
-                             int* kf0, int* kf1, int* alpha)
+static int ShSession_IsCut(const ShSessionPose* a, const ShSessionPose* b)
 {
-    int d = (int)kfB - (int)kfA;
-    if (animA == animB && d >= -8 && d <= 8)
-    {
-        *kf0 = kfA; *kf1 = kfB; *alpha = t;
-    }
-    else
-    {
-        *kf0 = *kf1 = (t < 2048) ? kfA : kfB;
-        *alpha = 0;
-    }
+    return (b->ms - a->ms) > 400u ||
+           ABS_I(b->x - a->x) > (3 << 12) || ABS_I(b->z - a->z) > (3 << 12) ||
+           ABS_I(b->y - a->y) > (3 << 12);
 }
 
 int ShSession_MemberPoseNow(int i, ShSessionPoseNow* out)
 {
     ShSessionPose ring[SHSESSION_POSE_RING];
-    int           n, a, b, t;
+    int           n, a, b, t, delay;
     unsigned int  at, span;
 
     if (!s_lock || !out) return 0;
     SDL_LockMutex(s_lock);
     n = (i >= 0 && i < s_pub.memberCount) ? s_pub.members[i].ringCount : 0;
+    delay = (n > 0) ? s_pub.members[i].delayMs : 0;
     if (n > 0) memcpy(ring, s_pub.members[i].ring, sizeof(ring[0]) * (size_t)n);
     SDL_UnlockMutex(s_lock);
     if (n <= 0) return 0;
 
-    at = ShNetPlat_Millis() - SESSION_INTERP_MS;
+    at = ShNetPlat_Millis() - (unsigned int)delay;
     for (b = 0; b < n && (int)(ring[b].ms - at) <= 0; b++) {}
     if (b == 0)
     {
@@ -408,16 +413,30 @@ int ShSession_MemberPoseNow(int i, ShSessionPoseNow* out)
     }
     if (b == n)
     {
-        /* Out of samples (a stall or packet loss): hold the newest rather than
-         * guessing ahead, which overshoots on every stop and turn. */
-        ShSession_PoseHold(&ring[n - 1], out);
+        /* Out of samples (a hitch or a lost packet): coast on the last
+         * velocity briefly, then hold. Coasting hides a single loss; holding
+         * after that avoids sailing through walls on a real stall. */
+        const ShSessionPose* p1 = &ring[n - 1];
+        unsigned int         over = at - p1->ms;
+        ShSession_PoseHold(p1, out);
+        if (n >= 2 && over <= SESSION_EXTRAP_MS && !ShSession_IsCut(&ring[n - 2], p1))
+        {
+            const ShSessionPose* p0 = &ring[n - 2];
+            unsigned int         sp = p1->ms - p0->ms;
+            if (sp > 0)
+            {
+                out->x = p1->x + (int)(((long long)(p1->x - p0->x) * (long long)over) / (long long)sp);
+                out->y = p1->y + (int)(((long long)(p1->y - p0->y) * (long long)over) / (long long)sp);
+                out->z = p1->z + (int)(((long long)(p1->z - p0->z) * (long long)over) / (long long)sp);
+            }
+        }
         return 1;
     }
     a    = b - 1;
     span = ring[b].ms - ring[a].ms;
-    t    = (span > 0) ? (int)(((at - ring[a].ms) << 12) / span) : 4096;
+    t    = (span > 0) ? (int)(((unsigned long long)(at - ring[a].ms) << 12) / span) : 4096;
     if (t > 4096) t = 4096;
-    if (span > 400 || ABS_I(ring[b].x - ring[a].x) > (3 << 12) || ABS_I(ring[b].z - ring[a].z) > (3 << 12))
+    if (ShSession_IsCut(&ring[a], &ring[b]))
     {
         /* A long gap or a jump (respawn, door) is a cut, not motion. */
         ShSession_PoseHold((t < 2048) ? &ring[a] : &ring[b], out);
@@ -432,17 +451,31 @@ int ShSession_MemberPoseNow(int i, ShSessionPoseNow* out)
         if (d >= 2048) d -= 4096;
         out->rotY = (short)(((int)ring[a].rotY + ((d * t) >> 12)) & 0xFFF);
     }
-    ShSession_KfPair(ring[a].anim, ring[a].frame, ring[b].anim, ring[b].frame, t,
-                     &out->lowKf0, &out->lowKf1, &out->lowAlpha);
-    ShSession_KfPair(ring[a].upAnim, ring[a].upFrame, ring[b].upAnim, ring[b].upFrame, t,
-                     &out->upKf0, &out->upKf1, &out->upAlpha);
-    {
-        const ShSessionPose* near = (t < 2048) ? &ring[a] : &ring[b];
-        out->weaponAnm = near->weaponAnm;
-        out->heldItem  = near->heldItem;
-        out->handBone  = near->handBone;
-    }
+    ShSession_PoseBody((t < 2048) ? &ring[a] : &ring[b], out);
     return 1;
+}
+
+int ShSession_MemberTakeSfx(int i, unsigned int* serial, ShSessionSfxEv* out, int max)
+{
+    int          k, got = 0;
+    unsigned int at;
+
+    if (!s_lock || !serial || !out || max <= 0) return 0;
+    SDL_LockMutex(s_lock);
+    if (i >= 0 && i < s_pub.memberCount)
+    {
+        const ShSessionMember* m = &s_pub.members[i];
+        at = ShNetPlat_Millis() - (unsigned int)m->delayMs;
+        for (k = 0; k < m->sfxQn && got < max; k++)
+        {
+            if ((int)(m->sfxSerial[k] - *serial) <= 0) continue;
+            if ((int)(m->sfxQ[k].ms - at) > 0) break; /* queue is in time order */
+            out[got++] = m->sfxQ[k];
+            *serial    = m->sfxSerial[k];
+        }
+    }
+    SDL_UnlockMutex(s_lock);
+    return got;
 }
 
 void ShSession_RequestWorld(int mapIdx)
@@ -810,25 +843,46 @@ static void ShSession_Receive(unsigned int now)
                 ShSessionPose    smp;
                 unsigned int     sent;
                 int              d;
+                int              nsfx = 0, k;
                 memset(&smp, 0, sizeof(smp));
                 smp.x = mb->x; smp.y = mb->y; smp.z = mb->z; smp.rotY = mb->rotY;
                 smp.anim = mb->anim; smp.frame = mb->frame;
-                if (payLen >= 34)
+                if (payLen >= 42)
                 {
-                    smp.upAnim    = (unsigned short)ShnGetU16(p, &o);
-                    smp.upFrame   = (unsigned short)ShnGetU16(p, &o);
+                    smp.kf[0][0]  = (unsigned short)ShnGetU16(p, &o);
+                    smp.kf[0][1]  = (unsigned short)ShnGetU16(p, &o);
+                    smp.alpha[0]  = (unsigned short)ShnGetU16(p, &o);
+                    smp.kf[1][0]  = (unsigned short)ShnGetU16(p, &o);
+                    smp.kf[1][1]  = (unsigned short)ShnGetU16(p, &o);
+                    smp.alpha[1]  = (unsigned short)ShnGetU16(p, &o);
                     smp.weaponAnm = (unsigned char)ShnGetU8(p, &o);
                     smp.heldItem  = (unsigned char)ShnGetU8(p, &o);
                     smp.handBone  = (unsigned char)ShnGetU8(p, &o);
-                    (void)ShnGetU8(p, &o);
+                    nsfx          = (int)ShnGetU8(p, &o);
                     sent          = (unsigned int)ShnGetU32(p, &o);
+                    if (nsfx > SHSESSION_POSE_SFX) nsfx = SHSESSION_POSE_SFX;
+                    if (42 + nsfx * 6 > payLen) nsfx = (payLen - 42) / 6;
+                    for (k = 0; k < nsfx; k++)
+                    {
+                        smp.sfx[k].seq   = (unsigned char)ShnGetU8(p, &o);
+                        smp.sfx[k].sfx   = (unsigned short)ShnGetU16(p, &o);
+                        smp.sfx[k].vol   = (unsigned char)ShnGetU8(p, &o);
+                        smp.sfx[k].kind  = (unsigned char)ShnGetU8(p, &o);
+                        smp.sfx[k].age4  = (unsigned char)ShnGetU8(p, &o);
+                        smp.sfx[k].pitch = 0;
+                    }
                 }
                 else
                 {
-                    smp.upAnim = smp.anim; smp.upFrame = smp.frame;
+                    smp.kf[0][0] = smp.kf[0][1] = smp.kf[1][0] = smp.kf[1][1] = smp.frame;
                     smp.weaponAnm = smp.heldItem = 0xFF;
                     sent = now;
                 }
+                /* Clamp what a peer can make us pose with: keyframes past the
+                 * banks are bounded again where they are read (sh_net_ghost.c),
+                 * the blend is a Q12 fraction. */
+                if (smp.alpha[0] > 4096) smp.alpha[0] = 4096;
+                if (smp.alpha[1] > 4096) smp.alpha[1] = 4096;
                 /* Smallest one-way delay seen = the clock offset. It creeps up
                  * slowly so a route that got permanently slower is followed. */
                 d = (int)(now - sent);
@@ -844,12 +898,75 @@ static void ShSession_Receive(unsigned int now)
                 smp.ms = sent + (unsigned int)mb->clockOff;
                 if (mb->ringCount == 0 || (int)(smp.ms - mb->ring[mb->ringCount - 1].ms) > 0)
                 {
+                    /* Render window = one send interval plus twice the jitter:
+                     * wide enough that the next sample is nearly always in
+                     * before the clock reaches it, no wider. */
+                    {
+                        int dev = d - mb->clockOff;
+                        int win;
+                        if (dev < 0) dev = 0;
+                        if (dev > 1000) dev = 1000;
+                        mb->jitterQ4 += ((dev << 4) - mb->jitterQ4) >> 4;
+                        if (mb->ringCount > 0)
+                        {
+                            int gap = (int)(smp.ms - mb->ring[mb->ringCount - 1].ms);
+                            if (gap > 250) gap = 250;
+                            mb->gapQ4 += ((gap << 4) - mb->gapQ4) >> 3;
+                        }
+                        else if (mb->gapQ4 == 0)
+                        {
+                            mb->gapQ4 = 17 << 4;
+                        }
+                        win = (mb->gapQ4 >> 4) + ((mb->jitterQ4 >> 4) * 2) + 8;
+                        if (win < SESSION_DELAY_MIN) win = SESSION_DELAY_MIN;
+                        if (win > SESSION_DELAY_MAX) win = SESSION_DELAY_MAX;
+                        /* Move the window gently: a jump would replay or skip
+                         * a slice of the partner's motion. */
+                        if (mb->delayMs == 0)            mb->delayMs = win;
+                        else if (win > mb->delayMs + 2)  mb->delayMs += 2;
+                        else if (win < mb->delayMs - 1)  mb->delayMs -= 1;
+                    }
                     if (mb->ringCount == SHSESSION_POSE_RING)
                     {
                         memmove(&mb->ring[0], &mb->ring[1], sizeof(mb->ring[0]) * (SHSESSION_POSE_RING - 1));
                         mb->ringCount--;
                     }
+                    smp.sfxCount = 0;
                     mb->ring[mb->ringCount++] = smp;
+                }
+                /* Sounds: each rides several poses, play each seq once. A seq
+                 * is new when it is ahead of the last one within half the
+                 * byte's range. */
+                for (k = 0; k < nsfx; k++)
+                {
+                    const ShSessionSfx* e = &smp.sfx[k];
+                    ShSessionSfxEv      ev;
+                    int                 ahead = (int)(unsigned char)(e->seq - mb->sfxLastSeq);
+                    if (mb->sfxSeqOk && (ahead == 0 || ahead >= 128)) continue;
+                    if (e->sfx <= Sfx_Base_NET || e->sfx >= Sfx_Base_NET + 420) continue;
+                    mb->sfxSeqOk   = 1;
+                    mb->sfxLastSeq = e->seq;
+                    ev.ms    = smp.ms - (unsigned int)e->age4 * 4u;
+                    ev.sfx   = e->sfx;
+                    ev.vol   = e->vol;
+                    ev.kind  = (unsigned char)(e->kind & 0x07);
+                    ev.pitch = 0;
+                    if (mb->sfxQn == SHSESSION_SFX_Q)
+                    {
+                        memmove(&mb->sfxQ[0], &mb->sfxQ[1], sizeof(mb->sfxQ[0]) * (SHSESSION_SFX_Q - 1));
+                        memmove(&mb->sfxSerial[0], &mb->sfxSerial[1], sizeof(mb->sfxSerial[0]) * (SHSESSION_SFX_Q - 1));
+                        mb->sfxQn--;
+                    }
+                    mb->sfxQ[mb->sfxQn]      = ev;
+                    mb->sfxSerial[mb->sfxQn] = ++mb->sfxNextSerial;
+                    mb->sfxQn++;
+                }
+                /* Drop sounds long past due: nothing will ever ask for them. */
+                while (mb->sfxQn > 0 && (int)(now - mb->sfxQ[0].ms) > 2000)
+                {
+                    memmove(&mb->sfxQ[0], &mb->sfxQ[1], sizeof(mb->sfxQ[0]) * (SHSESSION_SFX_Q - 1));
+                    memmove(&mb->sfxSerial[0], &mb->sfxSerial[1], sizeof(mb->sfxSerial[0]) * (SHSESSION_SFX_Q - 1));
+                    mb->sfxQn--;
                 }
             }
             break;
@@ -1005,6 +1122,7 @@ void ShSession_Tick(unsigned int nowMs)
 
     int                poseValid, poseMap, poseChara, poseFlags, wantWorldMap;
     ShSessionPose      pose;
+    unsigned int       poseSeq;
 
     ShSessionItem      itemOut[SESSION_ITEM_Q];
     int                itemOutN = 0;
@@ -1035,6 +1153,7 @@ void ShSession_Tick(unsigned int nowMs)
     poseValid = s_req.poseValid;
     poseMap   = s_req.poseMap;  poseChara = s_req.poseChara; poseFlags = s_req.poseFlags;
     pose      = s_req.pose;
+    poseSeq   = s_req.poseSeq;
     wantWorldMap        = s_req.wantWorldMap;
     hostGuestDebug      = s_req.hostGuestDebug; /* persistent: snapshot, do not reset */
     SDL_strlcpy(coopHost, s_req.coopHost, sizeof(coopHost));
@@ -1251,13 +1370,15 @@ void ShSession_Tick(unsigned int nowMs)
     }
 
     /* Co-op presence: broadcast our pose, unreliable, throttled. */
-    if (poseValid && nowMs - s_lastPosMs >= SESSION_POS_MS)
+    if (poseValid && poseSeq != s_lastPosSeq && nowMs - s_lastPosMs >= SESSION_POS_MS)
     {
-        s_lastPosMs = nowMs;
+        s_lastPosMs  = nowMs;
+        s_lastPosSeq = poseSeq;
         for (i = 0; i < s_memberCount; i++)
         {
-            shn_u8 buf[SHNET_HDR_SIZE + 40];
+            shn_u8 buf[SHNET_HDR_SIZE + 48 + SHSESSION_POSE_SFX * 6];
             int    off = SHNET_HDR_SIZE;
+            int    k;
             if (s_members[i].steamId == Tp_SelfId())
             {
                 continue;
@@ -1272,14 +1393,34 @@ void ShSession_Tick(unsigned int nowMs)
             ShnPutS16(buf, &off, pose.rotY);
             ShnPutU16(buf, &off, pose.anim);
             ShnPutU16(buf, &off, pose.frame);
-            ShnPutU16(buf, &off, pose.upAnim);
-            ShnPutU16(buf, &off, pose.upFrame);
+            ShnPutU16(buf, &off, pose.kf[0][0]);
+            ShnPutU16(buf, &off, pose.kf[0][1]);
+            ShnPutU16(buf, &off, pose.alpha[0]);
+            ShnPutU16(buf, &off, pose.kf[1][0]);
+            ShnPutU16(buf, &off, pose.kf[1][1]);
+            ShnPutU16(buf, &off, pose.alpha[1]);
             ShnPutU8(buf, &off, pose.weaponAnm);
             ShnPutU8(buf, &off, pose.heldItem);
             ShnPutU8(buf, &off, pose.handBone);
-            ShnPutU8(buf, &off, 0);
-            ShnPutU32(buf, &off, (shn_u32)nowMs);
+            ShnPutU8(buf, &off, pose.sfxCount);
+            ShnPutU32(buf, &off, (shn_u32)pose.ms);
+            for (k = 0; k < pose.sfxCount && k < SHSESSION_POSE_SFX; k++)
+            {
+                ShnPutU8(buf, &off, pose.sfx[k].seq);
+                ShnPutU16(buf, &off, pose.sfx[k].sfx);
+                ShnPutU8(buf, &off, pose.sfx[k].vol);
+                ShnPutU8(buf, &off, pose.sfx[k].kind);
+                ShnPutU8(buf, &off, pose.sfx[k].age4);
+            }
             ShnPutHeader(buf, SHNET_MSG_S_POS, (shn_u16)(off - SHNET_HDR_SIZE), 0);
+            /* On the relay one room-wide datagram replaces one per member:
+             * at 60 Hz with three partners the per-member copies alone were
+             * past the server's per-client packet budget. */
+            if (s_backend == COOP_BACKEND_UDP)
+            {
+                Tp_Send(0, buf, off, 0);
+                break;
+            }
             Tp_Send(s_members[i].steamId, buf, off, 0);
         }
     }

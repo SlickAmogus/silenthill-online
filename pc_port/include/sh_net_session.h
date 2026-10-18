@@ -41,21 +41,49 @@ extern "C" {
 #define SHSESSION_NAME_MAX    40
 #define SHSESSION_POSE_RING   8
 
+#define SHSESSION_POSE_SFX    6
+#define SHSESSION_SFX_Q       16
+
+/* A positional sound the local Harry made (footstep, shot, reload, swing),
+ * replayed at the partner's position. kind bit 0 = func_8005DD44 (pitched),
+ * else func_8005DC3C; age4 = how long before the carrying pose it was made,
+ * in 4 ms units -- each sound rides several poses so one lost packet does not
+ * lose a gunshot, and seq lets the receiver play it once. */
+typedef struct
+{
+    unsigned char  seq, vol, kind, age4;
+    unsigned short sfx;
+    signed char    pitch;
+    unsigned char  pad;
+} ShSessionSfx;
+
+typedef struct
+{
+    unsigned int   ms;
+    unsigned short sfx;
+    unsigned char  vol, kind;
+    signed char    pitch;
+} ShSessionSfxEv;
+
 /* One co-op pose sample. Harry is posed in two halves (Player_AnimUpdate: legs
  * from player.model, torso and arms from extra.model), and aiming, firing and
  * reloading live only in the upper half -- a pose with one keyframe showed a
- * shooting partner standing still with empty hands. */
+ * shooting partner standing still with empty hands. kf/alpha are the exact
+ * Anim_BoneUpdate arguments each half was last posed with, so the partner
+ * shows the sender's frame, blend included, not the nearest whole keyframe. */
 typedef struct
 {
     int            x, y, z;           /* Q19.12 world position */
     short          rotY;              /* Q3.12 */
-    unsigned short anim, frame;       /* lower body */
-    unsigned short upAnim, upFrame;   /* upper body */
+    unsigned short anim, frame;       /* lower clip status + keyframe (other readers) */
+    unsigned short kf[2][2];          /* [0] legs, [1] torso: keyframe pair */
+    unsigned short alpha[2];          /* Q12 blend between the pair */
     unsigned char  weaponAnm;         /* weapon whose HB_WEP*.ANM fills kf 5xx+, 0xFF none */
     unsigned char  heldItem;          /* InvItemId in hand, 0xFF none */
     unsigned char  handBone;          /* MODEL_BONE last given to WorldGfx_HeldItemAttach(Harry) */
-    unsigned char  pad;
-    unsigned int   ms;                /* sample time on OUR clock (sender clock + offset) */
+    unsigned char  sfxCount;
+    unsigned int   ms;                /* sender: capture time; ring: time on OUR clock */
+    ShSessionSfx   sfx[SHSESSION_POSE_SFX];
 } ShSessionPose;
 
 /* A member's pose at render time: interpolated between the two samples around
@@ -95,6 +123,18 @@ typedef struct
     int                clockOff;
     int                clockOk;
     int                clockCreep;
+    int                jitterQ4;   /* mean delay above the minimum, Q4 ms */
+    int                gapQ4;      /* mean interval between samples, Q4 ms */
+    int                delayMs;    /* how far behind real time this member renders */
+
+    /* Sounds waiting for the render clock to reach them; serial only grows,
+     * so the game thread can tell which ones it already played. */
+    ShSessionSfxEv     sfxQ[SHSESSION_SFX_Q];
+    unsigned int       sfxSerial[SHSESSION_SFX_Q];
+    int                sfxQn;
+    unsigned int       sfxNextSerial;
+    int                sfxSeqOk;
+    unsigned char      sfxLastSeq;
 } ShSessionMember;
 
 /* ------------------------------------------------------------------ */
@@ -159,6 +199,10 @@ void ShSession_PublishLocalPos(int mapIdx, int charaId, int flags, const ShSessi
  * always BETWEEN two received samples rather than waiting on the next one.
  * 0 when the member has no pose. */
 int  ShSession_MemberPoseNow(int i, ShSessionPoseNow* out);
+
+/* Game thread: member i's sounds that are due on the same delayed clock and
+ * newer than *serial (updated). Returns how many were written to out. */
+int  ShSession_MemberTakeSfx(int i, unsigned int* serial, ShSessionSfxEv* out, int max);
 
 /* Host -> guests: everyone boot into this map for a co-op game. Sent when the
  * host presses Start Game. */

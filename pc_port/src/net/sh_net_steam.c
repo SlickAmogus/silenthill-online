@@ -105,8 +105,11 @@ typedef struct
 } ShSteamCallbackMsg;
 
 /* Send flags. */
-#define SEND_UNRELIABLE 0
-#define SEND_RELIABLE   8
+/* k_nSteamNetworkingSend_*: unreliable goes out NoNagle (a pose must not wait
+ * ~5 ms to be batched), and both restart a session Steam dropped instead of
+ * failing every send until the peer happens to message us first. */
+#define SEND_UNRELIABLE (1 | 0x20)
+#define SEND_RELIABLE   (8 | 0x20)
 
 /* SteamNetworkingMessage_t, front only: m_pData at 0, m_cbSize at 8, and
  * m_identityPeer starting at 16 (so the peer's SteamID is at 24). Nothing

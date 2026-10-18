@@ -84,7 +84,9 @@ typedef socklen_t ShSockLen;
 /* A client that floods gets its extra datagrams dropped rather than getting
  * disconnected: a burst is far more likely to be a bad network than an
  * attacker, and dropping is free. */
-#define SRV_RATE_PER_SEC  120
+/* Co-op peers stream poses every frame (60/s, one room-wide relay each) on
+ * top of STATE, pings, items and hits. */
+#define SRV_RATE_PER_SEC  200
 
 /* Two death markers within this distance and this long apart are one death.
  * Q19.12 metres: 1.5m, 30s. */

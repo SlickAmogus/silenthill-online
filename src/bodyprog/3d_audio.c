@@ -155,6 +155,16 @@ void func_8005DC3C(e_SfxId sfxId, const VECTOR3* pos, q23_8 vol, s32 soundType, 
     q23_8 volCpy;
     q23_8 balance;
 
+#ifdef SH_PC_PORT
+    /* A sound at Harry's own position is one a co-op partner should hear from
+     * him. Bit 2 re-tunes a sound already playing; only key-ons travel. */
+    if (pos == &g_SysWork.playerWork.player.position && !(soundType & (1 << 2)))
+    {
+        extern void ShNet_LocalPlayerSfx(int sfxId, int vol, int soundType, int pitched);
+        ShNet_LocalPlayerSfx(sfxId, vol, soundType, 0);
+    }
+#endif
+
     /* PC note: an early port stub forced balance=0 here claiming GTE-based
      * Vc_StereoBalanceGet "may not work cleanly" — disproven: the sfx.c
      * aliases of these wrappers call it unguarded from 243 sites. The clean
@@ -210,6 +220,14 @@ void func_8005DD44(e_SfxId sfxId, VECTOR3* pos, q23_8 vol, s8 pitch) // 0x8005DD
 {
     q23_8 volCpy;
     s32   balance;
+
+#ifdef SH_PC_PORT
+    if (pos == &g_SysWork.playerWork.player.position)
+    {
+        extern void ShNet_LocalPlayerSfx(int sfxId, int vol, int soundType, int pitched);
+        ShNet_LocalPlayerSfx(sfxId, vol, 0, 1);
+    }
+#endif
 
     /* PC note: early port stub (balance=0, no falloff) removed — see
      * func_8005DC3C above. This also restores the func_8005D9B8 distance

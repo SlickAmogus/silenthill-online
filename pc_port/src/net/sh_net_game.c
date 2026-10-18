@@ -176,6 +176,120 @@ int g_PcCoopGuestSpawn = 0;
  * the floor rather than in the air or under it. The host is standing in a valid
  * spot, so placing the guest at his position cannot be inside a wall. Runs once.
  */
+/* Positional sounds the local Harry made, newest last. 3d_audio.c reports
+ * every func_8005DC3C / func_8005DD44 aimed at the player's own position. */
+/* 3d_audio.c; no header carries them. */
+void func_8005DC1C(e_SfxId sfxId, const VECTOR3* pos, q23_8 vol, s32 soundType);
+void func_8005DD44(e_SfxId sfxId, VECTOR3* pos, q23_8 vol, s8 pitch);
+
+#define SFX_LOG     16
+#define SFX_RESEND  150  /* ms a sound keeps riding outgoing poses */
+
+static struct { unsigned int ms; unsigned short sfx; unsigned char vol, kind, seq; } s_sfxLog[SFX_LOG];
+static int           s_sfxLogN;
+static unsigned char s_sfxSeq;
+
+void ShNet_LocalPlayerSfx(int sfxId, int vol, int soundType, int pitched)
+{
+    extern int g_PcCoopGame;
+    if (!g_PcCoopGame || !ShSession_Active() || g_GameWork.gameState != GameState_InGame)
+    {
+        return;
+    }
+    if (s_sfxLogN == SFX_LOG)
+    {
+        memmove(&s_sfxLog[0], &s_sfxLog[1], sizeof(s_sfxLog[0]) * (SFX_LOG - 1));
+        s_sfxLogN--;
+    }
+    s_sfxLog[s_sfxLogN].ms   = ShNetPlat_Millis();
+    s_sfxLog[s_sfxLogN].sfx  = (unsigned short)sfxId;
+    s_sfxLog[s_sfxLogN].vol  = (unsigned char)(vol < 0 ? 0 : vol > 255 ? 255 : vol);
+    /* bit 0 = pitched path; bit 1 = played without falloff here (a sound
+     * the game meant at full level for the player himself). */
+    s_sfxLog[s_sfxLogN].kind = (unsigned char)((pitched ? 1 : 0) | ((soundType & 2) ? 2 : 0));
+    s_sfxLog[s_sfxLogN].seq  = ++s_sfxSeq;
+    s_sfxLogN++;
+}
+
+static void ShNetG_SfxAttach(ShSessionPose* pose)
+{
+    int i, n = 0;
+    for (i = s_sfxLogN - 1; i >= 0 && n < SHSESSION_POSE_SFX; i--)
+    {
+        unsigned int age = pose->ms - s_sfxLog[i].ms;
+        if (age > SFX_RESEND)
+        {
+            break;
+        }
+        pose->sfx[n].seq  = s_sfxLog[i].seq;
+        pose->sfx[n].sfx  = s_sfxLog[i].sfx;
+        pose->sfx[n].vol  = s_sfxLog[i].vol;
+        pose->sfx[n].kind = s_sfxLog[i].kind;
+        pose->sfx[n].age4 = (unsigned char)(age / 4u);
+        n++;
+    }
+    /* Oldest first, so the receiver's seq check walks forward. */
+    for (i = 0; i < n / 2; i++)
+    {
+        ShSessionSfx t = pose->sfx[i];
+        pose->sfx[i] = pose->sfx[n - 1 - i];
+        pose->sfx[n - 1 - i] = t;
+    }
+    pose->sfxCount = (unsigned char)n;
+}
+
+/* Partners' sounds, at the partner's drawn position on the same delayed clock
+ * as their body, so a footstep lands with the foot. */
+static void ShNetG_PlayPartnerSfx(int myMap)
+{
+    static struct { unsigned long long id; unsigned int serial; } s_heard[SHSESSION_MAX_MEMBERS];
+    int i, n = ShSession_MemberCount();
+
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        ShSessionPoseNow       pn;
+        ShSessionSfxEv         ev[8];
+        int                    slot, k, got;
+
+        if (!m || m->steamId == ShSession_SelfId() || m->mapIdx != myMap)
+        {
+            continue;
+        }
+        for (slot = 0; slot < SHSESSION_MAX_MEMBERS && s_heard[slot].id != m->steamId; slot++) {}
+        if (slot == SHSESSION_MAX_MEMBERS)
+        {
+            /* First time we hear this member: start from now, not from a
+             * backlog of sounds made before we were listening. */
+            for (slot = 0; slot < SHSESSION_MAX_MEMBERS && s_heard[slot].id != 0; slot++) {}
+            if (slot == SHSESSION_MAX_MEMBERS) slot = i % SHSESSION_MAX_MEMBERS;
+            s_heard[slot].id     = m->steamId;
+            s_heard[slot].serial = m->sfxNextSerial;
+            continue;
+        }
+        got = ShSession_MemberTakeSfx(i, &s_heard[slot].serial, ev, 8);
+        if (got <= 0 || !ShSession_MemberPoseNow(i, &pn))
+        {
+            continue;
+        }
+        for (k = 0; k < got; k++)
+        {
+            VECTOR3 at;
+            at.vx = pn.x; at.vy = pn.y; at.vz = pn.z;
+            /* Always with distance falloff and stereo placement: a sound the
+             * sender heard at full level is still out where the partner is. */
+            if (ev[k].kind & 1)
+            {
+                func_8005DD44((e_SfxId)ev[k].sfx, &at, ev[k].vol, 0);
+            }
+            else
+            {
+                func_8005DC1C((e_SfxId)ev[k].sfx, &at, ev[k].vol, 0);
+            }
+        }
+    }
+}
+
 static void ShNetG_CoopGuestSpawn(int mapIdx)
 {
     unsigned long long     hostId;
@@ -357,18 +471,26 @@ void ShNet_GameTick(void)
     /* Co-op presence: the same pose, to the Steam session members. */
     {
         extern s32    g_PcHarryHandBone;
+        extern s32    g_PcHarryPoseKf[2][3];
         ShSessionPose pose;
         s32           held = WorldGfx_HeldItemIdGet();
+        int           h;
 
         memset(&pose, 0, sizeof(pose));
+        pose.ms        = ShNetPlat_Millis();
+        for (h = 0; h < 2; h++)
+        {
+            pose.kf[h][0] = (unsigned short)g_PcHarryPoseKf[h][0];
+            pose.kf[h][1] = (unsigned short)g_PcHarryPoseKf[h][1];
+            pose.alpha[h] = (unsigned short)g_PcHarryPoseKf[h][2];
+        }
+        ShNetG_SfxAttach(&pose);
         pose.x         = (int)g_SysWork.playerWork.player.position.vx;
         pose.y         = (int)g_SysWork.playerWork.player.position.vy;
         pose.z         = (int)g_SysWork.playerWork.player.position.vz;
         pose.rotY      = (short)g_SysWork.playerWork.player.rotation.vy;
         pose.anim      = (unsigned short)g_SysWork.playerWork.player.model.anim.status;
         pose.frame     = (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx;
-        pose.upAnim    = (unsigned short)g_SysWork.playerWork.extra.model.anim.status;
-        pose.upFrame   = (unsigned short)g_SysWork.playerWork.extra.model.anim.keyframeIdx;
         pose.weaponAnm = (g_Player_LastWeaponSelected >= 0 && g_Player_LastWeaponSelected < 0xFF)
                          ? (unsigned char)g_Player_LastWeaponSelected : 0xFF;
         pose.heldItem  = (held >= 0 && held < 0xFF) ? (unsigned char)held : 0xFF;
@@ -385,6 +507,13 @@ void ShNet_GameTick(void)
 
     /* Co-op: place a joining guest next to the host once his pose is known. */
     ShNetG_CoopGuestSpawn(mapIdx);
+    {
+        extern int g_PcCoopGame;
+        if (g_PcCoopGame && ShSession_Active() && g_DeltaTime != Q12(0.0f))
+        {
+            ShNetG_PlayPartnerSfx(mapIdx);
+        }
+    }
 
     /* Death marker, once per death. Latched rather than edge-detected on the
      * health value alone: health sits at zero for the whole death animation
