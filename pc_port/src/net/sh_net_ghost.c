@@ -47,6 +47,7 @@
 #include "hires_override.h"
 #include "pc_config.h"
 #include "pc_chara_pool.h" /* Pc_CharaPool_HarryGhostModel: clean Harry for remotes */
+#include "pc_playas.h"     /* a partner's skin rig */
 #include "sh_net.h"
 #include "sh_net_art.h"
 #include "sh_net_ui.h"
@@ -512,7 +513,7 @@ static const u8* ShNetG_HarryKeyframe(const s_AnmHeader* anm, int kf, int weapon
  * the header with exactly those two keyframes after it, so the two can come
  * from different files and the shared header's activeBones is never touched. */
 static int ShNetG_PoseBones(const s_AnmHeader* anm, GsCOORDINATE2* coords, u32 bones,
-                            int kf0, int kf1, int alpha, int weapon)
+                            int kf0, int kf1, int alpha, int weapon, int rootY)
 {
     static union { u32 align; u8 b[8192]; } s_hdr;
     int          hdrSize = anm->dataOffset;
@@ -528,8 +529,48 @@ static int ShNetG_PoseBones(const s_AnmHeader* anm, GsCOORDINATE2* coords, u32 b
     memcpy(s_hdr.b + hdrSize + kfSize, ShNetG_HarryKeyframe(anm, kf1, weapon), (size_t)kfSize);
     h->activeBones   = bones;
     h->keyframeCount = 2;
+    /* The shared header carries whatever the LOCAL skin patched in; the
+     * partner's body stands on its own rig's root height. */
+    h->rootYOffset   = (u8)rootY;
     Anim_BoneUpdate(h, coords, 0, 1, alpha);
     return 1;
+}
+
+/* A partner wearing a skin: the skin's own joint spacing on the bones Harry's
+ * keyframes leave static, and its extra bones seated as rigid children, the
+ * way pc_playas.c does for the local player. */
+static void ShNetG_ApplyRig(const PcPlayAsRig* rig, GsCOORDINATE2* coords)
+{
+    int i, r, c;
+
+    for (i = 1; i < PC_PLAYAS_RIG_BONES; i++)
+    {
+        if (rig->bindHas[i])
+        {
+            coords[i].coord.t[0] = rig->bindT[i][0];
+            coords[i].coord.t[1] = rig->bindT[i][1];
+            coords[i].coord.t[2] = rig->bindT[i][2];
+        }
+    }
+    for (i = 0; i < rig->extraCount && PC_PLAYAS_RIG_BONES + i < GHOST_BONE_MAX; i++)
+    {
+        GsCOORDINATE2* co     = &coords[PC_PLAYAS_RIG_BONES + i];
+        int            parent = rig->extraParent[i];
+
+        memset(co, 0, sizeof(*co));
+        for (r = 0; r < 3; r++)
+        {
+            for (c = 0; c < 3; c++)
+            {
+                co->coord.m[r][c] = (s16)rig->extraR[i][r * 3 + c];
+            }
+        }
+        co->coord.t[0] = rig->extraT[i][0];
+        co->coord.t[1] = rig->extraT[i][1];
+        co->coord.t[2] = rig->extraT[i][2];
+        co->super      = (parent >= 0 && parent < GHOST_BONE_MAX) ? &coords[parent] : &coords[0];
+        co->flg        = 0;
+    }
 }
 
 /* Draws the local player's loaded held-item model in a partner's right hand
@@ -553,10 +594,13 @@ static void ShNetG_DrawHeldItem(GsCOORDINATE2* hand, int itemId)
 static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, const ShNetGPose* pose)
 {
     static GsCOORDINATE2 s_coords[GHOST_BONE_MAX];
-    s_CharaModel*  cm;
-    s_AnmHeader*   anm;
-    SVECTOR        rot;
-    s16            ret;
+    s_CharaModel*      cm;
+    s_AnmHeader*       anm;
+    SVECTOR            rot;
+    s16                ret;
+    const PcPlayAsRig* rig = NULL;
+    unsigned int       savedVis[2];
+    int                rootY;
 
     /* Resolve the MODEL. A non-Harry skin comes from the global chara pool
      * (registeredCharaModels[id], independent of the LOCAL play-as). Harry --
@@ -606,13 +650,22 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     /* Two halves, as Player_AnimUpdate poses the local Harry. The old single
      * pass clamped to HB_BASE's keyframeCount, which froze every weapon clip
      * (kf 568+) on the last base keyframe. */
+    if (charaId != Chara_Harry)
+    {
+        rig = Pc_PlayAs_RigFor(charaId);
+    }
+    rootY = rig ? rig->rootY : Pc_PlayAs_HarryRootY();
     Anim_BoneInit(anm, s_coords);
     if (!ShNetG_PoseBones(anm, s_coords, ~(u32)HARRY_UPPER_BODY_BONE_MASK,
-                          pose->lowKf0, pose->lowKf1, pose->lowAlpha, pose->weaponAnm) ||
+                          pose->lowKf0, pose->lowKf1, pose->lowAlpha, pose->weaponAnm, rootY) ||
         !ShNetG_PoseBones(anm, s_coords, ~(u32)HARRY_LOWER_BODY_BONE_MASK,
-                          pose->upKf0, pose->upKf1, pose->upAlpha, pose->weaponAnm))
+                          pose->upKf0, pose->upKf1, pose->upAlpha, pose->weaponAnm, rootY))
     {
         return 0;
+    }
+    if (rig != NULL)
+    {
+        ShNetG_ApplyRig(rig, s_coords);
     }
 
     rot.vx = 0;
@@ -635,10 +688,20 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     {
         func_8003DE60(&cm->skeleton, pose->handBone);
     }
+    /* A skin's embedded props and spare faces, off for the draw and back
+     * after: the model is the pool's, and an NPC may be wearing it too. */
+    if (charaId != Chara_Harry)
+    {
+        Pc_PlayAs_RigHideParts(rig, cm, savedVis);
+    }
     ret = (s16)func_8003DD74((e_CharaId)charaId, 0);
     func_80045534(&cm->skeleton, &g_OrderingTable0[g_ActiveBufferIdx], 1,
                   s_coords, Q8_TO_Q12(CHARA_FILE_INFOS[charaId].field_6),
                   (u16)ret, CHARA_FILE_INFOS[charaId].field_8);
+    if (charaId != Chara_Harry)
+    {
+        Pc_PlayAs_RigRestoreParts(cm, savedVis);
+    }
     ShNetG_DrawHeldItem(&s_coords[HarryBone_RightHand], pose->heldItem);
     return 1;
 }

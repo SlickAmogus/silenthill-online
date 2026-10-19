@@ -28,10 +28,14 @@ whether to start a **New Game** or load a co-op save. **Open Room** opens it;
 **Join a game.** Browse Server Rooms, Join by IP, Enter Room Code, or accept a
 Steam invite. A guest who joins a game in progress is placed next to the host.
 
-**In game**, `M` opens the multiplayer menu: leave a message, save, toggle
-nameplates, see the players (with pings), leave. The host can also turn
-**Friendly Fire** on or off for everyone, and remove a player from the
-Players list (select them twice).
+**In game**, `M` opens the multiplayer menu: leave a message, save, change
+your **Character** (any of the fourteen playable characters; the body swaps
+in place and everyone sees the new one), toggle nameplates, see the players
+(with pings), leave. The host can also turn **Friendly Fire** on or off for
+everyone, allow or deny the **Guest Console** (the console and debug keys
+are off for guests unless the host turns this on), and remove a player from
+the Players list (select them twice). The lobby has the Character row too,
+so you can pick before the game starts.
 
 ---
 
@@ -45,7 +49,10 @@ Players list (select them twice).
   same places doing the same things, hears them, can shoot and hit them, and
   can be attacked by them. A kill is a kill for everyone. This covers every
   monster from the map's spawn table (including Split Head, Floatstinger and
-  Twinfeeler) and the scripted ones with a spawn slot.
+  Twinfeeler) and the scripted ones with a spawn slot. Grabs are real grabs:
+  a Grey Child, dog, Romper or Hanged Scratcher that gets hold of a guest
+  holds them until they mash free, and the host's monster lets go when they
+  do.
 - **Progress.** Doors unlocked, puzzles solved and pickups taken by anyone
   are taken for everyone. The item itself goes into every player's inventory.
 - **Friendly fire.** Off by default. When the host turns it on, a hit from
@@ -53,9 +60,9 @@ Players list (select them twice).
   partner after a few seconds.
 
 **What stays yours.** Monster Cybil, the Incubus and cutscene actors run on
-each machine. A monster grab on a guest lands as a hard hit instead of a
-grab. Boss intros play on each machine; the boss is shared once yours is
-over.
+each machine. Boss intros play on each machine; the boss is shared once yours
+is over. A grab in a map that has no reaction animations for that monster
+(one spawned from the console, for instance) lands as a hard hit.
 
 ---
 
@@ -70,7 +77,9 @@ slots, so lighting, shadows, the radio and bullet hits all work through the
 game's own code. A guest's hit on a puppet is sent to the host, which applies
 it to the real monster. When a monster goes for a guest, the host runs that
 monster's AI against a stand-in placed where the guest is, and sends the
-guest what landed.
+guest what landed. While a monster holds a guest, each pose the guest sends
+carries its state and the attack it is reacting to, so the host's monster
+sees exactly what a local victim would show it.
 
 Messages travel over the community server relay or Steam's relay, so no
 player learns another's IP address (Join by IP and This PC hosting excepted,

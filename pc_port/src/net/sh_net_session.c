@@ -445,6 +445,7 @@ static void ShSession_PoseBody(const ShSessionPose* s, ShSessionPoseNow* out)
     out->lowKf0 = s->kf[0][0]; out->lowKf1 = s->kf[0][1]; out->lowAlpha = s->alpha[0];
     out->upKf0  = s->kf[1][0]; out->upKf1  = s->kf[1][1]; out->upAlpha  = s->alpha[1];
     out->weaponAnm = s->weaponAnm; out->heldItem = s->heldItem; out->handBone = s->handBone;
+    out->pstate = s->pstate; out->atkRecv = s->atkRecv; out->cflags = s->cflags;
 }
 
 static void ShSession_PoseHold(const ShSessionPose* s, ShSessionPoseNow* out)
@@ -987,7 +988,7 @@ static void ShSession_Receive(unsigned int now)
                 memset(&smp, 0, sizeof(smp));
                 smp.x = mb->x; smp.y = mb->y; smp.z = mb->z; smp.rotY = mb->rotY;
                 smp.anim = mb->anim; smp.frame = mb->frame;
-                if (payLen >= 42)
+                if (payLen >= 45)
                 {
                     smp.kf[0][0]  = (unsigned short)ShnGetU16(p, &o);
                     smp.kf[0][1]  = (unsigned short)ShnGetU16(p, &o);
@@ -1000,8 +1001,11 @@ static void ShSession_Receive(unsigned int now)
                     smp.handBone  = (unsigned char)ShnGetU8(p, &o);
                     nsfx          = (int)ShnGetU8(p, &o);
                     sent          = (unsigned int)ShnGetU32(p, &o);
+                    smp.pstate    = (unsigned char)ShnGetU8(p, &o);
+                    smp.atkRecv   = (unsigned char)ShnGetU8(p, &o);
+                    smp.cflags    = (unsigned char)ShnGetU8(p, &o);
                     if (nsfx > SHSESSION_POSE_SFX) nsfx = SHSESSION_POSE_SFX;
-                    if (42 + nsfx * 6 > payLen) nsfx = (payLen - 42) / 6;
+                    if (45 + nsfx * 6 > payLen) nsfx = (payLen - 45) / 6;
                     for (k = 0; k < nsfx; k++)
                     {
                         smp.sfx[k].seq   = (unsigned char)ShnGetU8(p, &o);
@@ -1015,7 +1019,7 @@ static void ShSession_Receive(unsigned int now)
                 else
                 {
                     smp.kf[0][0] = smp.kf[0][1] = smp.kf[1][0] = smp.kf[1][1] = smp.frame;
-                    smp.weaponAnm = smp.heldItem = 0xFF;
+                    smp.weaponAnm = smp.heldItem = smp.atkRecv = 0xFF;
                     sent = now;
                 }
                 /* Clamp what a peer can make us pose with: keyframes past the
@@ -1617,6 +1621,9 @@ void ShSession_Tick(unsigned int nowMs)
             ShnPutU8(buf, &off, pose.handBone);
             ShnPutU8(buf, &off, pose.sfxCount);
             ShnPutU32(buf, &off, (shn_u32)pose.ms);
+            ShnPutU8(buf, &off, pose.pstate);
+            ShnPutU8(buf, &off, pose.atkRecv);
+            ShnPutU8(buf, &off, pose.cflags);
             for (k = 0; k < pose.sfxCount && k < SHSESSION_POSE_SFX; k++)
             {
                 ShnPutU8(buf, &off, pose.sfx[k].seq);

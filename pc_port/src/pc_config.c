@@ -78,6 +78,7 @@ s_PcConfig g_PcConfig = {
     .onlineEvents     = 1,
     .onlineUiScale    = 1.0f,
     .onlineFriendlyFire = 0,
+    .onlineGuestConsole = 0,
     .onlinePvpDamage  = 0.15f,
     .onlineRespawnSeconds = 7.0f,
     .onlineSteam           = 0,
@@ -861,6 +862,10 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_friendly_fire") == 0)
         {
             g_PcConfig.onlineFriendlyFire = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_guest_console") == 0)
+        {
+            g_PcConfig.onlineGuestConsole = (atoi(value) != 0);
         }
         else if (strcmp(key, "online_pvp_damage") == 0)
         {

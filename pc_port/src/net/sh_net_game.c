@@ -98,6 +98,10 @@ static int ShNetG_BuildFlags(void)
     {
         flags |= SHNET_PF_FFIRE; /* others may shoot me; I would apply it */
     }
+    if (ShSession_Active() && ShSession_IsHost() && g_PcConfig.onlineGuestConsole)
+    {
+        flags |= SHNET_PF_GCONSOLE;
+    }
     return flags;
 }
 
@@ -417,7 +421,35 @@ static void ShNetG_PublishPose(int mapIdx, int flags)
     pose.heldItem  = (held >= 0 && held < 0xFF) ? (unsigned char)held : 0xFF;
     pose.handBone  = (unsigned char)g_PcHarryHandBone;
     pose.paperMap  = (unsigned char)(g_SavegamePtr->paperMapIdx + 1);
+    {
+        const s_SubCharacter* me = &g_SysWork.playerWork.player;
+        int st = g_SysWork.playerWork.extra.state;
+        pose.pstate  = (unsigned char)((st >= 0 && st < 255) ? st : 0);
+        pose.atkRecv = (me->attackReceived >= 0) ? (unsigned char)me->attackReceived : 0xFF;
+        pose.cflags  = (unsigned char)(me->flags & 0xFF);
+    }
     ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags, &pose);
+}
+
+/* Whether guests may open the console: the host's setting, read by guests
+ * off the host's pose flags (the same way friendly fire travels). */
+int ShNet_CoopGuestConsole(void)
+{
+    int i, n;
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineGuestConsole;
+    }
+    n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && m->steamId == ShSession_HostId() && m->poseMs != 0)
+        {
+            return (m->flags & SHNET_PF_GCONSOLE) != 0;
+        }
+    }
+    return 0;
 }
 
 int ShNet_CoopFriendlyFire(void)
@@ -548,6 +580,35 @@ void ShNet_GameTick(void)
             Sd_PlaySfx(Sfx_MenuConfirm, 0, Q8(0.30f));
         }
         s_lastMembers = mc;
+    }
+
+    /* Debug controls (console, cheat keys, binds) follow the config, except
+     * for a guest in someone else's game: there the host decides, and the
+     * default is off. Re-derived every frame so leaving a room restores the
+     * player's own setting. */
+    {
+        extern int g_PcAllowDebugControls;
+        int allow = g_PcConfig.allowDebugControls;
+        if (ShSession_Active() && !ShSession_IsHost())
+        {
+            allow = ShNet_CoopGuestConsole();
+        }
+        g_PcAllowDebugControls = allow;
+    }
+
+    /* A partner's skin needs its own skeleton proportions to draw right;
+     * load them off the disc the moment a partner shows up wearing one. */
+    if (ShSession_Active())
+    {
+        int i, n = ShSession_MemberCount();
+        for (i = 0; i < n; i++)
+        {
+            const ShSessionMember* m = ShSession_Member(i);
+            if (m && m->poseMs != 0 && m->steamId != ShSession_SelfId())
+            {
+                Pc_PlayAs_RigPrefetch(m->charaId);
+            }
+        }
     }
 
     if (!ShNet_Enabled())

@@ -524,6 +524,8 @@ typedef struct {
     float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
     int   onlineFriendlyFire; /* 1 = players can hit each other in co-op (online_friendly_fire). Both
                                * sides must have it on: you only take damage if YOU enabled it. */
+    int   onlineGuestConsole; /* host: 1 = guests in my game may use the console and debug keys
+                               * (online_guest_console). Off by default. */
     float onlinePvpDamage;    /* scale on weapon damage vs players (online_pvp_damage, default 0.15:
                                * weapons are tuned for 200-40000 HP monsters, Harry has 100) */
     float onlineRespawnSeconds; /* co-op: how long a dead player lies there before respawning

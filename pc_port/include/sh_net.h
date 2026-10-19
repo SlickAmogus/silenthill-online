@@ -131,6 +131,7 @@ int         ShNet_LiveWorld(void);
  * everyone. The host reads its own config; a guest reads the flag the host's
  * pose carries. Outside a session, the local config. */
 int         ShNet_CoopFriendlyFire(void);
+int         ShNet_CoopGuestConsole(void); /* host's choice: may guests use the console */
 int         ShNet_Status(void);        /* SHNET_ST_* */
 const char* ShNet_StatusText(void);    /* one short line for the UI */
 const char* ShNet_ServerName(void);

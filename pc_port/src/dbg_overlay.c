@@ -1506,6 +1506,16 @@ void DbgOverlay_Update(void)
         }
         cur_tilde = ks[s_consoleSc];
     }
+    if (!g_PcAllowDebugControls && s_console_open) {
+        /* The right to the console went away under it (a co-op host turned
+         * the guest console off): drop it, or the game stays frozen behind
+         * a panel the key can no longer close. */
+        s_console_open          = 0;
+        s_console_dirty         = 1;
+        g_PcConsoleInputActive  = 0;
+        g_PcConsoleSwallowInput = 1;
+        s_console_apply_until   = 0;
+    }
     if (g_PcAllowDebugControls && !ShNetChat_IsOpen()) {
         if (cur_tilde && !s_prev_tilde) { /* press edge = toggle */
             s_console_open = !s_console_open;

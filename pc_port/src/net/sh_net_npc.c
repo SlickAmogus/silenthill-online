@@ -232,7 +232,56 @@ static u16                s_savedGroupFlags[CHARA_GROUP_COUNT];
 static s8                 s_savedNpcIdxs[CHARA_GROUP_COUNT];
 static int                s_swapSlot = -1;
 static unsigned long long s_swapTo;
+static s8                 s_swapAtkIn;               /* the proxy's attack id going in */
 int                       g_PcNetNpcSwapActive = 0;  /* sh_net_game.c: not our own sound */
+
+/* What the monsters hold against ONE player, kept per guest so a grab can
+ * last longer than a frame: the shared latches in charaGroupFlags[3] (a
+ * monster has committed to / is holding the player), which monster is
+ * holding them, and the grab we told them about but their pose has not
+ * confirmed yet (a grabber lets go the moment it reads no attack id). */
+typedef struct
+{
+    unsigned long long id;
+    u16                groupFlags[CHARA_GROUP_COUNT];
+    int                grabSlot;      /* -1 none */
+    int                pendAtk;       /* -1 none */
+    unsigned int       pendMs;
+    unsigned int       freeSinceMs;   /* last time their pose showed no grab */
+} GuestWork;
+static GuestWork  s_guest[SHSESSION_MAX_MEMBERS];
+static GuestWork* s_swapGuest;
+
+static GuestWork* Npc_GuestWork(unsigned long long id)
+{
+    int i, free = -1;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_guest[i].id == id) return &s_guest[i];
+        if (s_guest[i].id == 0 && free < 0) free = i;
+    }
+    if (free < 0) free = 0;
+    memset(&s_guest[free], 0, sizeof(s_guest[free]));
+    s_guest[free].id       = id;
+    s_guest[free].grabSlot = -1;
+    s_guest[free].pendAtk  = -1;
+    return &s_guest[free];
+}
+
+static int Npc_IsGrabAtk(int atk)
+{
+    return atk == 45 || atk == 47 || atk == 49 || atk == 54 || atk == 56 || atk == 66;
+}
+
+/* The player states a monster is holding the player in (player_control.c's
+ * "grab states", floor included). */
+static int Npc_IsGrabState(int st)
+{
+    return (st >= PlayerState_EnemyGrabTorsoFront && st <= PlayerState_EnemyGrabLegsBack) ||
+           st == PlayerState_EnemyGrabNeckFront || st == PlayerState_EnemyGrabNeckBack ||
+           (st >= PlayerState_EnemyGrabPinnedFrontStart && st <= PlayerState_EnemyGrabPinnedBack) ||
+           st == PlayerState_OnFloorFront || st == PlayerState_OnFloorBehind;
+}
 
 static void Npc_PickTarget(int slot)
 {
@@ -320,6 +369,59 @@ static int Npc_SwapIn(int slot)
         px->collision.shapeOffsets.cylinder.vx = 0;
         px->collision.shapeOffsets.cylinder.vz = 0;
         g_SysWork.playerWork.extra.state = PlayerState_None;
+        g_SysWork.npcIdxs[0] = g_SysWork.npcIdxs[1] = NO_VALUE;
+
+        /* The guest's side of a grab, as their last pose reports it: the
+         * state they are in, the attack id they are still reacting to (a
+         * grabber lets go when it reads none; Romper, the Grey Child and the
+         * nurse all do) and whether they are in a reaction at all. */
+        {
+            const unsigned int now = ShNetPlat_Millis();
+            GuestWork*         gw  = Npc_GuestWork(m->steamId);
+            int                st  = pn.pstate;
+            int                atk = (pn.atkRecv == 0xFF) ? NO_VALUE : pn.atkRecv;
+
+            if (gw->pendAtk >= 0)
+            {
+                /* Our grab is on its way to them; hold the monster on it
+                 * until their pose carries it, or long enough that it never
+                 * will (refused by their map, or lost). */
+                if (atk == gw->pendAtk || (int)(now - gw->pendMs) > 1500) gw->pendAtk = -1;
+                else                                                        atk = gw->pendAtk;
+            }
+            if (atk != NO_VALUE && (atk < 40 || atk >= 70)) atk = NO_VALUE;
+            if (st < 0 || st > 60) st = PlayerState_None;
+            px->attackReceived               = (s8)atk;
+            g_SysWork.playerWork.extra.state = st;
+            if (pn.cflags & CharaFlag_Unk4) px->flags |= CharaFlag_Unk4;
+            else                            px->flags &= ~CharaFlag_Unk4;
+            if (!(m->flags & SHNET_PF_ALIVE)) px->health = 0;
+
+            if (Npc_IsGrabState(st) || gw->pendAtk >= 0)
+            {
+                if (gw->grabSlot >= 0 && gw->grabSlot < NPC_COUNT_MAX && s_tracked[gw->grabSlot])
+                {
+                    g_SysWork.npcIdxs[0] = g_SysWork.npcIdxs[1] = (s8)gw->grabSlot;
+                    px->field_40 = (s8)gw->grabSlot;
+                }
+            }
+            else
+            {
+                gw->grabSlot = -1;
+                if (gw->freeSinceMs == 0) gw->freeSinceMs = now;
+                /* A commit latch no monster cleared (its target moved on
+                 * mid-attack): nothing has held this guest for a while, so
+                 * nothing is. */
+                if ((int)(now - gw->freeSinceMs) > 3000)
+                {
+                    gw->groupFlags[3] &= (u16)~(CharaGroupFlag_0 | CharaGroupFlag_1);
+                }
+            }
+            if (Npc_IsGrabState(st) || gw->pendAtk >= 0) gw->freeSinceMs = 0;
+            memcpy(g_SysWork.charaGroupFlags, gw->groupFlags, sizeof(gw->groupFlags));
+            s_swapGuest = gw;
+            s_swapAtkIn = px->attackReceived;
+        }
         s_swapSlot           = slot;
         s_swapTo             = s_target[slot];
         g_PcNetNpcSwapActive = 1;
@@ -338,13 +440,15 @@ static void Npc_SwapOut(void)
     {
         return;
     }
-    if (px->damage.amount > 0)
+    /* Damage, or a new attack id (a grab lands with little or no damage of
+     * its own; the drain while held comes with the id still set). */
+    if (px->damage.amount > 0 || px->attackReceived != s_swapAtkIn)
     {
-        /* Grab drains add damage with no attack id; they land as a flinch. */
         shn_u8 b[24];
         int    o = 0, r;
+        int    atk = (px->attackReceived >= 40 && px->attackReceived < 70) ? px->attackReceived : 43;
         ShnPutU8(b, &o, (shn_u8)g_SysWork.npcs[s_swapSlot].field_40);
-        ShnPutU8(b, &o, (shn_u8)(px->attackReceived >= 40 && px->attackReceived < 70 ? px->attackReceived : 43));
+        ShnPutU8(b, &o, (shn_u8)atk);
         ShnPutU16(b, &o, ++s_atkSeq);
         ShnPutS32(b, &o, px->damage.amount);
         ShnPutS32(b, &o, px->damage.position.vx);
@@ -354,6 +458,25 @@ static void Npc_SwapOut(void)
         {
             ShSession_SendGame(SHNET_MSG_S_NPC_ATK, b, o, s_swapTo, 1);
         }
+        if (s_swapGuest != NULL && Npc_IsGrabAtk(atk) && px->attackReceived != s_swapAtkIn)
+        {
+            static int s_logged;
+            s_swapGuest->grabSlot = s_swapSlot;
+            s_swapGuest->pendAtk  = atk;
+            s_swapGuest->pendMs   = ShNetPlat_Millis();
+            if (s_logged < 8)
+            {
+                s_logged++;
+                SH_DBG("[NETNPC] host: row %d (chara %d) grabbed a partner (attack %d)",
+                       (int)g_SysWork.npcs[s_swapSlot].field_40, (int)g_SysWork.npcs[s_swapSlot].model.charaId, atk);
+            }
+        }
+    }
+    /* The latches the AI set against this guest stay with the guest. */
+    if (s_swapGuest != NULL)
+    {
+        memcpy(s_swapGuest->groupFlags, g_SysWork.charaGroupFlags, sizeof(s_swapGuest->groupFlags));
+        s_swapGuest = NULL;
     }
     g_SysWork.playerWork   = s_savedWork;
     g_Player_DisableDamage = s_savedDisableDamage;
@@ -678,6 +801,8 @@ void Pc_NetNpc_Reset(void)
     }
     memset(s_pup, 0, sizeof(s_pup));
     memset(s_pupGated, 0, sizeof(s_pupGated));
+    memset(s_guest, 0, sizeof(s_guest));
+    s_swapGuest = NULL;
     memset(s_hitSeen, 0, sizeof(s_hitSeen));
     s_pupInit    = 1;
     s_sfxSeqOk   = 0;
@@ -1060,9 +1185,11 @@ void Pc_NetNpc_PuppetTick(s_SubCharacter* npc, int slot, s_AnmHeader* hdr, GsCOO
 }
 
 /* Guest: a host monster hit US. Applied the way func_8008B714 writes a
- * monster's hit, with the attacker being our puppet of it. A grab needs the
- * live monster on this machine to hold and release us, so grabs (and the
- * instant kill) land as a hard flinch instead. */
+ * monster's hit, with the attacker being our puppet of it. A grab is the
+ * real grab: the puppet is the body we are held by (the grab states read
+ * its position and heading), our own mashing breaks it, and the host's
+ * monster lets go when our pose stops carrying the attack id. Only when
+ * the puppet is not here does a grab land as a hard hit. */
 static void Npc_GuestApplyAttack(const shn_u8* p, int len)
 {
     static unsigned int s_winMs;
@@ -1088,10 +1215,11 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
     if (now - s_winMs >= 1000u) { s_winMs = now; s_winN = 0; }
     if (++s_winN > 15) return;
 
-    if (row >= NPC_ROWS || atk < 40 || atk >= 70 || amount <= 0 || amount > Q12(100.0f)) return;
+    if (row >= NPC_ROWS || atk < 40 || atk >= 70 || amount < 0 || amount > Q12(100.0f)) return;
+    if (amount == 0 && !Npc_IsGrabAtk(atk)) return;
     if (s_pupGated[row]) return; /* a boss we cannot see yet cannot hit us */
     if (g_SysWork.sysState != SysState_Gameplay || me->health <= Q12(0.0f) || g_Player_DisableDamage) return;
-    if (atk == 45 || atk == 47 || atk == 49 || atk == 54 || atk == 56 || atk == 66) atk = 43;
+    if (Npc_IsGrabAtk(atk) && (!s_pup[row].used || s_pup[row].slot < 0)) atk = 43;
 #define NPC_CLAMP_KB(v) ((v) > Q12(1.0f) ? Q12(1.0f) : (v) < -Q12(1.0f) ? -Q12(1.0f) : (v))
     me->damage.amount      += amount;
     me->damage.position.vx += NPC_CLAMP_KB(kbx);

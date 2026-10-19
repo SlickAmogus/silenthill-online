@@ -176,7 +176,7 @@ enum
     SHNET_PF_CUTSCENE   = 1 << 3, /* ghost hides: the player is not really "there" */
     SHNET_PF_AIMING     = 1 << 4,
     SHNET_PF_MENU       = 1 << 5,
-    SHNET_PF_OTHERWORLD = 1 << 6, /* reserved for a future fog/otherworld split */
+    SHNET_PF_GCONSOLE   = 1 << 6, /* host only: guests may use the console and debug keys */
     SHNET_PF_FFIRE      = 1 << 7  /* accepts hits from other players (friendly fire is on) */
 };
 

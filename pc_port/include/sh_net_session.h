@@ -83,6 +83,11 @@ typedef struct
     unsigned char  handBone;          /* MODEL_BONE last given to WorldGfx_HeldItemAttach(Harry) */
     unsigned char  sfxCount;
     unsigned char  paperMap;          /* sender's paperMapIdx + 1 (its floor), 0 unknown */
+    /* What a monster holding this player needs to know: the player state
+     * (grabbed, breaking free, down), the attack id it is still reacting to
+     * (0xFF none; a grabber lets go when it reads none) and the low byte of
+     * the chara flags (CharaFlag_Unk4 = in a reaction, cannot be grabbed). */
+    unsigned char  pstate, atkRecv, cflags;
     unsigned int   ms;                /* sender: capture time; ring: time on OUR clock */
     ShSessionSfx   sfx[SHSESSION_POSE_SFX];
 } ShSessionPose;
@@ -96,6 +101,7 @@ typedef struct
     int   lowKf0, lowKf1, lowAlpha;
     int   upKf0, upKf1, upAlpha;
     int   weaponAnm, heldItem, handBone;
+    int   pstate, atkRecv, cflags;
 } ShSessionPoseNow;
 
 typedef struct
