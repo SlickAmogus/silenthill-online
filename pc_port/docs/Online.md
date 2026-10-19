@@ -10,11 +10,14 @@ A branch of the PC port where other people are in your Silent Hill.
 > [Online_Roadmap.md](Online_Roadmap.md) has what works today, what is next, and
 > every testing recipe in one place.
 
-Not co-op. You are still playing the game alone, and nothing another player
-does can touch your world — no shared enemies, no shared items, no shared
-doors. What you get is the sense that the town is inhabited: pale outlines
-moving through the fog where somebody else is walking right now, messages left
-on the floor, and the spots where other people died.
+This page is the living world, not co-op. Here you are still playing the game
+alone, and nothing a stranger does can touch your world: no shared enemies, no
+shared items, no shared doors. What you get is the sense that the town is
+inhabited: pale outlines moving through the fog where somebody else is walking
+right now, messages left on the floor, and the spots where other people died.
+
+For playing *together*, with shared monsters, items and progress, see
+[Online_Coop.md](Online_Coop.md).
 
 Everything here is dormant unless `online_enabled = 1`. With it off, the build
 opens no socket, starts no thread, and behaves exactly like the offline port.
