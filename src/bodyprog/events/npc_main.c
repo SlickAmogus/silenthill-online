@@ -311,12 +311,14 @@ void Game_NpcRoomInitSpawn(bool cond) // 0x80037F24
             /* The PSX spawn ring (20..22u) sits inside the fog. With the fog
              * thinned the ring is in plain sight, so spawn anywhere out of the
              * camera's view instead, nearer or further than the ring. */
-            (Pc_LongViewActive()
+            ((Pc_LongViewActive()
                  ? (!Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(30.0f)) &&
                     (!cond || (Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(12.0f)) &&
                                !Pc_WorldPointInView(curCharaSpawn->positionX, curCharaSpawn->positionZ))))
                  : (!Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(22.0f)) &&
                     (!cond || Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(20.0f)))))
+             /* Co-op host: a partner's ring counts like our own. */
+             || Pc_NetNpc_PartnerSpawnOk(curCharaSpawn->positionX, curCharaSpawn->positionZ, cond))
             && _slotSpawnCooldown[i] == 0
             /* Co-op guest: a spawn point the host is near is the host's to
              * fill; its monster arrives here as a puppet instead. */

@@ -139,6 +139,8 @@ enum
     SHNET_MSG_S_NPC_SNAP = 0x59, /* P2P  host -> all: the monsters it runs (sh_net_npc.c) */
     SHNET_MSG_S_NPC_HIT  = 0x5A, /* P2P  member -> host: I hit your monster */
     SHNET_MSG_S_NPC_ATK  = 0x5B, /* P2P  host -> member: your monster hit you */
+    SHNET_MSG_S_WORLD_FL = 0x5C, /* P2P  host -> all: event flags + enemy states (the world's progress) */
+    SHNET_MSG_S_FLAG_SET = 0x5D, /* P2P  member -> all: I took this pickup (event flag index) */
 
     /* Co-op over a relay server (sh_master rooms). The transport the session layer
      * rides when it is NOT using Steam P2P: the host creates a room, guests join
@@ -427,7 +429,8 @@ SHN_FN void ShnSanitizeText(char* s)
 #define SHNET_MSG_S_FIRST 0x50
 #define SHNET_MSG_S_LAST  0x5F
 #define SHNET_S_HOST_ONLY(t) ((t) == SHNET_MSG_S_WORLD || (t) == SHNET_MSG_S_KICK || \
-                              (t) == SHNET_MSG_S_NPC_SNAP || (t) == SHNET_MSG_S_NPC_ATK)
+                              (t) == SHNET_MSG_S_NPC_SNAP || (t) == SHNET_MSG_S_NPC_ATK || \
+                              (t) == SHNET_MSG_S_WORLD_FL)
 /* Types the session hands to the game thread whole (ShSession_TakeGame). */
 #define SHNET_S_IS_GAME(t)   ((t) >= SHNET_MSG_S_NPC_SNAP && (t) <= SHNET_MSG_S_LAST)
 

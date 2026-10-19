@@ -5,6 +5,8 @@
 #include <SDL_timer.h>
 #include "pc_config.h"
 #include "bodyprog/gfx/world.h"
+#include "sh_net_npc.h"     /* co-op host: chunks and collision around partners */
+#include "sh_net_session.h" /* SHSESSION_MAX_MEMBERS */
 #include "sh_log.h"
 #include "hires_override.h"
 #include "pc_big_ipd.h"
@@ -1690,10 +1692,34 @@ s32 Map_ChunkLoad(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_12 posX1, q
     /* The wide window needs a budget to match, or it can never be satisfied.
      * The ordinary window keeps the ordinary budget. */
     s32 maxLoadsPerFrame = wideScan ? 16 : 9;
+    /* Co-op host: the same window around each partner, so the monsters it
+     * runs for them have geometry and collision there. Whole-town mode
+     * already streams everything. */
+    s32    centerCount = 1, cIdx;
+    s32    ccx[1 + SHSESSION_MAX_MEMBERS], ccz[1 + SHSESSION_MAX_MEMBERS];
+    q19_12 cpx0[1 + SHSESSION_MAX_MEMBERS], cpz0[1 + SHSESSION_MAX_MEMBERS];
+    q19_12 cpx1[1 + SHSESSION_MAX_MEMBERS], cpz1[1 + SHSESSION_MAX_MEMBERS];
+    ccx[0] = cellX0; ccz[0] = cellZ0; cpx0[0] = posX0; cpz0[0] = posZ0; cpx1[0] = posX1; cpz1[0] = posZ1;
+    if (!wideScan)
+    {
+        s32 ppx[SHSESSION_MAX_MEMBERS], ppz[SHSESSION_MAX_MEMBERS], pcx[SHSESSION_MAX_MEMBERS], pcz[SHSESSION_MAX_MEMBERS];
+        s32 pn = Pc_NetNpc_PartnerCells(ppx, ppz, pcx, pcz, SHSESSION_MAX_MEMBERS), pi;
+        for (pi = 0; pi < pn; pi++)
+        {
+            ccx[centerCount]  = pcx[pi]; ccz[centerCount]  = pcz[pi];
+            cpx0[centerCount] = ppx[pi]; cpz0[centerCount] = ppz[pi];
+            cpx1[centerCount] = ppx[pi]; cpz1[centerCount] = ppz[pi];
+            centerCount++;
+        }
+    }
 #else
-    s32 scanMin = -1;
-    s32 scanMax = 1;
+    s32    scanMin = -1;
+    s32    scanMax = 1;
+    s32    centerCount = 1, cIdx;
+    s32    ccx[1] = { cellX0 }, ccz[1] = { cellZ0 };
+    q19_12 cpx0[1] = { posX0 }, cpz0[1] = { posZ0 }, cpx1[1] = { posX1 }, cpz1[1] = { posZ1 };
 #endif
+    for (cIdx = 0; cIdx < centerCount; cIdx++)
     for (z = scanMin; z <= scanMax; z++)
     {
         for (x = scanMin; x <= scanMax; x++)
@@ -1704,8 +1730,8 @@ s32 Map_ChunkLoad(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_12 posX1, q
             if (map->isExterior || (x == 0 && z == 0))
 #endif
             {
-                projCellZ = cellZ0 + z;
-                projCellX = cellX0 + x;
+                projCellZ = ccz[cIdx] + z;
+                projCellX = ccx[cIdx] + x;
 
                 chunkIdx = Map_IpdIdxGet(projCellX, projCellZ);
                 if (chunkIdx != NO_VALUE &&
@@ -1713,9 +1739,9 @@ s32 Map_ChunkLoad(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_12 posX1, q
                     /* Interior neighbor cells are by definition outside the
                      * player's cell (distance > 0); the window itself is the
                      * load gate. */
-                    (wideScan || !map->isExterior || Ipd_PaddedDistanceToEdgeGet(posX0, posZ0, projCellX, projCellZ, map->isExterior) <= Q12(0.0f)) &&
+                    (wideScan || !map->isExterior || Ipd_PaddedDistanceToEdgeGet(cpx0[cIdx], cpz0[cIdx], projCellX, projCellZ, map->isExterior) <= Q12(0.0f)) &&
 #else
-                    Ipd_PaddedDistanceToEdgeGet(posX0, posZ0, projCellX, projCellZ, map->isExterior) <= Q12(0.0f) &&
+                    Ipd_PaddedDistanceToEdgeGet(cpx0[cIdx], cpz0[cIdx], projCellX, projCellZ, map->isExterior) <= Q12(0.0f) &&
 #endif
                     !Map_IsIpdPresentCheck(map->activeChunks, projCellX, projCellZ))
                 {
@@ -1750,7 +1776,7 @@ s32 Map_ChunkLoad(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_12 posX1, q
                     chunk->materialCount = 0;
 #endif
 
-                    curQueueIdx = Ipd_LoadStart(chunk, chunkIdx, projCellX, projCellZ, posX0, posZ0, posX1, posZ1, map->isExterior);
+                    curQueueIdx = Ipd_LoadStart(chunk, chunkIdx, projCellX, projCellZ, cpx0[cIdx], cpz0[cIdx], cpx1[cIdx], cpz1[cIdx], map->isExterior);
                     if (curQueueIdx != NO_VALUE)
                     {
                         queueIdx = curQueueIdx;
@@ -1921,6 +1947,14 @@ void Ipd_ActiveChunksSample(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_1
         if (curChunk->paddedDistanceToEdge0 > Q12(0.0f) && curChunk->paddedDistanceToEdge1 > Q12(0.0f))
         {
             curChunk->outsideCount++;
+#ifdef SH_PC_PORT
+            /* Co-op host: a chunk kept for a partner is not "outside", or it
+             * would be the first evicted and reload every frame. */
+            if (Pc_NetNpc_ChunkNearPartner(curChunk->cellX, curChunk->cellZ, isExterior))
+            {
+                curChunk->outsideCount = 0;
+            }
+#endif
         }
         else
         {
@@ -3760,7 +3794,10 @@ s_IpdCollisionData** Ipd_ActiveChunksCollisionDataGet(s32* collDataIdx) // 0x800
 #ifdef SH_PC_PORT
         if (g_PcChunkCollisionLocalScope && g_PcConfig.preloadChunks && g_Map.isExterior &&
             !(curChunk->cellX >= (g_Map.cellX - 1) && (g_Map.cellX + 1) >= curChunk->cellX &&
-              curChunk->cellZ >= (g_Map.cellZ - 1) && (g_Map.cellZ + 1) >= curChunk->cellZ))
+              curChunk->cellZ >= (g_Map.cellZ - 1) && (g_Map.cellZ + 1) >= curChunk->cellZ) &&
+            /* Co-op host: the monsters it runs for a partner need ground and
+             * walls where that partner is. */
+            !Pc_NetNpc_ChunkNearPartner(curChunk->cellX, curChunk->cellZ, 1))
         {
             curChunk++;
             continue;

@@ -255,10 +255,13 @@ void Ipd_PlayerChunkInit(s_MapOverlayHdr* mapHdr, s32 playerPosX, s32 playerPosZ
      * still mid-load — floating neighbor rooms, void where the current
      * room should be, popping floor patches, and no collision for
      * visible-but-unloaded neighbors. */
+    /* Doubled again for co-op: the host streams the same window around
+     * each partner (Map_ChunkLoad), and a partner's rooms must not evict
+     * the host's own. Slots are lazily allocated, so an unused one is free. */
     if (flags & MapFlag_Interior) {
+        activeIpdCount = 32;
+    } else if (activeIpdCount < 16) {
         activeIpdCount = 16;
-    } else if (activeIpdCount < 4) {
-        activeIpdCount = 4;
     }
 #endif
 

@@ -13,6 +13,7 @@
 #include "bodyprog/item_screens.h"
 #include "bodyprog/player.h"
 #include "bodyprog/math/math.h"
+#include "bodyprog/view/vw_calc.h" /* vbSetRefView: re-pin the carousel view after the co-op sim step */
 
 #ifdef SH_PC_PORT
 #include "pc_inventory_mouse.h"
@@ -141,6 +142,20 @@ void GameState_ItemScreens_Update(void) // 0x8004C9B0
             g_Player_DisableControl = savedDisable;
             GsClearOt(0, 0, &g_OrderingTable0[g_ActiveBufferIdx]);
             GsClearOt(0, 0, &g_OrderingTable2[g_ActiveBufferIdx]);
+            /* The sim's camera (vcExecCamera) replaced what the inventory pins
+             * ONCE at step 0 and never re-asserts: the item projection
+             * (func_8004BFE8), the carousel's reference view (ItemScreen_CamSet
+             * -> vbSetRefView; D_800C3B48 is written only at step 0, so this
+             * is that exact view) and the flat white ambient the item models
+             * are lit with (the chara draws set the room's). Without these the
+             * carousel projects through the gameplay camera, off screen, and
+             * whatever shows is lit by a dark room. */
+            if (g_GameWork.gameStateSteps[1] >= 1)
+            {
+                GsSetProjection(1000);
+                vbSetRefView(&D_800C3B48);
+                GsSetAmbient(1024, 1024, 1024);
+            }
             g_PcWorldDrawnThisFrame = savedDrawn;
             g_PcHorPlusEnabled      = savedHor;
             g_PcWorldHorPlus        = savedWorldHor;

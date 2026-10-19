@@ -38,4 +38,12 @@ void Pc_NetNpc_Reset(void);
 void Pc_NetNpc_OnFree(int slot);
 u32  Pc_NetNpc_NearestPlayerD2(const s_SubCharacter* npc, u32 d2);
 
+/* Host: where the partners are, so chunks, collision and spawns reach them. */
+int  Pc_NetNpc_PartnerCells(s32* px, s32* pz, s32* cx, s32* cz, int max);
+int  Pc_NetNpc_ChunkNearPartner(s32 cellX, s32 cellZ, int isExterior);
+int  Pc_NetNpc_PartnerSpawnOk(s32 x, s32 z, int cond);
+
+/* Any member: we took a pickup (its event flag), so nobody else can. */
+void Pc_NetNpc_PickupTaken(int eventFlagIdx);
+
 #endif /* SH_NET_NPC_H */

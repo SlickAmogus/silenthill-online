@@ -1211,6 +1211,11 @@ void Event_ItemTake(e_InvItemId itemId, s32 itemCount, e_EventFlag eventFlagIdx,
             // "Yes" selected.
             Event_InvItemCmd(InvItemCmd_AddItem, itemId, itemCount, false);
             SysWork_StateStepIncrement(1);
+#ifdef SH_PC_PORT
+            /* Co-op: the item is shared through the inventory; its pickup flag
+             * travels here so nobody else can take it a second time. */
+            { extern void Pc_NetNpc_PickupTaken(int eventFlagIdx); Pc_NetNpc_PickupTaken(eventFlagIdx); }
+#endif
 
         default: // `EventState_DontTakeItem`
             // Flag pickup item as uncollected. Selecting 'No' sets `field_10` to `NO_VALUE`.
