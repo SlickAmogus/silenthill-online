@@ -1704,7 +1704,11 @@ s32 Map_ChunkLoad(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_12 posX1, q
     {
         s32 ppx[SHSESSION_MAX_MEMBERS], ppz[SHSESSION_MAX_MEMBERS], pcx[SHSESSION_MAX_MEMBERS], pcz[SHSESSION_MAX_MEMBERS];
         s32 pn = Pc_NetNpc_PartnerCells(ppx, ppz, pcx, pcz, SHSESSION_MAX_MEMBERS), pi;
-        for (pi = 0; pi < pn; pi++)
+        /* Only as many partner windows as the slots can hold next to the
+         * host's own (15 cells inside, 4 outside), or eviction would eat the
+         * host's neighbours every frame. */
+        s32 perCenter = map->isExterior ? 4 : 15;
+        for (pi = 0; pi < pn && (centerCount + 1) * perCenter <= map->activeChunkCount; pi++)
         {
             ccx[centerCount]  = pcx[pi]; ccz[centerCount]  = pcz[pi];
             cpx0[centerCount] = ppx[pi]; cpz0[centerCount] = ppz[pi];
@@ -1949,8 +1953,13 @@ void Ipd_ActiveChunksSample(s_MapTerrain* map, q19_12 posX0, q19_12 posZ0, q19_1
             curChunk->outsideCount++;
 #ifdef SH_PC_PORT
             /* Co-op host: a chunk kept for a partner is not "outside", or it
-             * would be the first evicted and reload every frame. */
-            if (Pc_NetNpc_ChunkNearPartner(curChunk->cellX, curChunk->cellZ, isExterior))
+             * would be the first evicted and reload every frame; and then the
+             * host's own draw window must not age either, or the pinned
+             * partner chunks outlive the rooms the host is looking at. */
+            if ((!isExterior &&
+                 curChunk->cellX >= map->cellX - 2 && curChunk->cellX <= map->cellX + 2 &&
+                 curChunk->cellZ >= map->cellZ - 1 && curChunk->cellZ <= map->cellZ + 1) ||
+                Pc_NetNpc_ChunkNearPartner(curChunk->cellX, curChunk->cellZ, isExterior))
             {
                 curChunk->outsideCount = 0;
             }

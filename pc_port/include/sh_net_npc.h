@@ -26,7 +26,7 @@ void Pc_NetNpc_Sfx(const void* pos, int sfxId, int vol, int pitched);
 extern GsCOORDINATE2* g_PcNetNpcCapBones;         /* non-NULL while a tracked AI runs */
 
 /* Guest. */
-int  Pc_NetNpc_GuestSkipRow(int row, s32 spawnX, s32 spawnZ);
+int  Pc_NetNpc_GuestSkipRow(int row, int charaId, s32 spawnX, s32 spawnZ);
 int  Pc_NetNpc_IsPuppet(int slot);
 void Pc_NetNpc_PuppetTick(s_SubCharacter* npc, int slot, s_AnmHeader* hdr, GsCOORDINATE2* bones);
 

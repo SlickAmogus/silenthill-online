@@ -322,7 +322,9 @@ void Game_NpcRoomInitSpawn(bool cond) // 0x80037F24
             && _slotSpawnCooldown[i] == 0
             /* Co-op guest: a spawn point the host is near is the host's to
              * fill; its monster arrives here as a puppet instead. */
-            && !Pc_NetNpc_GuestSkipRow(i, curCharaSpawn->positionX, curCharaSpawn->positionZ)
+            && !Pc_NetNpc_GuestSkipRow(i, (curCharaSpawn->charaId > Chara_None) ? curCharaSpawn->charaId
+                                                                               : ((i < 16) ? groupCharaId0 : groupCharaId1),
+                                       curCharaSpawn->positionX, curCharaSpawn->positionZ)
 #else
             !Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(22.0f)) &&
             (!cond || Math_Distance2dCheck(&g_SysWork.playerWork.player.position, pos, Q12(20.0f)))

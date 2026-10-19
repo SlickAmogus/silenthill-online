@@ -94,13 +94,15 @@ static int Npc_Partners(s32* px, s32* pz, s32* cx, s32* cz, int max)
     static s32          c_px[SHSESSION_MAX_MEMBERS], c_pz[SHSESSION_MAX_MEMBERS];
     static s32          c_cx[SHSESSION_MAX_MEMBERS], c_cz[SHSESSION_MAX_MEMBERS];
     static int          c_n;
+    static int          c_map = -1;
     static unsigned int c_ms;
     const unsigned int  now = ShNetPlat_Millis();
     int                 i, n;
 
-    if (now - c_ms > 50u)
+    if (now - c_ms > 50u || c_map != (int)g_SavegamePtr->mapIdx)
     {
-        c_ms = now;
+        c_ms  = now;
+        c_map = (int)g_SavegamePtr->mapIdx;
         c_n  = 0;
         if (Npc_Role() == PC_NETNPC_HOST)
         {
@@ -156,12 +158,27 @@ int Pc_NetNpc_ChunkNearPartner(s32 cellX, s32 cellZ, int isExterior)
     return 0;
 }
 
+/* A boss's intro is this machine's own; the fight is shared once the flag
+ * the intro leaves is set here. Not a boss: always done. */
+static int Npc_BossIntroDone(int charaId)
+{
+    switch (charaId)
+    {
+        case Chara_SplitHead:    return Savegame_EventFlagGet(EventFlag_130) != 0;
+        case Chara_Floatstinger: return Savegame_EventFlagGet(EventFlag_349) != 0;
+        case Chara_Twinfeeler:   return Savegame_EventFlagGet(EventFlag_324) != 0;
+        default:                 return 1;
+    }
+}
+
 int Pc_NetNpc_PartnerSpawnOk(s32 x, s32 z, int cond)
 {
     s32 px[SHSESSION_MAX_MEMBERS], pz[SHSESSION_MAX_MEMBERS];
     int i, n = Npc_Partners(px, pz, NULL, NULL, SHSESSION_MAX_MEMBERS);
     const long long ring = Pc_LongViewActive() ? Q12(30.0f) : Q12(22.0f);
-    const long long near = Q12(12.0f);
+    /* Out of the partner's sight: past the fog's edge, or past the ring's
+     * near side when the fog is thinned. */
+    const long long near = Pc_LongViewActive() ? Q12(12.0f) : Q12(20.0f);
     for (i = 0; i < n; i++)
     {
         long long dx = (long long)px[i] - x, dz = (long long)pz[i] - z, d2 = dx * dx + dz * dz;
@@ -618,6 +635,7 @@ typedef struct
 } Puppet;
 
 static Puppet s_pup[NPC_ROWS];
+static u8     s_pupGated[NPC_ROWS]; /* the host's boss we are not showing yet */
 static s8     s_slotRow[NPC_COUNT_MAX];
 static int    s_pupInit;
 static u16    s_hitSeq;
@@ -659,6 +677,7 @@ void Pc_NetNpc_Reset(void)
         s_target[k]  = 0;
     }
     memset(s_pup, 0, sizeof(s_pup));
+    memset(s_pupGated, 0, sizeof(s_pupGated));
     memset(s_hitSeen, 0, sizeof(s_hitSeen));
     s_pupInit    = 1;
     s_sfxSeqOk   = 0;
@@ -830,17 +849,16 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
         if (row >= NPC_ROWS || charaId <= Chara_None || charaId > Chara_MonsterCybil || charaId == Chara_Padlock ||
             charaId == Chara_MonsterCybil || charaId == Chara_Incubus)
             continue;
-        /* A boss shows only once this machine's own intro is over: until
-         * then the map script drives slot 0 itself (Twinfeeler's intro even
-         * swaps the update function), and a puppet there would be fought
-         * over. Each boss's intro leaves a flag the fight code reads. */
+        /* A boss shows only once this machine's own intro is over (until
+         * then the guest runs its own copy for the intro, and the map script
+         * drives slot 0 itself) and never during a cutscene, which may wipe
+         * or warp slot 0. Menus leave it alone. */
+        s_pupGated[row] = 0;
         if (charaId == Chara_SplitHead || charaId == Chara_Floatstinger || charaId == Chara_Twinfeeler)
         {
-            int ok = g_SysWork.sysState == SysState_Gameplay && !(g_SysWork.sysFlags & SysFlag_CutsceneActive);
-            if (charaId == Chara_Floatstinger && !Savegame_EventFlagGet(EventFlag_349)) ok = 0;
-            if (charaId == Chara_Twinfeeler   && !Savegame_EventFlagGet(EventFlag_324)) ok = 0;
-            if (!ok)
+            if (!Npc_BossIntroDone(charaId) || (g_SysWork.sysFlags & SysFlag_CutsceneActive))
             {
+                s_pupGated[row] = 1;
                 if (s_pup[row].used) Npc_PupFree(row);
                 continue;
             }
@@ -922,11 +940,13 @@ u32 Pc_NetNpc_NearestPlayerD2(const s_SubCharacter* npc, u32 d2)
     return d2;
 }
 
-int Pc_NetNpc_GuestSkipRow(int row, s32 spawnX, s32 spawnZ)
+int Pc_NetNpc_GuestSkipRow(int row, int charaId, s32 spawnX, s32 spawnZ)
 {
     int i, n;
     (void)row;
     if (Npc_Role() != PC_NETNPC_GUEST) return 0;
+    /* Our own boss for our own intro; the host's takes over after it. */
+    if (!Npc_BossIntroDone(charaId)) return 0;
     n = ShSession_MemberCount();
     for (i = 0; i < n; i++)
     {
@@ -1069,6 +1089,7 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
     if (++s_winN > 15) return;
 
     if (row >= NPC_ROWS || atk < 40 || atk >= 70 || amount <= 0 || amount > Q12(100.0f)) return;
+    if (s_pupGated[row]) return; /* a boss we cannot see yet cannot hit us */
     if (g_SysWork.sysState != SysState_Gameplay || me->health <= Q12(0.0f) || g_Player_DisableDamage) return;
     if (atk == 45 || atk == 47 || atk == 49 || atk == 54 || atk == 56 || atk == 66) atk = 43;
 #define NPC_CLAMP_KB(v) ((v) > Q12(1.0f) ? Q12(1.0f) : (v) < -Q12(1.0f) ? -Q12(1.0f) : (v))
@@ -1098,11 +1119,28 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
 #define EVENT_FLAG_WORDS 52
 #define OVL_STATE_WORDS  45
 
-/* Event flags a guest must earn itself: the boss intros, whose fight code
- * reads them the moment they are set (floatstinger.c, map4_s03/05). */
+/* Event flags the host's copy must not set on a guest: the boss intros,
+ * whose fight code reads them the moment they are set, and every flag some
+ * script CLEARS in normal play (positional latches, re-armed triggers,
+ * per-frame zone flags): the host's set bit would undo the guest's clear
+ * within half a second. The list is every Savegame_EventFlagClear site in
+ * src/maps; the two computed sites are the ranges. */
+static const u16 s_flagLocal[] = {
+    20, 49, 50, 52, 65, 66, 78, 79, 80, 81, 82, 92, 99, 118, 119, 121, 129, 130, 163,
+    172, 173, 174, 184, 185, 188, 219, 225, 288, 313, 324, 325, 335, 346, 348, 349,
+    356, 357, 358, 359, 360, 362, 381, 395, 405, 406, 407, 408, 412, 414, 416, 420,
+    428, 452, 454, 455, 476, 496, 497, 525, 549, 553, 554, 560, 575, 576, 591, 592, 593
+};
+
 static int Npc_FlagLocal(int idx)
 {
-    return idx == EventFlag_324 || idx == EventFlag_348 || idx == EventFlag_349;
+    unsigned i;
+    if ((idx >= 265 && idx <= 281) || (idx >= 511 && idx <= 519)) return 1;
+    for (i = 0; i < sizeof(s_flagLocal) / sizeof(s_flagLocal[0]); i++)
+    {
+        if (s_flagLocal[i] == idx) return 1;
+    }
+    return 0;
 }
 
 static void Npc_HostSendWorldFlags(void)

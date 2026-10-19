@@ -259,7 +259,7 @@ void Ipd_PlayerChunkInit(s_MapOverlayHdr* mapHdr, s32 playerPosX, s32 playerPosZ
      * each partner (Map_ChunkLoad), and a partner's rooms must not evict
      * the host's own. Slots are lazily allocated, so an unused one is free. */
     if (flags & MapFlag_Interior) {
-        activeIpdCount = 32;
+        activeIpdCount = 64; /* 15 cells x (host + 3 partners) */
     } else if (activeIpdCount < 16) {
         activeIpdCount = 16;
     }
