@@ -291,10 +291,13 @@ void GameState_InGame_Update(void) // 0x80038BD4
         if (g_SysWork.sysState == SysState_Gameplay)
         {
             Event_Update(true);
+#ifdef SH_PC_PORT
+            ShNetCut_GateInject(); /* co-op: a story door whose wait is over */
+#endif
 
             if (g_MapEventSysState != SysState_Invalid
 #ifdef SH_PC_PORT
-                && !ShNetCut_HoldDispatch() /* co-op: a map-entry scene waits for loading partners */
+                && !ShNetCut_HoldDispatch() /* co-op: a map-entry scene or a story door waits for partners */
 #endif
             )
             {
@@ -609,10 +612,11 @@ void SysState_Gameplay_Update(void) // 0x80038BD4
         extern void ShNet_CoopRequestPause(void);
         ShNet_CoopRequestPause();
     }
+    ShNetCut_GateInject(); /* co-op: a story door whose wait is over */
 #endif
     if (g_MapEventSysState != SysState_Invalid
 #ifdef SH_PC_PORT
-        && !ShNetCut_HoldDispatch() /* co-op: a map-entry scene waits for loading partners */
+        && !ShNetCut_HoldDispatch() /* co-op: a map-entry scene or a story door waits for partners */
 #endif
     )
     {

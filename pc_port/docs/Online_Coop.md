@@ -57,9 +57,9 @@ voice_pack can replace them with your own WAVs on your machine.
 Pick which controller is **Player 2's** (Player 1 keeps the keyboard, the
 mouse and every other controller), **Player 2's character**, the
 **Layout** (Player 2 below, or side by side), what Player 2's half plays
-(**Effects Only** by default, so the music is not heard twice; or
-Everything, or Muted), New Game or a co-op save, then **Start Split
-Screen**. The game opens a room on this PC, launches a second copy of
+(**Effects Only** by default, so the music, the voices and the movies are
+not heard twice; or Everything, or Muted), New Game or a co-op save, then
+**Start Split Screen**. The game opens a room on this PC, launches a second copy of
 itself for Player 2 in the other half of the screen, and starts as soon as
 that copy has joined; no port forwarding is needed, and a friend can still
 join the same game over the network by IP. Both halves are a normal co-op
@@ -103,11 +103,24 @@ selection back.
   its sounds, whatever you hold yourself.
 - **Cutscenes.** When a player starts a scene, everyone else on the map is
   brought into it: you are placed where the scene began and it plays for
-  you too, with every player in it standing a step apart so all of you are
-  in the shot. A scene that starts the moment a map loads (the opening of
-  the game, a room's arrival scene) waits for a partner whose game is still
-  loading, so it starts for everyone together. A partner on another map is
-  not pulled across; they play the scene when they get there.
+  you too. A scene that starts the moment a map loads (the opening of the
+  game, waking in the cafe) starts for everyone on the host's frame: the
+  host waits for a partner who is still loading or still in a movie, and a
+  guest waits for the host's go. In every shared scene the players sit or
+  stand in the same arrangement on every screen: the host where the script
+  put them, each guest a step aside, and in the cafe the first guest sits
+  deeper on Harry's bench with the rest across the table. A partner on
+  another map is not pulled across; they play the scene when they get
+  there.
+- **Story doors.** A door with a scene or a point of no return behind it
+  (the two gates in the alley) does not pull anyone: whoever uses it waits
+  there under "Waiting for other players..." until every partner on the map
+  who has not been through it is close by, and partners get a note that
+  someone is waiting at a gate. Using the door again goes on without them,
+  and the wait gives up after a minute and a half on its own. The alley's
+  own progress (which gate you are past, the dark closing in) is each
+  player's, so a guest keeps their cameras and their gate until they walk
+  through it themselves.
 - **The alley.** Harry's death at the end of the opening is what takes him
   to the cafe, so in the alley one player's death is everyone's: when a
   partner falls there, you fall too, and the cafe scene starts for the whole

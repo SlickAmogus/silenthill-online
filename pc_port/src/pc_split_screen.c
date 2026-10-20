@@ -147,8 +147,10 @@ void Pc_Split_AfterConfigLoad(void)
     g_PcConfig.mouseCursor         = 0;
     if (s_argName[0])
         snprintf(g_PcConfig.onlineName, sizeof(g_PcConfig.onlineName), "%s", s_argName);
-    if (s_argAudio == 2)
+    if (s_argAudio != 1)
     {
+        /* Effects only and muted alike: scenes and movies play on both
+         * halves at once, so their voices and music come from Player 1's. */
         g_PcConfig.xaVolume  = 0.0f;
         g_PcConfig.fmvVolume = 0.0f;
     }

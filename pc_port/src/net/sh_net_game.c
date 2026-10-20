@@ -438,6 +438,17 @@ static void ShNetG_PublishPose(int mapIdx, int flags)
     pose.y         = (int)g_SysWork.playerWork.player.position.vy;
     pose.z         = (int)g_SysWork.playerWork.player.position.vz;
     pose.rotY      = (short)g_SysWork.playerWork.player.rotation.vy;
+    {
+        /* In a shared scene we are drawn at our seat, so that is where
+         * partners see us too (sh_net_cutscene.c). */
+        int ox, oz, turn;
+        if (ShNetCut_SelfOffset(&ox, &oz, &turn))
+        {
+            pose.x    += ox;
+            pose.z    += oz;
+            pose.rotY  = (short)(pose.rotY + turn);
+        }
+    }
     pose.anim      = (unsigned short)g_SysWork.playerWork.player.model.anim.status;
     pose.frame     = (unsigned short)g_SysWork.playerWork.player.model.anim.keyframeIdx;
     pose.weaponAnm = (g_Player_LastWeaponSelected >= 0 && g_Player_LastWeaponSelected < 0xFF)
@@ -641,6 +652,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
             break;
         case SHNET_CTRL_DIE:
             ShNetCut_DieIn(from, p, len);
+            break;
+        case SHNET_CTRL_GATE:
+            ShNetCut_GateIn(from, p, len);
             break;
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);

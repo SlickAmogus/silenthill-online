@@ -889,6 +889,14 @@ void Player_Update(s_SubCharacter* player, s_AnmHeader* anmHdr, GsCOORDINATE2* c
         {
             g_MapOverlayHdr.func_BC(player, extra, coords);
         }
+#ifdef SH_PC_PORT
+        {
+            /* Co-op: in a shared scene every player's script puts them on
+             * the same spot, so we are drawn (and reported) a seat aside. */
+            extern void ShNetCut_SelfOffsetApply(void* coords);
+            ShNetCut_SelfOffsetApply(coords);
+        }
+#endif
 
 #ifdef SH_PC_PORT
         /* OTS/TPS full-body movement: Player_AnimUpdate poses the lower body from

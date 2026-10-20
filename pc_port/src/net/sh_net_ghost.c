@@ -53,7 +53,6 @@
 #include "sh_net_art.h"
 #include "sh_net_ui.h"
 #include "sh_net_session.h" /* co-op peers drawn alongside living-world ghosts */
-#include "sh_net_cutscene.h" /* a shared scene: partners stand beside us */
 #include "sh_net_steam.h"   /* ShSteam_SelfId */
 #include "sh_log.h"
 #include "stb_image.h"
@@ -957,21 +956,9 @@ void ShNet_DrawWorld(GsOT* ot)
                 {
                     continue;
                 }
+                /* A partner in a shared scene reports the seat they are drawn
+                 * at (sh_net_cutscene.c), so the pose is the place. */
                 gx = pn.x; gy = pn.y; gz = pn.z; grot = pn.rotY;
-                /* A scripted scene moves every player along the same path,
-                 * so partners in it would stand inside us. Spread them a
-                 * step apart across the facing, in the same order on every
-                 * screen. */
-                if ((m->flags & SHNET_PF_CUTSCENE) && ShNetCut_InScene())
-                {
-                    const int slot = ShNetCut_SceneSlot(m->steamId);
-                    if (slot != 0)
-                    {
-                        const q19_12 step = slot * Q12(0.7f);
-                        gx += Q12_MULT(Math_Cos(grot), step);
-                        gz -= Q12_MULT(Math_Sin(grot), step);
-                    }
-                }
                 gp.lowKf0 = pn.lowKf0; gp.lowKf1 = pn.lowKf1; gp.lowAlpha = pn.lowAlpha;
                 gp.upKf0  = pn.upKf0;  gp.upKf1  = pn.upKf1;  gp.upAlpha  = pn.upAlpha;
                 gp.weaponAnm = pn.weaponAnm;
