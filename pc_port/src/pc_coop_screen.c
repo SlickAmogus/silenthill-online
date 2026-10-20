@@ -392,14 +392,5 @@ void Pc_CoopScreen_Draw(void)
                     editing ? StringColorId_Gold : StringColorId_LightGrey, clean);
     }
 
-    /* Key hints. */
-    {
-        const char* hint = editing ? "TYPE    ENTER CONFIRM    ESC CANCEL"
-                         : Pc_CoopMenu_IsTopLevel() ? "ENTER CHOOSE    ESC CLOSE"
-                                                    : "ENTER CHOOSE    ESC BACK";
-        cs_clean(hint, clean, sizeof(clean));
-        Nm_TextDrawCentered(160, CS_HINT_Y + (small == NM_TEXT_SMALL ? 4 : 0), small, StringColorId_DarkGrey, clean);
-    }
-
     Pc_MouseCursor_Show();
 }

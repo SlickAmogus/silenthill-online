@@ -2129,6 +2129,9 @@ void DbgOverlay_Update(void)
         extern int Pc_TitleAchievementsActive(void);
         extern int g_PcCoopGame;
         extern int ShNetMemo_ComposerActive(void);
+        extern int Pc_CoopMenu_IsOpen(void);
+        extern int Pc_CoopMenu_Editing(void);
+        extern void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm);
         if (cur_exit && !s_prev_exit && !g_PcConsoleInputActive && !g_PcQuickOptionsActive &&
             !chatWasOpen && !textWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive() &&
             !Pc_ControlsScreen_IsOpen() && !Pc_AchScreen_IsOpen() && !Pc_TitleAchievementsActive()) {
@@ -2144,6 +2147,13 @@ void DbgOverlay_Update(void)
                  * by this key is not silent. */
                 Sd_PlaySfx(Sfx_MenuCancel, 0, Q8(0.25f));
                 g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveBrightness;
+            } else if (Pc_CoopMenu_IsOpen()) {
+                /* The multiplayer menu (title or in game) backs out a page on
+                 * Escape, and closes from its top level, the same as Cancel.
+                 * A field being typed in takes its own Escape (FeedKeys). */
+                if (!Pc_CoopMenu_Editing()) {
+                    Pc_CoopMenu_Update(1, 0, 0, 0);
+                }
             } else if (g_GameWork.gameState == GameState_MainMenu) {
                 exit(0);
             } else if (g_PcCoopGame) {
