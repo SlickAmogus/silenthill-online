@@ -91,6 +91,8 @@ s_PcConfig g_PcConfig = {
     .keyOnlinePlayers = "F11",
     .keyOnlineMemo    = "M",
     .keyChatGame      = "Y",
+    .keyVocalize      = "B",
+    .voicePack        = "",
     .keyChatCycle     = "U",
     .globalCharaPool = 1, /* 1=all chara assets resident PC-side + chara_global.dll AI backfill (SPAWN anything anywhere) */
     .wholeMapExteriors = 2, /* auto: whole town drawn while fog_strength < 1.0, the only time it can be seen */
@@ -392,6 +394,8 @@ static const struct { const char* key; size_t off; } s_GlobalBinds[] = {
     { "key_online_players", offsetof(s_PcConfig, keyOnlinePlayers) },
     { "key_online_memo",    offsetof(s_PcConfig, keyOnlineMemo)    },
     { "key_chat_game",      offsetof(s_PcConfig, keyChatGame)      },
+    { "key_vocalize",       offsetof(s_PcConfig, keyVocalize)      },
+    { "voice_pack",         offsetof(s_PcConfig, voicePack)        },
     { "key_chat_cycle",     offsetof(s_PcConfig, keyChatCycle)     },
     { "pad_quick_options", offsetof(s_PcConfig, padQuickOptions) },
     { "key_quickload",     offsetof(s_PcConfig, keyQuickLoad)    },

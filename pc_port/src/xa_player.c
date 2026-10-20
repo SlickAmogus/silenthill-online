@@ -729,6 +729,45 @@ static void FillBuffer(ALuint buffer) {
     g_XaPlayer.remainingSectors -= sectorsThisBuffer;
 }
 
+/* Decode a whole disc line to PCM without touching the stream player: for
+ * clips that must not cut a cutscene line (co-op callouts). The caller frees
+ * *outPcm. Returns 1 with *outSamples int16 samples (interleaved when
+ * stereo). */
+int XaPlayer_DecodeLine(uint16_t xaIdx, int16_t** outPcm, uint32_t* outSamples, int* outRate, int* outStereo) {
+    if (xaIdx >= 727 || !outPcm || !outSamples || !outRate || !outStereo) return 0;
+    s_XaItemData* item = &g_XaItemData[xaIdx];
+    uint16_t fileIdx = item->xaFileIdx_0;
+    if (fileIdx < 1 || fileIdx > 9) return 0;
+    uint32_t baseSector = BeginXaStream(fileIdx);
+    if (!baseSector) return 0;
+
+    uint8_t first[XA_SECTOR_SIZE];
+    if (!ReadXaSectorFromBin(baseSector, item->sector_4_bits, first)) return 0;
+    int isStereo, srCode, bitDepth;
+    ParseXaSubheader(first[3], &isStereo, &srCode, &bitDepth);
+    if (bitDepth != 0) return 0;
+    int      rate       = (srCode == 0) ? 37800 : 18900;
+    uint8_t  fFile      = first[0], fChan = first[1];
+    uint32_t numSectors = CalculateSectorsFromDuration(item->audioLength_8_bits, rate, isStereo);
+    if (numSectors == 0 || numSectors > 4000) return 0;
+
+    int16_t* pcm = (int16_t*)malloc((size_t)(numSectors + 1) * XA_SAMPLES_PER_SECTOR * sizeof(int16_t));
+    if (!pcm) return 0;
+    uint32_t total = 0, matched = 0, cur = item->sector_4_bits;
+    int      scanCap = (int)numSectors * 32;
+    while (matched < numSectors && scanCap-- > 0) {
+        uint8_t sec[XA_SECTOR_SIZE];
+        if (!ReadXaSectorFromBin(baseSector, cur, sec)) break;
+        cur++;
+        if (sec[0] != fFile || sec[1] != fChan) continue;
+        total += (uint32_t)DecodeXaSector(sec, pcm + total);
+        matched++;
+    }
+    if (total == 0) { free(pcm); return 0; }
+    *outPcm = pcm; *outSamples = total; *outRate = rate; *outStereo = isStereo;
+    return 1;
+}
+
 void XaPlayer_PlayWithParams(uint16_t xaIdx, uint16_t fileIdx, uint32_t sectorOffset, uint32_t numSectors) {
     // Alternative entry point (not used yet)
     XaPlayer_Play(xaIdx);

@@ -17,6 +17,8 @@ void XaPlayer_PlayWithParams(uint16_t xaIdx, uint16_t fileIdx, uint32_t sectorOf
 
 // Legacy interface (used by Sd_TaskPoolExecute)
 void XaPlayer_Play(uint16_t xaIdx);
+/* Decode a whole line to PCM (caller frees) without touching the stream. */
+int  XaPlayer_DecodeLine(uint16_t xaIdx, int16_t** outPcm, uint32_t* outSamples, int* outRate, int* outStereo);
 
 void XaPlayer_Stop(void);
 void XaPlayer_Update(void);

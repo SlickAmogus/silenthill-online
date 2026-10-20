@@ -48,6 +48,7 @@
 #include "sh_net_chat.h"
 #include "sh_net_session.h"
 #include "sh_net_cutscene.h"
+#include "sh_net_voice.h"
 #include "sh_net_respawn.h" /* "YOU DIED / respawning in N" */
 #include "pc_coop_menu.h"
 #include "pc_mouse_cursor.h"
@@ -1904,6 +1905,32 @@ void ShNetUi_Draw(void)
         }
         Nu_DrawTextCentered(line, s_vpW * 0.5f, s_vpH * 0.38f + (float)big * 1.3f, px,
                             0.88f, 0.84f, 0.62f, 1.0f);
+    }
+
+    /* Co-op: the vocalize wheel while its key is held. */
+    if (ShNetVoice_MenuOpen())
+    {
+        const float cx = s_vpW * 0.5f, cy = s_vpH * 0.5f;
+        const float rad = s_vpH * 0.22f;
+        const int   sel = ShNetVoice_MenuSelected();
+        int         k;
+        Nu_FillPx(cx - 4.0f, cy - 4.0f, 8.0f, 8.0f, 0.9f, 0.9f, 1.0f, 0.9f);
+        for (k = 0; k < 8; k++)
+        {
+            const float a  = (float)k * 6.2831853f / 8.0f;
+            const float lx = cx + (float)sin((double)a) * rad;
+            const float ly = cy - (float)cos((double)a) * rad;
+            const char* t  = ShNetVoice_MenuLabel(k);
+            const float tw = Nu_TextWidth(t, px) + (float)px * 1.2f;
+            const float th = Nu_TextH(px) + (float)px * 0.5f;
+            const int   on = (k == sel);
+            Nu_Panel(lx - tw * 0.5f, ly - th * 0.5f, tw, th, on ? 0.95f : 0.75f);
+            if (on) Nu_ShFrame(lx - tw * 0.5f, ly - th * 0.5f, tw, th, 1.0f, 0.95f);
+            Nu_DrawTextCentered(t, lx, ly - Nu_TextH(px) * 0.5f, px,
+                                on ? 1.0f : 0.80f, on ? 0.96f : 0.80f, on ? 0.70f : 0.86f, 1.0f);
+        }
+        Nu_DrawTextCentered("point and release, or press 1-8", cx, cy + rad + (float)px * 1.6f,
+                            (int)((float)px * 0.8f), 0.62f, 0.72f, 1.0f, 0.9f);
     }
 
     /* Co-op: a partner started a scene; the question, with its countdown. */

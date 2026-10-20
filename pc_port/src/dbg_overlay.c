@@ -1954,6 +1954,20 @@ void DbgOverlay_Update(void)
         curList = (s_scList != SDL_SCANCODE_UNKNOWN) ? ks[s_scList] : 0;
         curMemo = (s_scMemo != SDL_SCANCODE_UNKNOWN) ? ks[s_scMemo] : 0;
 
+        /* The vocalize wheel: held, not pressed. Nothing while a text field
+         * has the keyboard or the console is up. */
+        {
+            static SDL_Scancode s_scVoice = SDL_SCANCODE_UNKNOWN;
+            static int          s_voiceRes = 0;
+            extern void         ShNetVoice_KeyHeld(int held);
+            if (!s_voiceRes) {
+                s_scVoice  = g_PcConfig.keyVocalize[0] ? SDL_GetScancodeFromName(g_PcConfig.keyVocalize) : SDL_SCANCODE_B;
+                s_voiceRes = 1;
+            }
+            ShNetVoice_KeyHeld(s_scVoice != SDL_SCANCODE_UNKNOWN && ks[s_scVoice] && !textWasOpen &&
+                               !g_PcConsoleInputActive && !ctrlHeld);
+        }
+
         if (curList && !s_prevList && !ctrlHeld && !g_PcConsoleInputActive &&
             !ShNetChat_IsOpen()) {
             extern void ShNetUi_TogglePlayerList(void);
