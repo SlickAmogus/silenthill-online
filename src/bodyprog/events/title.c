@@ -61,8 +61,11 @@ void MainMenu_FogUpdate(void);
 static s32 g_MainMenuState              = 0;
 static s32 g_MainMenu_SelectedEntry     = MainMenuEntry_Start;
 #ifdef SH_PC_PORT
-/* The port adds an Exit row, always available alongside Option. */
-#define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Option) | (1 << MainMenuEntry_Exit))
+/* The port adds a Multiplayer row and an Exit row, always available alongside
+ * Option. Multiplayer must be in the base set: the "selected row went hidden"
+ * reselect below runs before anything else could add it, and would push the
+ * cursor off the row every frame. */
+#define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Multiplayer) |                                    (1 << MainMenuEntry_Option) | (1 << MainMenuEntry_Exit))
 #else
 #define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Option))
 #endif
@@ -322,11 +325,10 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 #endif
 
 #ifdef SH_PC_PORT
-            /* The Multiplayer row is ALWAYS shown, in every mode -- the gamemode
-             * is a runtime choice made inside it, not a config toggle. g_PcCoopGame
-             * is cleared here each menu frame and set only when the co-op boot
-             * below runs, so a normal New Game / Continue is single-player. */
-            g_MainMenu_VisibleEntryFlags |= (1 << MainMenuEntry_Multiplayer);
+            /* The Multiplayer row is always shown (it is in the base flags); the
+             * gamemode is a runtime choice made inside it. g_PcCoopGame is cleared
+             * here each menu frame and set only when the co-op boot below runs,
+             * so a normal New Game / Continue is single-player. */
             g_PcCoopGame = 0;
 #endif
 
