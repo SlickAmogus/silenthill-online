@@ -1984,11 +1984,9 @@ void ShNetUi_Draw(void)
     {
         Nu_DrawComposer(px);
     }
-    /* Modal: on top of everything else. */
-    if (Pc_CoopMenu_IsOpen())
-    {
-        Nu_DrawCoopMenu(px);
-    }
+    /* The co-op menu is drawn by pc_coop_screen.c with the game's own
+     * primitives now; the GL drawer below is kept for reference. */
+    (void)Nu_DrawCoopMenu;
 
     glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
     glBindBuffer(GL_ARRAY_BUFFER, (GLuint)prevBuf);

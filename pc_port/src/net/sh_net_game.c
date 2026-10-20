@@ -39,6 +39,8 @@
 #include "pc_config.h"
 #include "pc_playas.h"
 #include "pc_item_pool.h"
+#include "pc_coop_menu.h"
+#include "pc_coop_screen.h"
 #include "sh_net_cutscene.h"
 #include "sh_net_voice.h"
 #include "pc_weapon_banks.h"
@@ -833,6 +835,13 @@ void ShNet_GameTick(void)
     ShNetRespawn_Tick();
     ShNetCut_Tick();
     ShNetVoice_Tick();
+    /* The in-game multiplayer menu, drawn with the game's own primitives over
+     * the live world (MainLoop runs this after the state update and before
+     * the ordering tables are walked). */
+    if (Pc_CoopMenu_InGame() && g_GameWork.gameState == GameState_InGame)
+    {
+        Pc_CoopScreen_Draw();
+    }
 
     /* Lobby chime: someone joined the room (member count went UP). Your own
      * arrival (0 -> 1) is silent. Before the enabled gate so co-op-only (no

@@ -10,6 +10,7 @@
 #include "pc_title_style.h"
 #include "pc_ach_screen.h"
 #include "pc_coop_menu.h" /* co-op front end (Multiplayer row) */
+#include "pc_coop_screen.h"
 #include "pc_coop_save.h" /* co-op save load for the host "Start Game" boot */
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu_draw.h"
@@ -902,6 +903,13 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
         {
             Pc_AchScreen_Draw();
             Pc_MouseCursor_Show();
+            return;
+        }
+        /* The co-op front end takes the screen the same way (black
+         * background, the game's font, the inventory's blue frame). */
+        if (Pc_CoopMenu_IsOpen())
+        {
+            Pc_CoopScreen_Draw();
             return;
         }
 #endif
