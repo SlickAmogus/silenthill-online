@@ -23,9 +23,7 @@
 
 enum { LM_OFF = 0, LM_STOPPING, LM_PLAYING };
 
-static int    s_step;
-static int    s_healthSet;
-static q19_12 s_healthWas;
+static int s_step;
 
 static int Music_Wanted(void)
 {
@@ -38,11 +36,6 @@ static void Music_Stop(const char* why)
     SD_Call(18); /* Sd_StopBgmTaskAdd */
     Bgm_AllLayersMute();
     g_GameWork.bgmIdx = BgmTrackIdx_None;
-    if (s_healthSet)
-    {
-        g_SysWork.playerWork.player.health = s_healthWas;
-        s_healthSet = 0;
-    }
     s_step = LM_OFF;
     SH_DBG("[COOP] lobby music off: %s", why);
 }
@@ -78,15 +71,12 @@ void Pc_CoopMusic_Tick(void)
 
         case LM_PLAYING:
             /* Bgm_Update reads a health of 0 as "dead: fade to silence", and
-             * the title has no player. The map load sets the real value from
-             * the save (game_sys_states.c); put the old one back regardless. */
+             * the title has no player. Never put the old value back: a New
+             * Game boots inside the title's own update, before this tick,
+             * and restoring 0 after it started every player dead in the
+             * alley. The boot and a loaded save set the real value. */
             if (g_SysWork.playerWork.player.health <= Q12(0.0f))
             {
-                if (!s_healthSet)
-                {
-                    s_healthWas = g_SysWork.playerWork.player.health;
-                    s_healthSet = 1;
-                }
                 g_SysWork.playerWork.player.health = Q12(100.0f);
             }
             /* Every layer up, at the results screen's own fade rate. The
