@@ -3959,6 +3959,14 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                 {
                     g_MapOverlayHdr.playerAnimLock();
                     Savegame_EventFlagSet(EventFlag_25);
+#ifdef SH_PC_PORT
+                    {
+                        /* Co-op: this death is the story (it leads to the
+                         * cafe), so every partner in the alley dies with us. */
+                        extern void ShNetCut_OnSharedDeath(void);
+                        ShNetCut_OnSharedDeath();
+                    }
+#endif
 
                     func_8007E9C4();
 

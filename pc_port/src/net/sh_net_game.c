@@ -639,6 +639,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_CUTSCENE:
             ShNetCut_CtrlIn(from, p, len);
             break;
+        case SHNET_CTRL_DIE:
+            ShNetCut_DieIn(from, p, len);
+            break;
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);
             break;

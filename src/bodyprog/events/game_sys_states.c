@@ -292,7 +292,11 @@ void GameState_InGame_Update(void) // 0x80038BD4
         {
             Event_Update(true);
 
-            if (g_MapEventSysState != SysState_Invalid)
+            if (g_MapEventSysState != SysState_Invalid
+#ifdef SH_PC_PORT
+                && !ShNetCut_HoldDispatch() /* co-op: a map-entry scene waits for loading partners */
+#endif
+            )
             {
 #ifdef SH_PC_PORT
                 /* Second door path -- see the transition out-fade note in
@@ -606,7 +610,11 @@ void SysState_Gameplay_Update(void) // 0x80038BD4
         ShNet_CoopRequestPause();
     }
 #endif
-    if (g_MapEventSysState != SysState_Invalid)
+    if (g_MapEventSysState != SysState_Invalid
+#ifdef SH_PC_PORT
+        && !ShNetCut_HoldDispatch() /* co-op: a map-entry scene waits for loading partners */
+#endif
+    )
     {
 #ifdef SH_PC_PORT
         SH_DBG("[GP-STATE-TXN] Gameplay -> sysState=%d (param=%d)",

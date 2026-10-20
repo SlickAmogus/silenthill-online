@@ -98,9 +98,16 @@ selection back.
 - **Weapons.** Partners are drawn with the weapon they hold and heard with
   its sounds, whatever you hold yourself.
 - **Cutscenes.** When a player starts a scene, everyone else on the map is
-  asked to join it (Enter joins, Cancel stays; it joins by itself after a
-  while). Joining places you where the scene began and plays it with the
-  others.
+  brought into it: you are placed where the scene began and it plays for
+  you too, with every player in it standing a step apart so all of you are
+  in the shot. A scene that starts the moment a map loads (the opening of
+  the game, a room's arrival scene) waits for a partner whose game is still
+  loading, so it starts for everyone together. A partner on another map is
+  not pulled across; they play the scene when they get there.
+- **The alley.** Harry's death at the end of the opening is what takes him
+  to the cafe, so in the alley one player's death is everyone's: when a
+  partner falls there, you fall too, and the cafe scene starts for the whole
+  room. Everywhere else a death is a respawn.
 
 **What stays yours.** Monster Cybil, the Incubus and cutscene actors run on
 each machine. Boss intros play on each machine; the boss is shared once yours

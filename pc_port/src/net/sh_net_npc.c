@@ -1252,9 +1252,11 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
  * script CLEARS in normal play (positional latches, re-armed triggers,
  * per-frame zone flags): the host's set bit would undo the guest's clear
  * within half a second. The list is every Savegame_EventFlagClear site in
- * src/maps; the two computed sites are the ranges. */
+ * src/maps; the two computed sites are the ranges. 25 and 26 are the alley
+ * death's (map0_s00 -> the cafe): each player's own death sets them, and
+ * SHNET_CTRL_DIE makes that death everyone's (sh_net_cutscene.c). */
 static const u16 s_flagLocal[] = {
-    20, 49, 50, 52, 65, 66, 78, 79, 80, 81, 82, 92, 99, 118, 119, 121, 129, 130, 163,
+    20, 25, 26, 49, 50, 52, 65, 66, 78, 79, 80, 81, 82, 92, 99, 118, 119, 121, 129, 130, 163,
     172, 173, 174, 184, 185, 188, 219, 225, 288, 313, 324, 325, 335, 346, 348, 349,
     356, 357, 358, 359, 360, 362, 381, 395, 405, 406, 407, 408, 412, 414, 416, 420,
     428, 452, 454, 455, 476, 496, 497, 525, 549, 553, 554, 560, 575, 576, 591, 592, 593

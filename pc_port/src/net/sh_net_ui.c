@@ -1933,20 +1933,16 @@ void ShNetUi_Draw(void)
                             (int)((float)px * 0.8f), 0.62f, 0.72f, 1.0f, 0.9f);
     }
 
-    /* Co-op: a partner started a scene; the question, with its countdown. */
+    /* Co-op: a scene waiting for a partner to load, or one we are joining. */
     {
         char line[128];
-        int  secs = 0;
-        if (ShNetCut_PromptText(line, (int)sizeof(line), &secs))
+        if (ShNetCut_StatusText(line, (int)sizeof(line)))
         {
-            const float w = s_vpW * 0.46f, h = (float)px * 4.2f;
+            const float w = s_vpW * 0.40f, h = (float)px * 2.4f;
             const float x = (s_vpW - w) * 0.5f, y = s_vpH * 0.30f;
-            char hint[96];
             Nu_Panel(x, y, w, h, 0.88f);
             Nu_ShFrame(x, y, w, h, 1.0f, 0.9f);
             Nu_DrawTextCentered(line, s_vpW * 0.5f, y + (float)px * 0.7f, px, 0.92f, 0.90f, 0.80f, 1.0f);
-            snprintf(hint, sizeof(hint), "Enter: join    Cancel: stay here    (joining in %d)", secs);
-            Nu_DrawTextCentered(hint, s_vpW * 0.5f, y + (float)px * 2.4f, (int)((float)px * 0.8f), 0.62f, 0.72f, 1.0f, 0.95f);
         }
     }
 
