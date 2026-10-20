@@ -25,7 +25,7 @@
 #include <ctype.h>
 
 #include "pc_retroachievements.h"
-#include "pc_ra_browser.h"
+#include "pc_ach_screen.h"
 
 #ifdef SH_RETROACHIEVEMENTS
 
@@ -711,6 +711,10 @@ static int          s_active;       /* set is loaded and evaluating */
 static int          s_enabled;      /* compiled in, configured, credentialed */
 static int          s_spectator;    /* evaluate + log, never post (unverified region) */
 static char         s_status[64];
+/* Shown when the achievements list is opened with no set loaded; a failed
+ * login otherwise left the list doing nothing with only a log line to say why. */
+static const char*  s_unavailable = "RetroAchievements is still connecting";
+static int          s_connecting;   /* login or set load in flight */
 
 static void Pc_RaToast(const char* line)
 {
@@ -792,10 +796,13 @@ static void RC_CCONV Pc_RaLoadGameCallback(int result, const char* error_message
          * that is a normal outcome, not a failure worth alarming about. */
         SH_DBG("[RA] achievement set unavailable: %s",
                 error_message ? error_message : "unknown");
+        s_unavailable = "No RetroAchievements set for this disc";
+        s_connecting  = 0;
         return;
     }
 
-    s_active = 1;
+    s_active     = 1;
+    s_connecting = 0;
     Pc_RaRefreshStatus();
     {
         const rc_client_game_t* game = rc_client_get_game_info(client);
@@ -822,6 +829,9 @@ static void RC_CCONV Pc_RaLoginCallback(int result, const char* error_message,
     {
         SH_DBG("[RA] login failed: %s. Re-authenticate in the launcher.",
                 error_message ? error_message : "unknown");
+        s_unavailable = "RetroAchievements login failed - sign in again in the launcher";
+        s_connecting  = 0;
+        Pc_RaToast(s_unavailable);
         return;
     }
 
@@ -831,6 +841,8 @@ static void RC_CCONV Pc_RaLoginCallback(int result, const char* error_message,
     if (!disc || !disc[0])
     {
         SH_DBG("[RA] no disc image resolved - cannot identify the game");
+        s_unavailable = "RetroAchievements could not identify the disc";
+        s_connecting  = 0;
         return;
     }
 
@@ -840,6 +852,8 @@ static void RC_CCONV Pc_RaLoginCallback(int result, const char* error_message,
     if (!rc_hash_generate_from_file(hash, RC_CONSOLE_PLAYSTATION, disc))
     {
         SH_DBG("[RA] could not hash disc image '%s'", disc);
+        s_unavailable = "RetroAchievements could not identify the disc";
+        s_connecting  = 0;
         return;
     }
 
@@ -1227,6 +1241,7 @@ void Pc_Ra_Init(void)
     if (!g_PcConfig.retroAchievements)
     {
         SH_DBG("[RA] disabled in config (retroachievements = 0) - off");
+        s_unavailable = "RetroAchievements is turned off in the launcher";
         return;
     }
 
@@ -1244,6 +1259,7 @@ void Pc_Ra_Init(void)
     {
         SH_DBG("[RA] enabled but not signed in - use the launcher's "
                "RetroAchievements login");
+        s_unavailable = "Not signed in to RetroAchievements - sign in in the launcher";
         return;
     }
 
@@ -1254,6 +1270,7 @@ void Pc_Ra_Init(void)
     if (!s_queueLock || !s_queueSem)
     {
         SH_DBG("[RA] could not create worker primitives - disabled");
+        s_unavailable = "RetroAchievements could not start";
         return;
     }
 
@@ -1261,6 +1278,7 @@ void Pc_Ra_Init(void)
     if (!s_httpThread)
     {
         SH_DBG("[RA] could not start HTTP worker - disabled");
+        s_unavailable = "RetroAchievements could not start";
         return;
     }
 
@@ -1268,6 +1286,7 @@ void Pc_Ra_Init(void)
     if (!s_client)
     {
         SH_DBG("[RA] client creation failed - disabled");
+        s_unavailable = "RetroAchievements could not start";
         return;
     }
 
@@ -1282,7 +1301,8 @@ void Pc_Ra_Init(void)
                "ra_unverified_region = 1 to submit for real.");
     }
 
-    s_enabled = 1;
+    s_enabled    = 1;
+    s_connecting = 1;
     rc_client_begin_login_with_token(s_client, g_PcConfig.raUsername,
                                      g_PcConfig.raToken, Pc_RaLoginCallback, NULL);
 }
@@ -1306,15 +1326,15 @@ void Pc_Ra_Update(void)
 
         if (done->badge[0])
         {
-            /* Badge PNG: hand the bytes to whoever asked. Offered to BOTH
-             * consumers unconditionally — each ignores a name it has no row or
-             * toast waiting on — because the browser and an unlock popup can
+            /* Badge PNG: hand the bytes to whoever asked. Offered to EVERY
+             * consumer unconditionally — each ignores a name it has no row or
+             * toast waiting on — because the achievements screen and an unlock popup can
              * legitimately want the same badge at the same time. */
             if (done->status == 200 && done->body && done->body_len)
             {
                 Pc_RaToast_ProvideBadge(done->badge,
                                         (const unsigned char*)done->body, done->body_len);
-                Pc_RaBrowser_ProvideBadge(done->badge,
+                Pc_AchScreen_ProvideBadge(done->badge,
                                           (const unsigned char*)done->body, done->body_len);
             }
             else
@@ -1413,8 +1433,9 @@ void Pc_Ra_Shutdown(void)
         Pc_RaJobFree(Pc_RaQueuePop(&s_pending));
     while (s_completed)
         Pc_RaJobFree(Pc_RaQueuePop(&s_completed));
-    s_enabled = 0;
-    s_active  = 0;
+    s_enabled    = 0;
+    s_active     = 0;
+    s_connecting = 0;
 }
 
 int Pc_Ra_IsActive(void)
@@ -1422,9 +1443,24 @@ int Pc_Ra_IsActive(void)
     return s_active;
 }
 
+int Pc_Ra_SetLoaded(void)
+{
+    return s_client != NULL && s_active;
+}
+
 const char* Pc_Ra_StatusLine(void)
 {
     return s_status;
+}
+
+const char* Pc_Ra_UnavailableReason(void)
+{
+    return s_unavailable;
+}
+
+int Pc_Ra_IsPending(void)
+{
+    return s_connecting;
 }
 
 #else /* !SH_RETROACHIEVEMENTS */
@@ -1433,7 +1469,10 @@ void        Pc_Ra_Init(void)     {}
 void        Pc_Ra_Update(void)   {}
 void        Pc_Ra_Shutdown(void) {}
 int         Pc_Ra_IsActive(void) { return 0; }
+int         Pc_Ra_SetLoaded(void) { return 0; }
+int         Pc_Ra_IsPending(void) { return 0; }
 const char* Pc_Ra_StatusLine(void) { return ""; }
+const char* Pc_Ra_UnavailableReason(void) { return "RetroAchievements is not in this build"; }
 void        Pc_Ra_RequestBadge(const char* badgeName) { (void)badgeName; }
 int         Pc_Ra_SnapshotAchievements(PcRaAch* out, int max) { (void)out; (void)max; return 0; }
 

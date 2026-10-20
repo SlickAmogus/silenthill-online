@@ -2119,14 +2119,19 @@ void DbgOverlay_Update(void)
         extern int g_PcQuickOptionsActive;
         /* Esc used to close the chat box must not also warm-reset. chatWasOpen
          * is sampled before the chat handler above consumes the Esc. The
-         * controls panel also uses Escape to back out and to cancel a rebind. */
+         * controls panel and screen use Escape to back out and to cancel a
+         * rebind; the Achievements screen uses it to back out, and stays open
+         * through its fade out, so no Escape during it quits from the main menu.
+         * The living-world message composer also backs out on Escape. */
         extern int Pc_BindPanel_IsOpen(void);
+        extern int Pc_ControlsScreen_IsOpen(void);
+        extern int Pc_AchScreen_IsOpen(void);
+        extern int Pc_TitleAchievementsActive(void);
         extern int g_PcCoopGame;
-        /* The living-world "leave a message" composer also backs out on Escape;
-         * without this it both closed the box AND warm-reset to the title. */
         extern int ShNetMemo_ComposerActive(void);
         if (cur_exit && !s_prev_exit && !g_PcConsoleInputActive && !g_PcQuickOptionsActive &&
-            !chatWasOpen && !textWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive()) {
+            !chatWasOpen && !textWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive() &&
+            !Pc_ControlsScreen_IsOpen() && !Pc_AchScreen_IsOpen() && !Pc_TitleAchievementsActive()) {
             /* The brightness screen owns the whole display (its calibration bar is
              * drawn outside the normal menu path), so warm-resetting out of it left
              * the bar on screen over the title. Back out to the options list the
@@ -2270,10 +2275,6 @@ void DbgOverlay_Render(void)
      * drawn before the quick menu so the menu stays on top. */
     { extern void Pc_FpsHud_Draw(void); Pc_FpsHud_Draw(); }
 
-    /* Main-menu achievement browser — same self-contained-GL arrangement as the
-     * toast above, and drawn after it so an unlock popup stays on top. */
-    { extern void Pc_RaBrowser_Draw(void); Pc_RaBrowser_Draw(); }
-
     /* In-game randomizer settings panel — same self-contained-GL arrangement,
      * opened by tapping the Map button during a run. */
     { extern void Pc_RandoSettings_Draw(void); Pc_RandoSettings_Draw(); }
@@ -2294,6 +2295,10 @@ void DbgOverlay_Render(void)
     { extern void Pc_BindPanel_Draw(void); Pc_BindPanel_Draw(); }
 
     { extern void Pc_ConfirmDialog_Draw(void); Pc_ConfirmDialog_Draw(); }
+
+    /* Mouse pointer above every panel. Before the early-out below, which skips
+     * the rest of this function on nearly every frame. */
+    { extern void Pc_MouseCursor_GlDraw(void); Pc_MouseCursor_GlDraw(); }
 
     /* Console is hidden once fully slid off-screen (toggled by `~`); the ring
      * buffer keeps filling while hidden. The collision panel draws whenever it's

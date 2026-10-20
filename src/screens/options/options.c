@@ -1186,7 +1186,7 @@ void Pc_Options_ResetToDefaults(void)
 #ifdef SH_PC_PORT
 #include <SDL.h>
 #include "pc_confirm_dialog.h"
-#include "pc_bind_panel.h"
+#include "pc_controls_screen.h"
 
 /* Shared with the header draw: 1 while the reset dialog is up (label turns red). */
 int g_PcOptResetConfirmActive = 0;
@@ -1269,7 +1269,7 @@ void Options_PcOptionsMenu_Control(void)
     Options_PcOptionsMenu_SelectionHighlightDraw();
     Options_Menu_VignetteDraw();
     Screen_BackgroundImgDraw(&g_ItemInspectionImg);
-    Pc_MouseCursor_Draw();
+    Pc_MouseCursor_Show();
 
     if (g_GameWork.gameStateSteps[0] != OptionsMenuState_PcOptions)
         return;
@@ -1737,6 +1737,12 @@ void GameState_Options_Update(void) // 0x801E2D44
                 g_SysWork.counters_1C[1]              = 0;
                 g_GameWork.gameStateSteps[1] = 0;
                 g_GameWork.gameStateSteps[2] = 0;
+#ifdef SH_PC_PORT
+                /* Opened on entry, once per visit: a visit left by the
+                 * Select+Start warm reset never reaches the screen's own close,
+                 * so the screen cannot tell the next visit is a new one. */
+                Pc_ControlsScreen_Open();
+#endif
             }
             break;
 
@@ -1865,7 +1871,7 @@ void Options_ExtraOptionsMenu_Control(void) // 0x801E318C
     Options_Menu_VignetteDraw();
     Screen_BackgroundImgDraw(&g_ItemInspectionImg);
 #ifdef SH_PC_PORT
-    Pc_MouseCursor_Draw();
+    Pc_MouseCursor_Show();
 #endif
 
     if (g_GameWork.gameStateSteps[0] != OptionsMenuState_ExtraOptions)
@@ -2128,7 +2134,7 @@ void Options_MainOptionsMenu_Control(void) // 0x801E3770
     Options_MainOptionsMenu_SfxVolumeBarDraw();
 #ifdef SH_PC_PORT
     Options_MainOptionsMenu_FmvVolumeBarDraw();
-    Pc_MouseCursor_Draw();
+    Pc_MouseCursor_Show();
 #endif
 
     if (g_GameWork.gameStateSteps[0] != OptionsMenuState_MainOptions)
@@ -3894,7 +3900,7 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
     Options_BrightnessMenu_ArrowsDraw();
     Options_BrightnessMenu_ConfigDraw();
 #ifdef SH_PC_PORT
-    Pc_MouseCursor_Draw();
+    Pc_MouseCursor_Show();
 #endif
 }
 
@@ -4279,21 +4285,21 @@ void Options_ControllerMenu_Control(void) // 0x801E69BC
     static s_ControllerMenu_SelectedEntries selectedEntries;
 
 #ifdef SH_PC_PORT
-    /* PC: this screen is the in-game controls panel (pc_bind_panel.c), a GL
-     * overlay over the PSX layout. It opens once per visit, and the screen
-     * leaves the way EXIT does when the panel closes. The PSX actions pane
+    /* PC: this screen is the native Controls screen (pc_controls_screen.c),
+     * drawn in place of the PSX layout. It opens once per visit, and the screen
+     * leaves the way EXIT does when it closes. The PSX actions pane
      * only ever re-mapped PSX buttons onto game actions, which on PC sits
      * under the launcher's physical binds and only confused them. */
     {
-        static int s_bindPanelShown = 0;
-
         if (g_GameWork.gameStateSteps[1] == ControllerMenuState_Leave)
         {
             /* The PSX leave path would draw the old layout under the fade-out;
-             * leave the same way without drawing anything. */
-            s_bindPanelShown = 0;
+             * leave the same way, fading out the native screen instead. */
+            Pc_ControlsScreen_Draw();
+            Pc_MouseCursor_Show();
             if (ScreenFade_IsFinished())
             {
+                Pc_ControlsScreen_Close();
                 ScreenFade_Start(true, true, false);
                 g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveController;
                 g_SysWork.counters_1C[1]     = 0;
@@ -4304,12 +4310,11 @@ void Options_ControllerMenu_Control(void) // 0x801E69BC
         }
         else
         {
-            if (!s_bindPanelShown)
-            {
-                Pc_BindPanel_Open();
-                s_bindPanelShown = 1;
-            }
-            if (Pc_BindPanel_Update())
+            int open = Pc_ControlsScreen_Update();
+
+            Pc_ControlsScreen_Draw();
+            Pc_MouseCursor_Show();
+            if (open)
             {
                 ScreenFade_Start(false, true, false);
                 g_Controller0->clickedBtnFlags   = 0;
@@ -4320,13 +4325,12 @@ void Options_ControllerMenu_Control(void) // 0x801E69BC
             ScreenFade_Start(false, false, false);
             g_GameWork.gameStateSteps[1] = ControllerMenuState_Leave;
             g_GameWork.gameStateSteps[2] = 0;
-            s_bindPanelShown             = 0;
 
             /* Return on the closing frame too. Without this the function ran on
              * into the stock controller layout below and drew it once, which is
              * the old screen flashing up for a frame as the panel exits. The
              * Leave branch above handles every frame after this one and draws
-             * nothing. */
+             * only the native screen. */
             return;
         }
     }
@@ -4396,7 +4400,7 @@ void Options_ControllerMenu_Control(void) // 0x801E69BC
                 }
             }
         }
-        Pc_MouseCursor_Draw();
+        Pc_MouseCursor_Show();
     }
 #endif
 
