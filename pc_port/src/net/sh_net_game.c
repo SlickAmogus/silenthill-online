@@ -38,6 +38,8 @@
 #include "pc_discord.h" /* Pc_MapAreaName, for Steam rich presence */
 #include "pc_config.h"
 #include "pc_playas.h"
+#include "pc_item_pool.h"
+#include "pc_weapon_banks.h"
 #include "sh_log.h"
 
 /* Above this the player reads as "moving fast" to a watching ghost. Q19.12,
@@ -373,9 +375,26 @@ static void ShNetG_PlayPartnerSfx(int myMap)
         for (k = 0; k < got; k++)
         {
             VECTOR3 at;
-            if (!ShNetG_PartnerSfxPlayable(ev[k].sfx, pn.weaponAnm))
+            int     idx = ev[k].sfx - Sfx_Base;
+            if (idx <= 0 || idx >= (int)(sizeof(g_Vab_InfoTable) / sizeof(g_Vab_InfoTable[0])))
             {
                 continue;
+            }
+            /* A weapon sound plays from the partner's weapon bank. When it is
+             * not the one we have loaded, the resident copy of theirs is keyed
+             * on instead (pc_weapon_banks.c); silence only if that bank could
+             * not be had. */
+            g_PcSfxVabOverride = 0;
+            if ((g_Vab_InfoTable[idx].vab_progIdx_2 >> 8) == AudioType_Weapon &&
+                !ShNetG_PartnerSfxPlayable(ev[k].sfx, pn.weaponAnm))
+            {
+                int bank = ShNetG_WeaponSoundBank(pn.weaponAnm);
+                int vab  = (bank >= 0) ? Pc_WeaponBank_VabId(bank) : -1;
+                if (vab < 0)
+                {
+                    continue;
+                }
+                g_PcSfxVabOverride = vab;
             }
             at.vx = pn.x; at.vy = pn.y; at.vz = pn.z;
             /* Always with distance falloff and stereo placement: a sound the
@@ -388,6 +407,7 @@ static void ShNetG_PlayPartnerSfx(int myMap)
             {
                 func_8005DC1C((e_SfxId)ev[k].sfx, &at, ev[k].vol, 0);
             }
+            g_PcSfxVabOverride = 0;
         }
     }
 }
@@ -845,7 +865,14 @@ void ShNet_GameTick(void)
             const ShSessionMember* m = ShSession_Member(i);
             if (m && m->poseMs != 0 && m->steamId != ShSession_SelfId())
             {
+                ShSessionPoseNow pn;
                 Pc_PlayAs_RigPrefetch(m->charaId);
+                /* And the weapon in their hand, so it can be drawn whatever
+                 * we hold ourselves. */
+                if (ShSession_MemberPoseNow(i, &pn) && pn.heldItem >= 0 && pn.heldItem < 0xFF)
+                {
+                    Pc_ItemPool_Want(pn.heldItem);
+                }
             }
         }
     }

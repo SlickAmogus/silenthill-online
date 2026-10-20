@@ -47,6 +47,7 @@
 #include "hires_override.h"
 #include "pc_config.h"
 #include "pc_chara_pool.h" /* Pc_CharaPool_HarryGhostModel: clean Harry for remotes */
+#include "pc_item_pool.h"  /* a partner's weapon model */
 #include "pc_playas.h"     /* a partner's skin rig */
 #include "sh_net.h"
 #include "sh_net_art.h"
@@ -581,11 +582,21 @@ static void ShNetG_DrawHeldItem(GsCOORDINATE2* hand, int itemId)
     MATRIX      viewMat;
     MATRIX      worldMat;
 
-    if (itemId == 0xFF || heldItem->itemId == NO_VALUE || heldItem->itemId != itemId ||
-        heldItem->itemId == InvItemId_CutscenePhone || heldItem->lmHdr == NULL ||
-        !Fs_QueueIsEntryLoaded(heldItem->queueIdx) || !heldItem->lmHdr->isLoaded)
+    if (itemId == 0xFF || itemId == InvItemId_CutscenePhone)
     {
         return;
+    }
+    /* Our own loaded model when we hold the same thing; otherwise the
+     * partner-weapon pool's copy (pc_item_pool.c), which the game tick
+     * loads the moment a partner is seen holding it. */
+    if (!(heldItem->itemId == itemId && heldItem->lmHdr != NULL &&
+          Fs_QueueIsEntryLoaded(heldItem->queueIdx) && heldItem->lmHdr->isLoaded))
+    {
+        heldItem = Pc_ItemPool_Get(itemId);
+        if (heldItem == NULL)
+        {
+            return;
+        }
     }
     Vw_CoordToWorldAndViewMatrices(hand, &worldMat, &viewMat);
     func_80057090(&heldItem->bone.modelInfo, &g_OrderingTable0[g_ActiveBufferIdx], 1, &viewMat, &worldMat, 0);

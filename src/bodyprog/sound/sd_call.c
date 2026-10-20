@@ -57,6 +57,12 @@ static s_800C15F0 D_800C15F0[4];
 static u16 g_AudioPlayingIdxList[24];
 
 #ifdef SH_PC_PORT
+/* Co-op: a partner's weapon sound keys on ITS weapon bank, kept resident in a
+ * spare libsd slot (pc_weapon_banks.c), not on the one we have loaded. */
+int g_PcSfxVabOverride = 0;
+#endif
+
+#ifdef SH_PC_PORT
 /* The positional-loop sustain in 3d_audio.c needs to know whether a sfx still
  * owns a voice. The list stays private to this file. */
 bool Pc_Sd_SfxHasVoice(u16 sfxId)
@@ -559,7 +565,14 @@ u8 Sd_PlaySfx(u16 sfxId, q0_7 balance, u8 vol) // 0x80046048
     }
     else
     {
-        g_Sd_VabPlayingInfo.audioVabIdx = SdVoKeyOn(g_Vab_InfoTable[audioIdx].vab_progIdx_2, g_Sd_VabPlayingInfo.noteIdx * 0x100,
+        s32 vabPro = g_Vab_InfoTable[audioIdx].vab_progIdx_2;
+#ifdef SH_PC_PORT
+        if (g_PcSfxVabOverride > 0 && (vabPro >> 8) == AudioType_Weapon)
+        {
+            vabPro = (g_PcSfxVabOverride << 8) | (vabPro & 0xFF);
+        }
+#endif
+        g_Sd_VabPlayingInfo.audioVabIdx = SdVoKeyOn(vabPro, g_Sd_VabPlayingInfo.noteIdx * 0x100,
                                                       Sd_GetVolSe(g_Sd_VabPlayingInfo.volumeLeft), Sd_GetVolSe(g_Sd_VabPlayingInfo.volumeRight));
     }
 
