@@ -526,6 +526,10 @@ typedef struct {
                                * sides must have it on: you only take damage if YOU enabled it. */
     int   onlineGuestConsole; /* host: 1 = guests in my game may use the console and debug keys
                                * (online_guest_console). Off by default. */
+    int   onlineCoopLiving;   /* host: 1 = my co-op game is part of the living world (strangers'
+                               * ghosts and messages show, ours are placed). Off = private
+                               * (online_coop_living_world). */
+    int   onlineHealthBars;   /* co-op: 0 none, 1 mine, 2 partners', 3 both (online_health_bars) */
     float onlinePvpDamage;    /* scale on weapon damage vs players (online_pvp_damage, default 0.15:
                                * weapons are tuned for 200-40000 HP monsters, Harry has 100) */
     float onlineRespawnSeconds; /* co-op: how long a dead player lies there before respawning

@@ -132,6 +132,19 @@ int         ShNet_LiveWorld(void);
  * pose carries. Outside a session, the local config. */
 int         ShNet_CoopFriendlyFire(void);
 int         ShNet_CoopGuestConsole(void); /* host's choice: may guests use the console */
+int         ShNet_CoopLivingWorld(void);  /* is this game part of the living world (1 outside co-op) */
+/* Co-op pause: the host's pause is everyone's; a guest asks. */
+extern int  g_PcCoopHostPaused;
+int         ShNet_CoopPauseEnter(void);
+int         ShNet_CoopPauseEject(void);
+int         ShNet_CoopPauseHold(void);
+void        ShNet_CoopRequestPause(void);
+/* Co-op permissions the host hands out per guest (SHNET_PERM_*). */
+void        ShNet_CoopPermSet(unsigned long long id, int flags);
+int         ShNet_CoopPermGet(unsigned long long id);
+int         ShNet_CoopPermMine(void);
+int         ShNet_CoopCheatsAllowed(void);      /* quick-menu cheats, console, binds */
+void        ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len);
 int         ShNet_Status(void);        /* SHNET_ST_* */
 const char* ShNet_StatusText(void);    /* one short line for the UI */
 const char* ShNet_ServerName(void);

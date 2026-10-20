@@ -788,6 +788,89 @@ static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name
                            s_np[idx].w - 1, s_np[idx].h - 1, 235, 230, 205, 255);
 }
 
+/* An untextured quad in world space, for the partner health bars. The same
+ * placement and ordering as the textured ghost quads; the pointer advances by
+ * a POLY_FT4 so the caller's bump allocation never changes stride. */
+static POLY_FT4* ShNetG_EmitFlat(GsOT* ot, POLY_FT4* poly,
+                                 const VECTOR3* centre,
+                                 const VECTOR3* axisU, const VECTOR3* axisV,
+                                 u8 cr, u8 cg, u8 cb, int alpha)
+{
+    MATRIX   mat;
+    SVECTOR  v;
+    s16      sx[4], sy[4];
+    s32      bucketSum = 0, bucket;
+    int      k;
+    POLY_F4* f = (POLY_F4*)poly;
+
+    Vw_WorldScreenMatrixAtPositionGet(&mat, centre->vx, centre->vy, centre->vz);
+    SetRotMatrix(&mat);
+    SetTransMatrix(&mat);
+    for (k = 0; k < 4; k++)
+    {
+        s32  st = (k & 1) ? 1 : -1;
+        s32  sb = (k & 2) ? 1 : -1;
+        s32  otz, sxy;
+        long p, flag;
+        v.vx  = (s16)Q12_TO_Q8(st * axisU->vx + sb * axisV->vx);
+        v.vy  = (s16)Q12_TO_Q8(st * axisU->vy + sb * axisV->vy);
+        v.vz  = (s16)Q12_TO_Q8(st * axisU->vz + sb * axisV->vz);
+        v.pad = 0;
+        otz = RotTransPers(&v, (int*)&sxy, &p, &flag);
+        if (otz <= 8) return poly;
+        sx[k] = (s16)(sxy & 0xFFFF);
+        sy[k] = (s16)((u32)sxy >> 16);
+        if (ABS(sx[k]) > 2048 || ABS(sy[k]) > 2048) return poly;
+        bucketSum += otz;
+    }
+    bucket = ((bucketSum >> 2) >> SHNET_OT_SHIFT) - 1;
+    if (bucket < 1) bucket = 1;
+    if (bucket >= ORDERING_TABLE_SIZE) bucket = ORDERING_TABLE_SIZE - 1;
+
+    setPolyF4(f);
+    setSemiTrans(f, true);
+    PsyX_SetNextPrimAlpha(alpha);
+    setRGB0(f, cr, cg, cb);
+    setXY4(f, sx[0], sy[0], sx[1], sy[1], sx[2], sy[2], sx[3], sy[3]);
+    addPrim(&ot->org[bucket], f);
+    return poly + 1;
+}
+
+/* A partner's health, as a thin bar under the nameplate: dark track, a fill
+ * that drains and reddens. */
+static POLY_FT4* ShNetG_DrawHealthBar(GsOT* ot, POLY_FT4* poly, int gx, int gy, int gz, int pct)
+{
+    VECTOR3   centre, axisU, axisV;
+    const s32 halfW = Q12(0.32f), halfH = Q12(0.028f);
+    s32       fillW;
+    u8        r, g;
+
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    centre.vx = gx;
+    centre.vy = gy - Q12(1.86f);
+    centre.vz = gz;
+    axisU.vx = (halfW * GsWSMATRIX.m[0][0]) >> 12;
+    axisU.vy = (halfW * GsWSMATRIX.m[0][1]) >> 12;
+    axisU.vz = (halfW * GsWSMATRIX.m[0][2]) >> 12;
+    axisV.vx = 0; axisV.vy = halfH; axisV.vz = 0;
+    poly = ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, 16, 16, 24, 190);
+    if (pct == 0) return poly;
+
+    fillW = (s32)(((long long)halfW * pct) / 100);
+    /* The fill is left-anchored: its centre slides left as it drains. */
+    centre.vx = gx - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][0]) >> 12);
+    centre.vy = gy - Q12(1.86f) + Q12(0.0f);
+    centre.vz = gz - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][2]) >> 12);
+    axisU.vx = (fillW * GsWSMATRIX.m[0][0]) >> 12;
+    axisU.vy = (fillW * GsWSMATRIX.m[0][1]) >> 12;
+    axisU.vz = (fillW * GsWSMATRIX.m[0][2]) >> 12;
+    axisV.vy = halfH - Q12(0.006f);
+    r = (u8)(pct > 50 ? 70 + (100 - pct) * 3 : 220);
+    g = (u8)(pct > 50 ? 200 : 60 + pct * 3);
+    return ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, r, g, 50, 235);
+}
+
 void ShNet_DrawWorld(GsOT* ot)
 {
     POLY_FT4*    poly;
@@ -919,12 +1002,16 @@ void ShNet_DrawWorld(GsOT* ot)
                     poly = ShNetG_DrawNameplate(ot, poly, m->name, gx, gy, gz);
                     namesDrawn++;
                 }
+                if ((g_PcConfig.onlineHealthBars & 2) && m->healthPct1 != 0)
+                {
+                    poly = ShNetG_DrawHealthBar(ot, poly, gx, gy, gz, m->healthPct1 - 1);
+                }
             }
         }
     }
 
     /* ---- other players ---- */
-    if (g_PcConfig.onlineGhosts && (s_ghostTexOk || s_memoTexOk))
+    if (g_PcConfig.onlineGhosts && ShNet_CoopLivingWorld() && (s_ghostTexOk || s_memoTexOk))
     {
         /* Nearest first, so the full-body and nameplate caps fall on the far
          * end of a crowd rather than on whoever joined the server first. */
@@ -1088,7 +1175,7 @@ void ShNet_DrawWorld(GsOT* ot)
     }
 
     /* ---- markers ---- */
-    if (g_PcConfig.onlineMemos && s_memoTexOk)
+    if (g_PcConfig.onlineMemos && ShNet_CoopLivingWorld() && s_memoTexOk)
     {
         count = ShNet_MemoCount();
         for (i = 0; i < count; i++)

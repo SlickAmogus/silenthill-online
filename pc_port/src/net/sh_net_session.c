@@ -122,11 +122,12 @@ static struct
     unsigned long long hostId;
     ShSessionMember    members[SHSESSION_MAX_MEMBERS];
     char               status[128];
-    int                worldReq;    /* guest: a map the host said to boot into, -1 none */
+    int                worldReq;
+    int                worldFlags;    /* guest: a map the host said to boot into, -1 none */
     int                guestDebug;  /* host granted joined players debug controls */
 
     /* Open server rooms from the last list request, for the Join browser. */
-    struct { unsigned short code; unsigned char players, max; char host[SHSESSION_NAME_MAX]; } rooms[16];
+    struct { unsigned short code; unsigned char players, max, map; char host[SHSESSION_NAME_MAX]; } rooms[16];
     int                roomCount;
 } s_pub;
 
@@ -140,6 +141,8 @@ static unsigned int    s_pingSentMs[SHSESSION_MAX_MEMBERS];
 static unsigned int    s_lastPosMs;   /* last co-op pose broadcast */
 static unsigned int    s_lastPosSeq;  /* the published frame it carried */
 static int             s_worldReqIn = -1; /* a map the host told us to boot into */
+static int             s_worldFlagsIn = 0; /* and what else it said about the game */
+static int             s_worldFlagsOut = 0; /* host: what we say (game thread writes, worker reads) */
 static int             s_declineWorld = 0; /* guest chose to leave: ignore the host's
                                             * resent S_WORLD so it cannot drag them back,
                                             * until they intentionally join/host again */
@@ -220,6 +223,7 @@ void ShSession_Init(void)
     s_req.presenceMap  = -1;
     s_req.wantWorldMap = -1;
     s_pub.worldReq     = -1;
+    s_pub.worldFlags   = 0;
 
     /* The server (UDP) co-op transport does not need Steam, so it always comes
      * up. Steam is a second transport on top: ShSteam_Init fails gracefully
@@ -555,6 +559,21 @@ void ShSession_RequestWorld(int mapIdx)
     SDL_LockMutex(s_lock);
     s_req.wantWorldMap = mapIdx;
     SDL_UnlockMutex(s_lock);
+}
+
+void ShSession_RequestWorldFlags(int flags)
+{
+    s_worldFlagsOut = flags;
+}
+
+int ShSession_WorldFlags(void)
+{
+    int f = 0;
+    if (!s_lock) return 0;
+    SDL_LockMutex(s_lock);
+    f = s_pub.worldFlags;
+    SDL_UnlockMutex(s_lock);
+    return f;
 }
 
 int ShSession_TakeWorldRequest(void)
@@ -988,7 +1007,7 @@ static void ShSession_Receive(unsigned int now)
                 memset(&smp, 0, sizeof(smp));
                 smp.x = mb->x; smp.y = mb->y; smp.z = mb->z; smp.rotY = mb->rotY;
                 smp.anim = mb->anim; smp.frame = mb->frame;
-                if (payLen >= 45)
+                if (payLen >= 46)
                 {
                     smp.kf[0][0]  = (unsigned short)ShnGetU16(p, &o);
                     smp.kf[0][1]  = (unsigned short)ShnGetU16(p, &o);
@@ -1004,8 +1023,10 @@ static void ShSession_Receive(unsigned int now)
                     smp.pstate    = (unsigned char)ShnGetU8(p, &o);
                     smp.atkRecv   = (unsigned char)ShnGetU8(p, &o);
                     smp.cflags    = (unsigned char)ShnGetU8(p, &o);
+                    smp.health    = (unsigned char)ShnGetU8(p, &o);
+                    mb->healthPct1 = ((smp.health <= 100) ? (int)smp.health : 100) + 1;
                     if (nsfx > SHSESSION_POSE_SFX) nsfx = SHSESSION_POSE_SFX;
-                    if (45 + nsfx * 6 > payLen) nsfx = (payLen - 45) / 6;
+                    if (46 + nsfx * 6 > payLen) nsfx = (payLen - 46) / 6;
                     for (k = 0; k < nsfx; k++)
                     {
                         smp.sfx[k].seq   = (unsigned char)ShnGetU8(p, &o);
@@ -1131,6 +1152,7 @@ static void ShSession_Receive(unsigned int now)
             {
                 break;
             }
+            if (payLen >= 2) s_worldFlagsIn = (int)ShnGetU8(p, &o);
             if (!s_declineWorld)
             {
                 s_worldReqIn = m;
@@ -1267,6 +1289,7 @@ static void ShSession_Publish(void)
         s_pub.worldReq = s_worldReqIn;
         s_worldReqIn   = -1;
     }
+    s_pub.worldFlags = Tp_IsHost() ? s_worldFlagsOut : s_worldFlagsIn;
     /* The host's debug-grant, read off the Steam lobby data (host reads back its
      * own value, a guest reads the host's). Steam path only for now; 0 otherwise. */
     if (s_pub.active && s_backend == COOP_BACKEND_STEAM)
@@ -1288,11 +1311,12 @@ static void ShSession_Publish(void)
         for (k = 0; k < rc; k++)
         {
             unsigned short code = 0;
-            int            players = 0, max = 0;
-            CoopUdp_RoomListGet(k, &code, &players, &max, s_pub.rooms[k].host, SHSESSION_NAME_MAX);
+            int            players = 0, max = 0, map = -1;
+            CoopUdp_RoomListGet(k, &code, &players, &max, &map, s_pub.rooms[k].host, SHSESSION_NAME_MAX);
             s_pub.rooms[k].code    = code;
             s_pub.rooms[k].players = (unsigned char)players;
             s_pub.rooms[k].max     = (unsigned char)max;
+            s_pub.rooms[k].map     = (unsigned char)((map < 0 || map > 254) ? 0xFF : map);
         }
         s_pub.roomCount = rc;
     }
@@ -1304,12 +1328,13 @@ int ShSession_RoomCount(void)
     return s_pub.roomCount;
 }
 
-int ShSession_RoomGet(int i, int* code, int* players, int* max, char* host, int hostCap)
+int ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, char* host, int hostCap)
 {
     if (i < 0 || i >= s_pub.roomCount) return 0;
     if (code)    *code    = s_pub.rooms[i].code;
     if (players) *players = s_pub.rooms[i].players;
     if (max)     *max     = s_pub.rooms[i].max;
+    if (mapIdx)  *mapIdx  = (s_pub.rooms[i].map == 0xFF) ? -1 : (int)s_pub.rooms[i].map;
     if (host && hostCap > 0) SDL_strlcpy(host, s_pub.rooms[i].host, (size_t)hostCap);
     return 1;
 }
@@ -1577,7 +1602,7 @@ void ShSession_Tick(unsigned int nowMs)
                 continue;
             }
             ShnPutU8(buf, &off, (shn_u8)((s_worldMapCur > 255) ? 0xFF : s_worldMapCur));
-            ShnPutU8(buf, &off, 0);
+            ShnPutU8(buf, &off, (shn_u8)s_worldFlagsOut);
             ShnPutU16(buf, &off, 0);
             ShnPutHeader(buf, SHNET_MSG_S_WORLD, (shn_u16)(off - SHNET_HDR_SIZE), 0);
             Tp_Send(s_members[i].steamId, buf, off, 1);
@@ -1624,6 +1649,7 @@ void ShSession_Tick(unsigned int nowMs)
             ShnPutU8(buf, &off, pose.pstate);
             ShnPutU8(buf, &off, pose.atkRecv);
             ShnPutU8(buf, &off, pose.cflags);
+            ShnPutU8(buf, &off, pose.health);
             for (k = 0; k < pose.sfxCount && k < SHSESSION_POSE_SFX; k++)
             {
                 ShnPutU8(buf, &off, pose.sfx[k].seq);

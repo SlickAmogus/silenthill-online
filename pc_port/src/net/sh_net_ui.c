@@ -1388,15 +1388,14 @@ static float Nu_TextH(int px)
 }
 
 /* Text clipped to a width by dropping characters off the end. */
-static void Nu_DrawTextFit(const char* text, float x, float y, float maxW, int px,
+static float Nu_DrawTextFit(const char* text, float x, float y, float maxW, int px,
                            float r, float g, float b, float a)
 {
     char buf[128];
     int  n;
     if (Nu_TextWidth(text, px) <= maxW)
     {
-        Nu_DrawText(text, x, y, px, r, g, b, a);
-        return;
+        return Nu_DrawText(text, x, y, px, r, g, b, a);
     }
     SDL_strlcpy(buf, text, sizeof(buf));
     for (n = (int)strlen(buf); n > 1; n--)
@@ -1405,7 +1404,7 @@ static void Nu_DrawTextFit(const char* text, float x, float y, float maxW, int p
         buf[n - 2] = '.';
         if (Nu_TextWidth(buf, px) <= maxW) break;
     }
-    Nu_DrawText(buf, x, y, px, r, g, b, a);
+    return Nu_DrawText(buf, x, y, px, r, g, b, a);
 }
 
 /* A row's "Label:  Value" text, split for two-column drawing. */
@@ -1575,8 +1574,8 @@ static void Nu_DrawCoopMenu(int px)
         const float w  = x1 - x0;
         if (view == PC_COOP_VIEW_ROOMS)
         {
-            Nu_DrawText("ROOM", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
-            Nu_DrawText("HOST", x0 + w * 0.22f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawText("GAME", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawText("WHERE", x0 + w * 0.46f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
             Nu_DrawTextRight("PLAYERS", x1 - px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
         }
         else
@@ -1619,14 +1618,21 @@ static void Nu_DrawCoopMenu(int px)
 
             if (view == PC_COOP_VIEW_ROOMS && k < roomCount)
             {
-                int  code = 0, players = 0, max = 0;
+                int  code = 0, players = 0, max = 0, map = -1;
                 char host[SHSESSION_NAME_MAX];
-                char cell[32];
+                char cell[96];
                 host[0] = '\0';
-                ShSession_RoomGet(k, &code, &players, &max, host, (int)sizeof(host));
-                snprintf(cell, sizeof(cell), "%d", code);
-                Nu_DrawText(cell, r.x + px * 0.8f, ty, px, lt, lt, lt, 1.0f);
-                Nu_DrawTextFit(host[0] ? host : "?", r.x + r.w * 0.22f, ty, r.w * 0.55f, px, lt, lt, lt, 1.0f);
+                ShSession_RoomGet(k, &code, &players, &max, &map, host, (int)sizeof(host));
+                /* "Name's Game", the room code small beside it. */
+                snprintf(cell, sizeof(cell), "%s's Game", host[0] ? host : "Someone");
+                {
+                    float nw = Nu_DrawTextFit(cell, r.x + px * 0.8f, ty, r.w * 0.36f, px, lt, lt, lt, 1.0f);
+                    snprintf(cell, sizeof(cell), "#%d", code);
+                    Nu_DrawText(cell, r.x + px * 1.3f + nw, ty + (textH - Nu_TextH(pxSmall)) * 0.5f,
+                                pxSmall, 0.55f, 0.60f, 1.0f, 0.85f);
+                }
+                Nu_DrawTextFit(map >= 0 ? Pc_MapAreaName(map) : "In the lobby",
+                               r.x + r.w * 0.46f, ty, r.w * 0.36f, px, lt * 0.92f, lt * 0.92f, lt, 1.0f);
                 snprintf(cell, sizeof(cell), "%d / %d", players, max);
                 Nu_DrawTextRight(cell, r.x + r.w - px * 0.8f, ty, px,
                                  players >= max ? 0.75f : 0.62f, players >= max ? 0.45f : 0.72f,
@@ -1900,9 +1906,30 @@ void ShNetUi_Draw(void)
         Nu_DrawChat((int)((float)px * 0.82f));
     }
 
-    if (!drawComposer)
+    if (!drawComposer && ShNet_CoopLivingWorld())
     {
         Nu_DrawNearbyMemo(px);
+    }
+    /* Co-op: my own health, bottom left, when asked for. */
+    {
+        extern int g_PcCoopGame;
+        if (g_PcCoopGame && (g_PcConfig.onlineHealthBars & 1) &&
+            g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
+            !Pc_CoopMenu_IsOpen())
+        {
+            const float w  = s_vpW * 0.16f, h = (float)px * 0.55f;
+            const float x  = s_vpH * 0.04f, y = s_vpH * 0.93f;
+            int         hp = (int)(g_SysWork.playerWork.player.health >> 12);
+            float       f;
+            if (hp < 0) hp = 0;
+            if (hp > 100) hp = 100;
+            f = (float)hp / 100.0f;
+            Nu_FillPx(x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f, 0.03f, 0.03f, 0.08f, 0.75f);
+            Nu_FillPx(x, y, w * f, h,
+                      hp > 50 ? 0.30f + (100 - hp) * 0.012f : 0.86f,
+                      hp > 50 ? 0.78f : 0.24f + hp * 0.011f, 0.20f, 0.95f);
+            Nu_ShFrame(x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f, 1.0f, 0.85f);
+        }
     }
     if (drawList)
     {

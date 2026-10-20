@@ -593,7 +593,11 @@ void Pc_MinimapUpdate(void)
     GsOT_TAG* ot;
 
 
-    if (!g_PcConfig.minimap) return;
+    /* Co-op turns the minimap on by default: it is how partners find each
+     * other. The config value still wins when it is set. */
+    extern int g_PcCoopGame;
+    const int  minimapMode = g_PcConfig.minimap ? g_PcConfig.minimap : (g_PcCoopGame ? 1 : 0);
+    if (!minimapMode) return;
     if (g_GameWork.gameState != GameState_InGame ||
         g_SysWork.sysState   != SysState_Gameplay) return;
 
@@ -611,7 +615,7 @@ void Pc_MinimapUpdate(void)
 
     buf   = g_ActiveBufferIdx;
     ot    = &g_OtTags0[buf][4];
-    round = (g_PcConfig.minimap == 2); /* 1 = square, 2 = circle */
+    round = (minimapMode == 2); /* 1 = square, 2 = circle */
 
     /* --- corner placement ---
      * Sit inside the overlay pass's real visible rectangle (g_PcHudRect, prim

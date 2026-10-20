@@ -29,5 +29,7 @@ void ShNet_SetCoopActive(int active, const char* why)
 
 int ShNet_PauseBlocked(void)
 {
-    return g_ShNetCoopActive;
+    extern int ShSession_Active(void);
+    extern int ShSession_IsHost(void);
+    return g_ShNetCoopActive && ShSession_Active() && !ShSession_IsHost();
 }

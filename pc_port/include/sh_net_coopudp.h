@@ -64,7 +64,7 @@ int  CoopUdp_Recv(unsigned long long* from, unsigned char* buf, int cap);
 
 /* Open-room browser results from the last RequestRoomList. */
 int  CoopUdp_RoomListCount(void);
-int  CoopUdp_RoomListGet(int i, unsigned short* code, int* players, int* max,
+int  CoopUdp_RoomListGet(int i, unsigned short* code, int* players, int* max, int* map,
                          char* host, int hostCap);
 
 #ifdef __cplusplus

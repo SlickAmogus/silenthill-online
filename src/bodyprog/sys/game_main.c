@@ -3350,9 +3350,11 @@ void MainLoop(void) // 0x80032EE0
         {
             extern int g_PcConsoleInputActive;
             extern int g_PcQuickOptionsActive;
+            /* Not online: a shared world keeps its clock while an overlay
+             * is up; the pad is still swallowed, so nothing moves. */
             if ((g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
                 !(g_SysWork.bgmStatusFlags & BgmStatusFlag_Pause) &&
-                !g_SysWork.isMgsStringSet) {
+                !g_SysWork.isMgsStringSet && !ShNet_LiveWorld()) {
                 g_DeltaTime    = 0;
                 g_DeltaTimeRaw = 0;
                 g_GravitySpeed = 0;

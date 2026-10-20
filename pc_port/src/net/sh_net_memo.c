@@ -309,6 +309,11 @@ void ShNetMemo_ComposerToggle(void)
     {
         return;
     }
+    if (!ShNet_CoopLivingWorld())
+    {
+        ShNet_PostLocalEvent("Messages are off in this game (the host keeps it private)");
+        return;
+    }
     if (ShNet_Status() != SHNET_ST_CONNECTED)
     {
         return;

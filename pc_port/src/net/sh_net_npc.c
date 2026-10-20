@@ -1376,6 +1376,10 @@ void Pc_NetNpc_GameTick(void)
         {
             Npc_FlagSetIn(buf, len);
         }
+        else if (type == SHNET_MSG_S_CTRL)
+        {
+            ShNet_CoopCtrlIn(from, buf, len);
+        }
     }
 
     if (role == PC_NETNPC_HOST)

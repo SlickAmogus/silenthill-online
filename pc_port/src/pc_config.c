@@ -79,6 +79,8 @@ s_PcConfig g_PcConfig = {
     .onlineUiScale    = 1.0f,
     .onlineFriendlyFire = 0,
     .onlineGuestConsole = 0,
+    .onlineCoopLiving   = 0,
+    .onlineHealthBars   = 2,
     .onlinePvpDamage  = 0.15f,
     .onlineRespawnSeconds = 7.0f,
     .onlineSteam           = 0,
@@ -866,6 +868,15 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_guest_console") == 0)
         {
             g_PcConfig.onlineGuestConsole = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_coop_living_world") == 0)
+        {
+            g_PcConfig.onlineCoopLiving = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_health_bars") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.onlineHealthBars = (v < 0) ? 0 : (v > 3) ? 3 : v;
         }
         else if (strcmp(key, "online_pvp_damage") == 0)
         {

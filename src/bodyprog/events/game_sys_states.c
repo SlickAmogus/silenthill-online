@@ -47,6 +47,9 @@ extern s_WorldEnvWork g_WorldEnvWork;
 #include "main/fsqueue.h"
 #include "main/rng.h"
 #ifdef SH_PC_PORT
+#include "sh_net.h" /* co-op pause rules */
+#endif
+#ifdef SH_PC_PORT
 #include <stdio.h>
 extern void vcGetNowCamPos(VECTOR3* cam_pos);
 extern void DebugCamera_Update(void);
@@ -115,6 +118,10 @@ static int s_PC_D_800BCDB0_Saved = 0;
 #endif
 
 void InGame_SimAndDraw(void);
+
+#ifdef SH_PC_PORT
+static int s_coopPickupWas; /* a world item pickup was on screen last tick */
+#endif
 
 void GameState_InGame_Update(void) // 0x80038BD4
 {
@@ -213,7 +220,9 @@ void GameState_InGame_Update(void) // 0x80038BD4
          * activationType None) with no event-flag gates, which Event_Update
          * re-arms every frame -- those maps sit in this state permanently and are
          * script-driven, not examines, so they must keep their PSX clock. */
-        if (g_SysWork.sysState == SysState_ReadMessage)
+        /* Co-op: a text box is one player's reading, not everyone's pause. */
+        extern int g_PcCoopGame;
+        if (g_SysWork.sysState == SysState_ReadMessage && !g_PcCoopGame)
         {
             g_DeltaTime = Q12(0.0f);
 
@@ -242,6 +251,35 @@ void GameState_InGame_Update(void) // 0x80038BD4
                 SH_DBG("[SYSSTATE] OOB sysState=%d max=%d — reset to Gameplay", _ss, _ssMax);
                 g_SysWork.sysState = SysState_Gameplay;
             } else {
+                /* Co-op: the world item pickup holds the world with
+                 * BgmStatusFlag_Pause so OT0 holds the item alone; run the
+                 * gameplay sim first (the inventory's recipe) and throw its
+                 * draw away, so monsters keep acting while someone reads an
+                 * item. The handler then re-arms the pause and the normal
+                 * sim call below skips. */
+                {
+                    extern int  g_PcCoopGame, g_PcSimOnly;
+                    extern int  g_PcWorldDrawnThisFrame, g_PcHorPlusEnabled, g_PcWorldHorPlus;
+                    extern u8   g_Player_DisableControl;
+                    if (g_PcCoopGame && _ss == SysState_EventCallback && s_coopPickupWas)
+                    {
+                        u8  savedDisable = g_Player_DisableControl;
+                        int savedDrawn   = g_PcWorldDrawnThisFrame;
+                        int savedHor     = g_PcHorPlusEnabled;
+                        int savedWorldHor = g_PcWorldHorPlus;
+                        g_Player_DisableControl = true;
+                        g_PcSimOnly             = 1;
+                        InGame_SimAndDraw();
+                        g_PcSimOnly             = 0;
+                        g_Player_DisableControl = savedDisable;
+                        GsClearOt(0, 0, &g_OrderingTable0[g_ActiveBufferIdx]);
+                        GsClearOt(0, 0, &g_OrderingTable2[g_ActiveBufferIdx]);
+                        GsSetAmbient(2048, 2048, 2048);
+                        g_PcWorldDrawnThisFrame = savedDrawn;
+                        g_PcHorPlusEnabled      = savedHor;
+                        g_PcWorldHorPlus        = savedWorldHor;
+                    }
+                }
                 g_SysStateFuncs[_ss]();
             }
         }
@@ -274,6 +312,11 @@ void GameState_InGame_Update(void) // 0x80038BD4
     Demo_DemoRandSeedRestore();
 
     InGame_SimAndDraw();
+#ifdef SH_PC_PORT
+    /* MainLoop clears g_PcPickupItemActive before this update runs, so the
+     * co-op pickup sim above reads last tick's value. */
+    { extern int g_PcPickupItemActive; s_coopPickupWas = g_PcPickupItemActive; }
+#endif
 }
 
 /* The gameplay sim + world draw, split out of GameState_InGame_Update so the
@@ -550,6 +593,15 @@ void SysState_Gameplay_Update(void) // 0x80038BD4
     }
 #endif
 
+#ifdef SH_PC_PORT
+    /* Co-op guest: the pause button asks the host instead of stopping the
+     * world; the host's own pause arrives as ShNet_CoopPauseEnter. */
+    if ((g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause) && ShNet_PauseBlocked())
+    {
+        extern void ShNet_CoopRequestPause(void);
+        ShNet_CoopRequestPause();
+    }
+#endif
     if (g_MapEventSysState != SysState_Invalid)
     {
 #ifdef SH_PC_PORT
@@ -576,13 +628,18 @@ void SysState_Gameplay_Update(void) // 0x80038BD4
 #endif
         SysWork_StateSetNext(g_MapEventSysState);
     }
-    else if ((g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
+    else if (((g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
 #ifdef SH_PC_PORT
-             /* Co-op: another player is standing in this world, so stopping it
-              * is not a local decision any more. The ghost world does NOT set
-              * this - a ghost is a picture of somebody else's game and pausing
-              * yours affects nobody. See sh_net_coop.h. */
+             /* Co-op: the host's pause is everyone's pause; a guest cannot
+              * stop the world, only ask (above), and is pulled into the
+              * pause when the host pauses (ShNet_CoopPauseEnter). The ghost
+              * world does NOT block pausing - a ghost is a picture of somebody
+              * else's game. See sh_net_coop.h. */
              && !ShNet_PauseBlocked()
+#endif
+             )
+#ifdef SH_PC_PORT
+             || ShNet_CoopPauseEnter()
 #endif
              )
     {
@@ -650,7 +707,7 @@ void SysState_GamePaused_Update(void) // 0x800391E8
      * joins, and the host is sitting on the pause screen. Leaving them there
      * would freeze a world somebody else is now in, so the state is left the
      * moment the flag turns on rather than only being refused on entry. */
-    if (ShNet_PauseBlocked())
+    if (ShNet_CoopPauseEject())
     {
         D_800A9A68 = 0;
         SD_Call(4);
@@ -738,7 +795,11 @@ void SysState_GamePaused_Update(void) // 0x800391E8
         return;
     }
 
-    if (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
+    if ((g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
+#ifdef SH_PC_PORT
+        && !ShNet_CoopPauseHold() /* a guest leaves the host's pause when the host does */
+#endif
+        )
     {
         D_800A9A68 = 0;
 
@@ -947,17 +1008,28 @@ void SysState_MapScreen_Update(void) // 0x800396D4
     if (!HAS_MAP(g_SavegamePtr->paperMapIdx))
     {
 #ifdef SH_PC_PORT
+        extern int g_PcCoopGame;
         /* Freeze the world while the "I don't have a map" message is up.
          * MainLoop clears bgmStatusFlags every frame, and the world-object /
          * collision-trigger updates (~lines 204/214) gate on BgmStatusFlag_Pause;
          * without re-setting it each tick the player can walk into and fire
          * triggers behind the message. Mirrors the SysState_GamePaused fix.
          * Present the captured last gameplay frame behind the message —
-         * the pause gate skips all world/character rendering. */
-        g_SysWork.bgmStatusFlags |= BgmStatusFlag_Pause;
+         * the pause gate skips all world/character rendering.
+         * Co-op: the world is everyone's, so it keeps running; Harry is held
+         * still instead (which is what kept him off the triggers). */
+        if (!g_PcCoopGame)
         {
-            extern int g_PsxPresentLastFrame;
-            g_PsxPresentLastFrame = 1;
+            g_SysWork.bgmStatusFlags |= BgmStatusFlag_Pause;
+            {
+                extern int g_PsxPresentLastFrame;
+                g_PsxPresentLastFrame = 1;
+            }
+        }
+        else if (g_SysWork.sysStateSteps[0] == 0)
+        {
+            g_SysWork.sysStateSteps[0] = 1;
+            g_MapOverlayHdr.playerControlFreeze();
         }
 #endif
         if (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.map ||
@@ -971,6 +1043,7 @@ void SysState_MapScreen_Update(void) // 0x800396D4
                 extern int g_PcFreezeReleasePending;
                 g_PcFreezeReleasePending = 1;
             }
+            if (g_PcCoopGame) g_MapOverlayHdr.playerControlUnfreeze(false);
 #endif
             SysWork_StateSetNext(SysState_Gameplay);
         }
@@ -980,10 +1053,19 @@ void SysState_MapScreen_Update(void) // 0x800396D4
               (g_SysWork.field_2388.field_1C[1].effectsInfo_0.field_0.s_field_0.field_0 & (1 << 0))))
     {
 #ifdef SH_PC_PORT
-        g_SysWork.bgmStatusFlags |= BgmStatusFlag_Pause;
+        extern int g_PcCoopGame;
+        if (!g_PcCoopGame)
         {
-            extern int g_PsxPresentLastFrame;
-            g_PsxPresentLastFrame = 1;
+            g_SysWork.bgmStatusFlags |= BgmStatusFlag_Pause;
+            {
+                extern int g_PsxPresentLastFrame;
+                g_PsxPresentLastFrame = 1;
+            }
+        }
+        else if (g_SysWork.sysStateSteps[0] == 0)
+        {
+            g_SysWork.sysStateSteps[0] = 1;
+            g_MapOverlayHdr.playerControlFreeze();
         }
 #endif
         if (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.map ||
@@ -994,6 +1076,7 @@ void SysState_MapScreen_Update(void) // 0x800396D4
                 extern int g_PcFreezeReleasePending;
                 g_PcFreezeReleasePending = 1;
             }
+            if (g_PcCoopGame) g_MapOverlayHdr.playerControlUnfreeze(false);
 #endif
             SysWork_StateSetNext(SysState_Gameplay);
         }

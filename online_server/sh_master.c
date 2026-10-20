@@ -1961,11 +1961,14 @@ static void SrvHandleRoomList(Client* c)
     {
         Client* h = &g_clients[i];
         if (!h->used || !h->roomHost || h->roomHidden) continue;
-        if (off + 2 + 1 + 1 + SHNET_NAME_MAX > (int)sizeof(buf)) break;
+        if (off + 2 + 1 + 1 + SHNET_NAME_MAX + 1 > (int)sizeof(buf)) break;
         ShnPutU16(buf, &off, h->room);
         ShnPutU8(buf, &off, (shn_u8)SrvRoomCount(h->room));
         ShnPutU8(buf, &off, (shn_u8)h->roomMax);
         ShnPutStr(buf, &off, h->name, SHNET_NAME_MAX);
+        /* The host's map (from its living-world state), so the browser can say
+         * where the game is; 0xFF when the host has not reported one. */
+        ShnPutU8(buf, &off, (shn_u8)((h->mapIdx < 0) ? 0xFF : h->mapIdx));
         if (++n >= 40) break;
     }
     buf[cntOff] = (shn_u8)n;

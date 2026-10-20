@@ -32,7 +32,7 @@
 
 typedef struct { shn_u32 id; char name[SHNET_NAME_MAX]; } CoopMember;
 typedef struct { shn_u32 from; int len; shn_u8 buf[SHNET_MAX_PAYLOAD]; } CoopRx;
-typedef struct { shn_u16 code; shn_u8 players, max; char host[SHNET_NAME_MAX]; } CoopRoom;
+typedef struct { shn_u16 code; shn_u8 players, max, map; char host[SHNET_NAME_MAX]; } CoopRoom;
 
 static int          s_inited;
 static ShNetSock*   s_sock;
@@ -221,6 +221,8 @@ static void CoopUdp_OnRoomList(const shn_u8* p, int len)
         s_rooms[s_roomCount].max     = ShnGetU8(p, &off);
         ShnGetStr(p, &off, SHNET_NAME_MAX, s_rooms[s_roomCount].host, SHNET_NAME_MAX);
         ShnSanitizeText(s_rooms[s_roomCount].host);
+        /* The host's map, from a server that sends it. */
+        s_rooms[s_roomCount].map = (off < len) ? ShnGetU8(p, &off) : 0xFF;
         s_roomCount++;
     }
 }
@@ -576,13 +578,14 @@ int CoopUdp_Recv(unsigned long long* from, unsigned char* buf, int cap)
 
 int CoopUdp_RoomListCount(void) { return s_roomCount; }
 
-int CoopUdp_RoomListGet(int i, unsigned short* code, int* players, int* max,
+int CoopUdp_RoomListGet(int i, unsigned short* code, int* players, int* max, int* map,
                         char* host, int hostCap)
 {
     if (i < 0 || i >= s_roomCount) return 0;
     if (code)    *code    = s_rooms[i].code;
     if (players) *players = s_rooms[i].players;
     if (max)     *max     = s_rooms[i].max;
+    if (map)     *map     = (s_rooms[i].map == 0xFF) ? -1 : (int)s_rooms[i].map;
     if (host && hostCap > 0) SDL_strlcpy(host, s_rooms[i].host, (size_t)hostCap);
     return 1;
 }

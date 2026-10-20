@@ -141,6 +141,8 @@ enum
     SHNET_MSG_S_NPC_ATK  = 0x5B, /* P2P  host -> member: your monster hit you */
     SHNET_MSG_S_WORLD_FL = 0x5C, /* P2P  host -> all: event flags + enemy states (the world's progress) */
     SHNET_MSG_S_FLAG_SET = 0x5D, /* P2P  member -> all: I took this pickup (event flag index) */
+    SHNET_MSG_S_CTRL     = 0x5E, /* P2P  small game-control notes, first byte = SHNET_CTRL_* kind
+                                  *      (pause, pause request, permissions, voice line, cutscene) */
 
     /* Co-op over a relay server (sh_master rooms). The transport the session layer
      * rides when it is NOT using Steam P2P: the host creates a room, guests join
@@ -426,6 +428,32 @@ SHN_FN void ShnSanitizeText(char* s)
 /* Co-op peer messages own 0x50..0x5F; the relay forwards that whole range
  * (framing checked) so a new S_* type needs no server change. The ones that
  * change everyone's game may only come from the world's owner. */
+/* SHNET_MSG_S_CTRL kinds (first payload byte). Host-only kinds are checked
+ * by the receiver against the session host. */
+enum
+{
+    SHNET_CTRL_PAUSE     = 1, /* host -> all: u8 paused */
+    SHNET_CTRL_PAUSE_REQ = 2, /* member -> host: please pause */
+    SHNET_CTRL_PERM      = 3, /* host -> all: u8 count, then {u64 id, u8 flags} */
+    SHNET_CTRL_VOICE     = 4, /* member -> all: u8 chara, u8 line, u16 xaIdx */
+    SHNET_CTRL_CUTSCENE  = 5  /* host -> all: u8 map, u8 row, s32 x,y,z */
+};
+#define SHNET_PERM_CHEATS 1    /* this guest may use the console, quick-menu cheats, binds */
+
+static inline void ShnPutU64(shn_u8* b, int* off, unsigned long long v)
+{
+    int i;
+    for (i = 0; i < 8; i++) { b[(*off)++] = (shn_u8)(v & 0xFF); v >>= 8; }
+}
+static inline unsigned long long ShnGetU64(const shn_u8* b, int* off)
+{
+    unsigned long long v = 0;
+    int i;
+    for (i = 7; i >= 0; i--) v = (v << 8) | b[*off + i];
+    *off += 8;
+    return v;
+}
+
 #define SHNET_MSG_S_FIRST 0x50
 #define SHNET_MSG_S_LAST  0x5F
 #define SHNET_S_HOST_ONLY(t) ((t) == SHNET_MSG_S_WORLD || (t) == SHNET_MSG_S_KICK || \

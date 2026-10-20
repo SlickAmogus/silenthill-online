@@ -62,6 +62,7 @@ int g_PcCoopGame;
 static int s_setMaxPlayers = 4;
 static int s_setPublic     = 0;
 static int s_setFps        = 60;
+static int s_setLiving     = 0; /* part of the living world, or private */
 /* Where to host: 0 = this PC (relay runs in-process), 1 = my configured server,
  * 2 = Steam. This PC is the default -- the lowest-setup way to host. */
 #define COOP_HOST_THISPC 0
@@ -278,6 +279,7 @@ static void Coop_EnterHostSetup(void)
     if (s_setMaxPlayers > 4) s_setMaxPlayers = 4;
     s_setPublic   = 1; /* "Room List: Listed" by default so friends can browse to you */
     s_setFps      = 60; /* co-op poses stream every frame; 60 is the smooth default */
+    s_setLiving   = g_PcConfig.onlineCoopLiving ? 1 : 0; /* private unless the host chose otherwise */
     s_saveCount   = Pc_CoopSave_List(s_saves, (int)(sizeof(s_saves) / sizeof(s_saves[0])));
     s_loadIdx     = -1; /* default: start a fresh game */
     s_page        = COOP_PAGE_HOST_SETUP;
@@ -317,6 +319,8 @@ static void Coop_StartHosting(void)
     g_PcConfig.onlineSteamMaxPlayers = s_setMaxPlayers;
     g_PcConfig.onlineSteamPublic     = s_setPublic;
     g_PcConfig.fpsCap                = s_setFps;
+    g_PcConfig.onlineCoopLiving      = s_setLiving;
+    PcConfig_SaveKeyValue("online_coop_living_world", s_setLiving ? "1" : "0");
     SH_DBG("[COOP] host mode %d: %d players, %s, fps %d",
            s_hostMode, s_setMaxPlayers, s_setPublic ? "public" : "private", s_setFps);
     if (s_hostMode == COOP_HOST_STEAM)
@@ -341,11 +345,11 @@ int Pc_CoopMenu_RowCount(void)
     switch (s_page)
     {
     case COOP_PAGE_ROOT:       return 3; /* Host, Join, Back */
-    case COOP_PAGE_HOST_SETUP: return 7; /* Host on, Players, Visibility, FPS, Load, Open, Back */
+    case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
-    case COOP_PAGE_INGAME:     return 10; /* Resume, Message, Save, Save&Exit, Character, Nameplates, Friendly Fire, Guest Console, Players, Leave */
+    case COOP_PAGE_INGAME:     return 11; /* Resume, Message, Save, Save&Exit, Character, Nameplates, Health Bars, Friendly Fire, Guest Console, Players, Leave */
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
     default:                   return 1;
     }
@@ -412,15 +416,16 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         else if (i == 1) snprintf(out, cap, "Max Players:  %d", s_setMaxPlayers);
         else if (i == 2) snprintf(out, cap, "Room List:  %s", s_setPublic ? "Listed" : "Hidden (code only)");
-        else if (i == 3) snprintf(out, cap, "FPS Lock:  %d", s_setFps);
-        else if (i == 4)
+        else if (i == 3) snprintf(out, cap, "Living World:  %s", s_setLiving ? "Shown" : "Private");
+        else if (i == 4) snprintf(out, cap, "FPS Lock:  %d", s_setFps);
+        else if (i == 5)
         {
             if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
                 snprintf(out, cap, "Load:  %s", s_saves[s_loadIdx].name);
             else
                 snprintf(out, cap, "Load:  New Game");
         }
-        else if (i == 5) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
+        else if (i == 6) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
         else snprintf(out, cap, "Back");
         break;
 
@@ -454,13 +459,18 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 4) snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current()));
         else if (i == 5) snprintf(out, cap, "Nameplates:  %s",
                                   g_PcConfig.onlineNameplates ? "On" : "Off");
-        else if (i == 6) snprintf(out, cap, "Friendly Fire:  %s%s",
+        else if (i == 6)
+        {
+            static const char* const hb[4] = { "Off", "Mine", "Partners", "Everyone" };
+            snprintf(out, cap, "Health Bars:  %s", hb[g_PcConfig.onlineHealthBars & 3]);
+        }
+        else if (i == 7) snprintf(out, cap, "Friendly Fire:  %s%s",
                                   ShNet_CoopFriendlyFire() ? "On" : "Off",
                                   (ShSession_Active() && !ShSession_IsHost()) ? "  (host's choice)" : "");
-        else if (i == 7) snprintf(out, cap, "Guest Console:  %s%s",
+        else if (i == 8) snprintf(out, cap, "Guest Console:  %s%s",
                                   ShNet_CoopGuestConsole() ? "On" : "Off",
                                   (ShSession_Active() && !ShSession_IsHost()) ? "  (host's choice)" : "");
-        else if (i == 8) snprintf(out, cap, "Players");
+        else if (i == 9) snprintf(out, cap, "Players");
         else snprintf(out, cap, "Leave to Title");
         break;
 
@@ -495,11 +505,11 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         int rc = ShSession_RoomCount();
         if (i < rc)
         {
-            int  code = 0, players = 0, max = 0;
+            int  code = 0, players = 0, max = 0, map = -1;
             char host[SHSESSION_NAME_MAX];
             host[0] = '\0';
-            ShSession_RoomGet(i, &code, &players, &max, host, (int)sizeof(host));
-            snprintf(out, cap, "Room %d  (%d/%d)  %s", code, players, max, host);
+            ShSession_RoomGet(i, &code, &players, &max, &map, host, (int)sizeof(host));
+            snprintf(out, cap, "%s's Game  #%d  (%d/%d)", host[0] ? host : "Someone", code, players, max);
         }
         else if (i == rc) snprintf(out, cap, "Refresh");
         else              snprintf(out, cap, "Back");
@@ -638,9 +648,10 @@ static void Coop_Confirm(void)
         if (s_sel == 0)      { s_hostMode = (s_hostMode + 1) % 3; }
         else if (s_sel == 1) { s_setMaxPlayers = (s_setMaxPlayers >= 4) ? 2 : s_setMaxPlayers + 1; }
         else if (s_sel == 2) { s_setPublic = !s_setPublic; }
-        else if (s_sel == 3) { s_setFps = (s_setFps == 60) ? 30 : 60; }
-        else if (s_sel == 4) { s_loadIdx = (s_loadIdx + 1 >= s_saveCount) ? -1 : s_loadIdx + 1; }
-        else if (s_sel == 5) { Coop_StartHosting(); } /* Open Room / Lobby */
+        else if (s_sel == 3) { s_setLiving = !s_setLiving; }
+        else if (s_sel == 4) { s_setFps = (s_setFps == 60) ? 30 : 60; }
+        else if (s_sel == 5) { s_loadIdx = (s_loadIdx + 1 >= s_saveCount) ? -1 : s_loadIdx + 1; }
+        else if (s_sel == 6) { Coop_StartHosting(); } /* Open Room / Lobby */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
@@ -664,6 +675,11 @@ static void Coop_Confirm(void)
         else if (s_sel == 1)                                                /* Leave a Message */
         {
             extern void ShNetMemo_ComposerToggle(void);
+            if (!ShNet_CoopLivingWorld())
+            {
+                snprintf(s_msg, sizeof(s_msg), "Messages are off: this game is private (host's Living World setting).");
+                break;
+            }
             Pc_CoopMenu_Close();         /* get the menu out of the way */
             ShNetMemo_ComposerToggle();  /* open the living-world message composer */
         }
@@ -673,13 +689,20 @@ static void Coop_Confirm(void)
         else if (s_sel == 5) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
         else if (s_sel == 6)
         {
+            char v[4];
+            g_PcConfig.onlineHealthBars = (g_PcConfig.onlineHealthBars + 1) & 3;
+            snprintf(v, sizeof(v), "%d", g_PcConfig.onlineHealthBars);
+            PcConfig_SaveKeyValue("online_health_bars", v);
+        }
+        else if (s_sel == 7)
+        {
             /* One rule for the whole game, set by the world's owner. */
             if (ShSession_Active() && !ShSession_IsHost())
                 snprintf(s_msg, sizeof(s_msg), "Only the host can change friendly fire.");
             else
                 g_PcConfig.onlineFriendlyFire = !g_PcConfig.onlineFriendlyFire;
         }
-        else if (s_sel == 7)
+        else if (s_sel == 8)
         {
             if (ShSession_Active() && !ShSession_IsHost())
                 snprintf(s_msg, sizeof(s_msg), "Only the host can allow the console for guests.");
@@ -689,7 +712,7 @@ static void Coop_Confirm(void)
                 PcConfig_SaveKeyValue("online_guest_console", g_PcConfig.onlineGuestConsole ? "1" : "0");
             }
         }
-        else if (s_sel == 8) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
+        else if (s_sel == 9) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
         else
         {
             /* Leave to Title without saving. */
@@ -727,7 +750,7 @@ static void Coop_Confirm(void)
         }
         /* Back returns to the in-game root (the Players row). */
         s_page = COOP_PAGE_INGAME;
-        s_sel  = 8;
+        s_sel  = 9;
         s_msg[0] = '\0';
         break;
 
@@ -754,7 +777,7 @@ static void Coop_Confirm(void)
         if (s_sel < rc)
         {
             int code = 0;
-            ShSession_RoomGet(s_sel, &code, NULL, NULL, NULL, 0);
+            ShSession_RoomGet(s_sel, &code, NULL, NULL, NULL, NULL, 0);
             if (code > 0)
                 ShSession_RequestJoinServer(Coop_ServerIp(), Coop_ServerPort(), code, 1);
             /* The guest boots when the host starts (title.c takes the world). */
@@ -880,7 +903,7 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
         if (s_page == COOP_PAGE_PLAYERS)
         {
             s_page = COOP_PAGE_INGAME; /* back out of the member list */
-            s_sel  = 8;
+            s_sel  = 9;
         }
         else if (s_page == COOP_PAGE_ROOT || s_page == COOP_PAGE_INGAME)
         {

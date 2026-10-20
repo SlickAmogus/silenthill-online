@@ -905,7 +905,8 @@ void Event_DisplayMapMsgWithSfx(s32 mapMsgIdx, e_SfxId sfxId, VECTOR3* sfxPos) /
 
         if (i != ARRAY_SIZE(g_SysWork.npcs))
         {
-            g_DeltaTime = Q12(0.0f);
+            extern int g_PcCoopGame;
+            if (!g_PcCoopGame) g_DeltaTime = Q12(0.0f); /* co-op: the world is everyone's */
         }
     }
 
@@ -1154,7 +1155,8 @@ void Event_ItemTake(e_InvItemId itemId, s32 itemCount, e_EventFlag eventFlagIdx,
 
         if (i != ARRAY_SIZE(g_SysWork.npcs))
         {
-            g_DeltaTime = Q12(0.0f);
+            extern int g_PcCoopGame;
+            if (!g_PcCoopGame) g_DeltaTime = Q12(0.0f); /* co-op: the world is everyone's */
         }
     }
 
@@ -1284,7 +1286,10 @@ void Event_PaperMapTake(s32 paperMapFlagIdx, e_EventFlag eventFlagIdx, s32 mapMs
 
     s32 paperMapFlagIdxCpy;
 
-    g_DeltaTime        = Q12(0.0f);
+    {
+        extern int g_PcCoopGame;
+        if (!g_PcCoopGame) g_DeltaTime = Q12(0.0f);
+    }
     paperMapFlagIdxCpy = paperMapFlagIdx;
 
     switch (g_SysWork.sysStateSteps[1])

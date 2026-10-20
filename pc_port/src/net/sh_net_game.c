@@ -427,8 +427,231 @@ static void ShNetG_PublishPose(int mapIdx, int flags)
         pose.pstate  = (unsigned char)((st >= 0 && st < 255) ? st : 0);
         pose.atkRecv = (me->attackReceived >= 0) ? (unsigned char)me->attackReceived : 0xFF;
         pose.cflags  = (unsigned char)(me->flags & 0xFF);
+        {
+            int hp = (me->health > 0) ? (int)(me->health >> 12) : 0;
+            pose.health = (unsigned char)((hp > 100) ? 100 : hp);
+        }
     }
     ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags, &pose);
+}
+
+/* ------------------------------------------------------------------ */
+/* Co-op control notes: pause, permissions                             */
+/* ------------------------------------------------------------------ */
+
+int g_PcCoopHostPaused = 0; /* guest: the host is on the pause screen */
+
+/* Per-guest grants the host hands out (Players list), mirrored to everyone. */
+static struct { unsigned long long id; unsigned char flags; } s_perm[SHSESSION_MAX_MEMBERS];
+static int          s_permN;
+static unsigned int s_permSentMs;
+static int          s_permDirty;
+
+void ShNet_CoopPermSet(unsigned long long id, int flags)
+{
+    int i;
+    for (i = 0; i < s_permN; i++)
+    {
+        if (s_perm[i].id == id) { s_perm[i].flags = (unsigned char)flags; s_permDirty = 1; return; }
+    }
+    if (s_permN < SHSESSION_MAX_MEMBERS)
+    {
+        s_perm[s_permN].id    = id;
+        s_perm[s_permN].flags = (unsigned char)flags;
+        s_permN++;
+        s_permDirty = 1;
+    }
+}
+
+int ShNet_CoopPermGet(unsigned long long id)
+{
+    int i;
+    for (i = 0; i < s_permN; i++)
+    {
+        if (s_perm[i].id == id) return s_perm[i].flags;
+    }
+    return 0;
+}
+
+int ShNet_CoopPermMine(void)
+{
+    if (!ShSession_Active()) return 0;
+    if (ShSession_IsHost()) return SHNET_PERM_CHEATS;
+    return ShNet_CoopPermGet(ShSession_SelfId());
+}
+
+/* Cheats (quick-menu cheat pages, console, binds): the host always, a guest
+ * when the host allowed all guests or this one. Outside co-op: always. */
+int ShNet_CoopCheatsAllowed(void)
+{
+    extern int g_PcCoopGame;
+    if (!g_PcCoopGame || !ShSession_Active() || ShSession_IsHost()) return 1;
+    return ShNet_CoopGuestConsole() || (ShNet_CoopPermMine() & SHNET_PERM_CHEATS);
+}
+
+static const char* ShNetG_MemberName(unsigned long long id)
+{
+    int i, n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && m->steamId == id) return m->name;
+    }
+    return "A player";
+}
+
+/* Guest: pulled into the pause screen while the host is paused. */
+int ShNet_CoopPauseEnter(void)
+{
+    extern int g_PcCoopGame;
+    return g_PcCoopGame && ShSession_Active() && !ShSession_IsHost() && g_PcCoopHostPaused &&
+           g_GameWork.gameState == GameState_InGame;
+}
+
+/* Guest: ejected from the pause screen when the host leaves it. */
+int ShNet_CoopPauseEject(void)
+{
+    extern int g_PcCoopGame;
+    return g_PcCoopGame && ShSession_Active() && !ShSession_IsHost() && !g_PcCoopHostPaused;
+}
+
+/* Guest: own pause press does nothing while the host holds the pause. */
+int ShNet_CoopPauseHold(void)
+{
+    extern int g_PcCoopGame;
+    return g_PcCoopGame && ShSession_Active() && !ShSession_IsHost() && g_PcCoopHostPaused;
+}
+
+void ShNet_CoopRequestPause(void)
+{
+    static unsigned int s_lastMs;
+    unsigned int        now = ShNetPlat_Millis();
+    unsigned char       b[2];
+    if (!ShSession_Active() || ShSession_IsHost()) return;
+    if (now - s_lastMs < 2000u) return;
+    s_lastMs = now;
+    b[0] = SHNET_CTRL_PAUSE_REQ;
+    b[1] = 0;
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 2, ShSession_HostId(), 1);
+    ShNet_PostLocalEvent("Asked the host to pause");
+}
+
+/* Every frame: the host tells the room when it pauses (twice on the edge,
+ * then once a second while paused, so a late or lossy guest catches up) and
+ * keeps the grant list current. */
+static void ShNetG_CtrlTick(void)
+{
+    static int          s_wasPaused = -1;
+    static unsigned int s_lastPauseMs;
+    extern int          g_PcCoopGame;
+    unsigned int        now = ShNetPlat_Millis();
+
+    if (!g_PcCoopGame || !ShSession_Active())
+    {
+        g_PcCoopHostPaused = 0;
+        s_wasPaused        = -1;
+        return;
+    }
+    if (!ShSession_IsHost())
+    {
+        return;
+    }
+    {
+        int paused = (g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_GamePaused) ? 1 : 0;
+        if (paused != s_wasPaused || (paused && now - s_lastPauseMs >= 1000u))
+        {
+            unsigned char b[2];
+            int           r;
+            b[0] = SHNET_CTRL_PAUSE;
+            b[1] = (unsigned char)paused;
+            for (r = 0; r < (paused != s_wasPaused ? 2 : 1); r++)
+            {
+                ShSession_SendGame(SHNET_MSG_S_CTRL, b, 2, 0, 1);
+            }
+            s_wasPaused   = paused;
+            s_lastPauseMs = now;
+        }
+    }
+    if (s_permDirty || now - s_permSentMs >= 2000u)
+    {
+        unsigned char b[2 + SHSESSION_MAX_MEMBERS * 9];
+        int           o = 0, i;
+        b[o++] = SHNET_CTRL_PERM;
+        b[o++] = (unsigned char)s_permN;
+        for (i = 0; i < s_permN; i++)
+        {
+            ShnPutU64(b, &o, s_perm[i].id);
+            b[o++] = s_perm[i].flags;
+        }
+        ShSession_SendGame(SHNET_MSG_S_CTRL, b, o, 0, 1);
+        s_permDirty  = 0;
+        s_permSentMs = now;
+    }
+}
+
+/* A control note from the room (drained with the other game messages). */
+void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
+{
+    int fromHost = (from == ShSession_HostId());
+    if (len < 1) return;
+    switch (p[0])
+    {
+        case SHNET_CTRL_PAUSE:
+            if (!fromHost || len < 2 || ShSession_IsHost()) return;
+            if (g_PcCoopHostPaused != (p[1] != 0))
+            {
+                g_PcCoopHostPaused = (p[1] != 0);
+                SH_DBG("[COOP] the host %s", g_PcCoopHostPaused ? "paused the game" : "resumed the game");
+            }
+            break;
+        case SHNET_CTRL_PAUSE_REQ:
+            if (!ShSession_IsHost()) return;
+            {
+                char line[96];
+                snprintf(line, sizeof(line), "%s asks you to pause the game", ShNetG_MemberName(from));
+                ShNet_PostLocalEvent(line);
+            }
+            break;
+        case SHNET_CTRL_PERM:
+            if (!fromHost || len < 2 || ShSession_IsHost()) return;
+            {
+                int n = p[1], i, o = 2, before = ShNet_CoopPermMine();
+                s_permN = 0;
+                for (i = 0; i < n && i < SHSESSION_MAX_MEMBERS && o + 9 <= len; i++)
+                {
+                    unsigned long long id = ShnGetU64(p, &o);
+                    s_perm[s_permN].id    = id;
+                    s_perm[s_permN].flags = p[o++];
+                    s_permN++;
+                }
+                if (ShNet_CoopPermMine() != before)
+                {
+                    ShNet_PostLocalEvent((ShNet_CoopPermMine() & SHNET_PERM_CHEATS)
+                                             ? "The host allowed you cheats and the console"
+                                             : "The host took back cheats and the console");
+                }
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+/* Is this co-op game part of the living world (strangers' ghosts and
+ * messages shown and ours placed)? Single-player: always. Co-op: the host's
+ * choice, carried to guests in S_WORLD. Private is the default. */
+int ShNet_CoopLivingWorld(void)
+{
+    extern int g_PcCoopGame;
+    if (!g_PcCoopGame)
+    {
+        return 1;
+    }
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineCoopLiving;
+    }
+    return (ShSession_WorldFlags() & SHSESSION_WF_LIVING) != 0;
 }
 
 /* Whether guests may open the console: the host's setting, read by guests
@@ -591,10 +814,14 @@ void ShNet_GameTick(void)
         int allow = g_PcConfig.allowDebugControls;
         if (ShSession_Active() && !ShSession_IsHost())
         {
-            allow = ShNet_CoopGuestConsole();
+            allow = ShNet_CoopGuestConsole() || (ShNet_CoopPermMine() & SHNET_PERM_CHEATS);
         }
         g_PcAllowDebugControls = allow;
     }
+    ShNetG_CtrlTick();
+
+    /* The host's word on the game, for S_WORLD. */
+    ShSession_RequestWorldFlags(g_PcConfig.onlineCoopLiving ? SHSESSION_WF_LIVING : 0);
 
     /* A partner's skin needs its own skeleton proportions to draw right;
      * load them off the disc the moment a partner shows up wearing one. */
@@ -683,7 +910,8 @@ void ShNet_GameTick(void)
         health = (short)pct;
     }
 
-    ShNet_PublishLocal(1, mapIdx, ShNetG_LocalChara(), flags,
+    /* A private co-op game leaves no ghost in the living world. */
+    ShNet_PublishLocal(ShNet_CoopLivingWorld() ? 1 : 0, mapIdx, ShNetG_LocalChara(), flags,
                        (int)g_SysWork.playerWork.player.position.vx,
                        (int)g_SysWork.playerWork.player.position.vy,
                        (int)g_SysWork.playerWork.player.position.vz,
@@ -719,7 +947,7 @@ void ShNet_GameTick(void)
      * and the game-over screen, which would otherwise place a marker every
      * frame for several seconds. Cleared when the player is alive again,
      * which covers both continue and load. */
-    if (g_PcConfig.onlineDeaths)
+    if (g_PcConfig.onlineDeaths && ShNet_CoopLivingWorld())
     {
         const int dead = (g_SysWork.playerWork.player.health <= Q12(0.0f)) ||
                          (g_SysWork.sysState == SysState_GameOver);

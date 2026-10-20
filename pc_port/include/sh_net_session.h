@@ -88,6 +88,7 @@ typedef struct
      * (0xFF none; a grabber lets go when it reads none) and the low byte of
      * the chara flags (CharaFlag_Unk4 = in a reaction, cannot be grabbed). */
     unsigned char  pstate, atkRecv, cflags;
+    unsigned char  health;            /* 0..100, for the partner health bars */
     unsigned int   ms;                /* sender: capture time; ring: time on OUR clock */
     ShSessionSfx   sfx[SHSESSION_POSE_SFX];
 } ShSessionPose;
@@ -116,6 +117,7 @@ typedef struct
      * only while poseMs is recent and the member is on our map. */
     int                charaId;
     int                flags;      /* SHNET_PF_* */
+    int                healthPct1; /* health 0..100 from their last pose, PLUS ONE; 0 = unknown */
     int                x, y, z;    /* Q19.12 world position */
     short              rotY;       /* Q3.12 */
     unsigned short     anim;
@@ -179,9 +181,15 @@ void ShSession_RequestListServer(const char* host, int port, int useWorld);
 
 /* Open server rooms from the last list request (for the Join browser). */
 int  ShSession_RoomCount(void);
-int  ShSession_RoomGet(int i, int* code, int* players, int* max, char* host, int hostCap);
+int  ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, char* host, int hostCap);
 void ShSession_RequestLeave(void);
 void ShSession_RequestInvite(void);
+
+/* Host: what S_WORLD says about the game besides the map (SHSESSION_WF_*).
+ * Guest: what the host said. */
+#define SHSESSION_WF_LIVING 1  /* this co-op game is part of the living world */
+void ShSession_RequestWorldFlags(int flags);
+int  ShSession_WorldFlags(void);
 
 /* Published state, safe to read from the game thread. */
 int                ShSession_Active(void);      /* 1 while in a lobby */

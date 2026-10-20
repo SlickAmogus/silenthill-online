@@ -1900,16 +1900,16 @@ void DbgOverlay_Update(void)
          * style overlay, and a shared/live world should not be halted or fiddled
          * with mid-session. The graphics options it holds are still reachable
          * from the launcher and the title-screen Options. */
+        /* Online it opens too, but the world keeps running underneath (the
+         * clock freeze in game_main.c is off while a live world is up) and
+         * the cheat pages are the host's to allow (pc_quick_options.c). */
         if (((curQuick && !s_prevQuick && !ctrlHeld) || padQuick) && !g_PcConsoleInputActive &&
-            !ShNet_LiveWorld() &&
+            !textWasOpen &&
             g_GameWork.gameState == GameState_InGame &&
             !(g_SysWork.sysFlags & SysFlag_DemoActive)) {
             extern void Pc_QuickOptions_Toggle(void);
             Pc_QuickOptions_Toggle();
         }
-        /* If a live world begins while it is open, close it. */
-        { extern int g_PcQuickOptionsActive; extern void Pc_QuickOptions_Close(void);
-          if (g_PcQuickOptionsActive && ShNet_LiveWorld()) Pc_QuickOptions_Close(); }
         s_prevQuick = curQuick;
     }
 
