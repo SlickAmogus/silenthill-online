@@ -127,7 +127,7 @@ static struct
     int                guestDebug;  /* host granted joined players debug controls */
 
     /* Open server rooms from the last list request, for the Join browser. */
-    struct { unsigned short code; unsigned char players, max, map; char host[SHSESSION_NAME_MAX]; } rooms[16];
+    struct { unsigned short code; unsigned char players, max, map; unsigned long long lobby; char host[SHSESSION_NAME_MAX]; } rooms[16];
     int                roomCount;
 } s_pub;
 
@@ -1338,6 +1338,22 @@ static void ShSession_Publish(void)
             s_pub.rooms[k].players = (unsigned char)players;
             s_pub.rooms[k].max     = (unsigned char)max;
             s_pub.rooms[k].map     = (unsigned char)((map < 0 || map > 254) ? 0xFF : map);
+            s_pub.rooms[k].lobby   = 0;
+        }
+        /* Steam lobbies after the server rooms. */
+        {
+            int sc = ShSteam_LobbyListCount(), j;
+            for (j = 0; j < sc && rc < cap; j++, rc++)
+            {
+                unsigned long long id = 0;
+                int players = 0, max = 0, map = -1;
+                ShSteam_LobbyListGet(j, &id, s_pub.rooms[rc].host, SHSESSION_NAME_MAX, &players, &max, &map);
+                s_pub.rooms[rc].code    = 0;
+                s_pub.rooms[rc].players = (unsigned char)players;
+                s_pub.rooms[rc].max     = (unsigned char)max;
+                s_pub.rooms[rc].map     = (unsigned char)((map < 0 || map > 254) ? 0xFF : map);
+                s_pub.rooms[rc].lobby   = id;
+            }
         }
         s_pub.roomCount = rc;
     }
@@ -1347,6 +1363,12 @@ static void ShSession_Publish(void)
 int ShSession_RoomCount(void)
 {
     return s_pub.roomCount;
+}
+
+unsigned long long ShSession_RoomLobby(int i)
+{
+    if (i < 0 || i >= s_pub.roomCount) return 0;
+    return s_pub.rooms[i].lobby;
 }
 
 int ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, char* host, int hostCap)
@@ -1528,6 +1550,8 @@ void ShSession_Tick(unsigned int nowMs)
         if (coopUseWorld && ShNet_WorldConnected()) CoopUdp_UseWorldLink();
         else                                        CoopUdp_SetServer(coopHost, (unsigned short)coopPort);
         CoopUdp_RequestRoomList();
+        /* Steam lobbies land in the same browser. */
+        if (ShSteam_Available()) ShSteam_RequestLobbyList();
     }
 
     if (wantInvite && s_backend == COOP_BACKEND_STEAM && s_enabled)
@@ -1562,10 +1586,54 @@ void ShSession_Tick(unsigned int nowMs)
      * backend gets all of this from the room roster instead. */
     if (s_backend == COOP_BACKEND_STEAM && ShSteam_IsLobbyOwner())
     {
-        ShSteam_SetLobbyData("game", "silenthill-online");
-        ShSteam_SetLobbyData("proto", "1");
-        ShSteam_SetLobbyData("state", s_worldMapCur >= 0 ? "ingame" : "lobby");
-        ShSteam_SetLobbyData("dbg", hostGuestDebug ? "1" : "0");
+        /* Written on CHANGE only: each SetLobbyData is an IPC round trip into
+         * the Steam client, and four of them every worker tick is the kind of
+         * load that stalls this thread (which is what a host saw as "the
+         * guest was never pulled in"). */
+        static char s_ldState[8], s_ldDbg[4], s_ldMap[8], s_ldName[SHSESSION_NAME_MAX], s_ldMax[4];
+        static unsigned long long s_ldLobby;
+        char v[SHSESSION_NAME_MAX];
+        if (s_ldLobby != Tp_LobbyId())
+        {
+            s_ldLobby = Tp_LobbyId();
+            s_ldState[0] = s_ldDbg[0] = s_ldMap[0] = s_ldName[0] = s_ldMax[0] = '\0';
+            ShSteam_SetLobbyData("game", "silenthill-online");
+            ShSteam_SetLobbyData("proto", "1");
+        }
+        snprintf(v, sizeof(v), "%s", s_worldMapCur >= 0 ? "ingame" : "lobby");
+        if (strcmp(v, s_ldState)) { SDL_strlcpy(s_ldState, v, sizeof(s_ldState)); ShSteam_SetLobbyData("state", v); }
+        snprintf(v, sizeof(v), "%d", hostGuestDebug ? 1 : 0);
+        if (strcmp(v, s_ldDbg)) { SDL_strlcpy(s_ldDbg, v, sizeof(s_ldDbg)); ShSteam_SetLobbyData("dbg", v); }
+        snprintf(v, sizeof(v), "%d", s_worldMapCur);
+        if (strcmp(v, s_ldMap)) { SDL_strlcpy(s_ldMap, v, sizeof(s_ldMap)); ShSteam_SetLobbyData("map", v); }
+        snprintf(v, sizeof(v), "%s", ShSteam_PersonaName());
+        if (strcmp(v, s_ldName)) { SDL_strlcpy(s_ldName, v, sizeof(s_ldName)); ShSteam_SetLobbyData("name", v); }
+    }
+
+    /* Steam: the friends-list "Join Game" button needs a connect string, and
+     * the party fields group the lobby in the friends list. Set when the lobby
+     * changes, cleared when we leave it. */
+    if (s_backend == COOP_BACKEND_STEAM)
+    {
+        static unsigned long long s_rpLobby = 1; /* never equal to "none" at start */
+        unsigned long long        lobby    = Tp_Active() ? Tp_LobbyId() : 0;
+        if (lobby != s_rpLobby)
+        {
+            s_rpLobby = lobby;
+            if (lobby)
+            {
+                char c[48];
+                snprintf(c, sizeof(c), "+connect_lobby %llu", lobby);
+                ShSteam_SetRichPresence("connect", c);
+                snprintf(c, sizeof(c), "%llu", lobby);
+                ShSteam_SetRichPresence("steam_player_group", c);
+            }
+            else
+            {
+                ShSteam_SetRichPresence("connect", "");
+                ShSteam_SetRichPresence("steam_player_group", "");
+            }
+        }
     }
 
     /* Steam only: S_HELLO carries each peer's name/map. On the server backend the

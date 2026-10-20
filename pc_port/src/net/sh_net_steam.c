@@ -38,6 +38,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <SDL_timer.h>
 
 #include "sh_net_steam.h"
 #include "sh_log.h"
@@ -65,6 +67,9 @@ typedef unsigned long long u64_;
 #define CB_LobbyCreated           (CB_MATCHMAKING_BASE + 13) /* 513 */
 #define CB_MessagesSessionRequest (CB_MESSAGES_BASE + 1)     /* 1251 */
 #define CB_MessagesSessionFailed  (CB_MESSAGES_BASE + 2)     /* 1252 */
+#define CB_GameRichPresenceJoinRequested (CB_FRIENDS_BASE + 37) /* 337: a friend used "Join Game" */
+#define CB_LobbyMatchList         (CB_MATCHMAKING_BASE + 10) /* 510: RequestLobbyList's result */
+#define CB_SteamAPICallCompleted  703                        /* a call result is ready */
 
 #define ERESULT_OK 1
 
@@ -157,6 +162,12 @@ typedef u64_        (__cdecl *PFN_MM_GetLobbyMemberByIndex)(void*, u64_, int);
 typedef u64_        (__cdecl *PFN_MM_GetLobbyOwner)(void*, u64_);
 typedef int         (__cdecl *PFN_MM_SetLobbyData)(void*, u64_, const char*, const char*);
 typedef const char* (__cdecl *PFN_MM_GetLobbyData)(void*, u64_, const char*);
+typedef u64_        (__cdecl *PFN_MM_RequestLobbyList)(void*);
+typedef void        (__cdecl *PFN_MM_AddStringFilter)(void*, const char*, const char*, int);
+typedef void        (__cdecl *PFN_MM_AddDistanceFilter)(void*, int);
+typedef u64_        (__cdecl *PFN_MM_GetLobbyByIndex)(void*, int);
+typedef int         (__cdecl *PFN_MM_GetLobbyMemberLimit)(void*, u64_);
+typedef int         (__cdecl *PFN_Utils_IsOverlayEnabled)(void*);
 
 typedef int  (__cdecl *PFN_Msg_SendMessageToUser)(void*, const void* identity,
                                                   const void* data, u32_ cb,
@@ -200,6 +211,12 @@ static PFN_MM_GetLobbyMemberByIndex s_MemberByIndex;
 static PFN_MM_GetLobbyOwner        s_LobbyOwner;
 static PFN_MM_SetLobbyData         s_SetLobbyData;
 static PFN_MM_GetLobbyData         s_GetLobbyData;
+static PFN_MM_RequestLobbyList     s_RequestLobbyList;
+static PFN_MM_AddStringFilter      s_AddStringFilter;
+static PFN_MM_AddDistanceFilter    s_AddDistanceFilter;
+static PFN_MM_GetLobbyByIndex      s_GetLobbyByIndex;
+static PFN_MM_GetLobbyMemberLimit  s_GetLobbyMemberLimit;
+static PFN_Utils_IsOverlayEnabled  s_IsOverlayEnabled;
 
 static PFN_Msg_SendMessageToUser s_SendToUser;
 static PFN_Msg_ReceiveOnChannel  s_ReceiveOnChannel;
@@ -225,6 +242,26 @@ static int   s_lobbyState;
 static u64_  s_lobbyId;
 static u64_  s_pendingCreateCall;
 static u64_  s_pendingJoinCall;
+static u64_  s_pendingListCall;   /* RequestLobbyList in flight, 0 none */
+static u64_  s_lobbyOwner;        /* cached: one IPC per roster change, not per tick */
+
+/* Open lobbies from the last list request (the Join browser). */
+typedef struct { u64_ id; char host[SHSTEAM_NAME_MAX]; int players, max, map; } ShSteamLobbyRow;
+static ShSteamLobbyRow s_lobbies[16];
+static int             s_lobbyCount;
+
+/* The last thing that went wrong, for the menu's status line. */
+static char         s_lastErr[96];
+static unsigned int s_lastErrMs;
+static void ShSteam_Err(const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_lastErr, sizeof(s_lastErr), fmt, ap);
+    va_end(ap);
+    s_lastErrMs = SDL_GetTicks();
+    SH_DBG("[STEAM] %s", s_lastErr);
+}
 static u64_  s_pendingJoinLobby;   /* asked for from outside the game */
 static u64_  s_cmdLineLobby;
 
@@ -463,6 +500,12 @@ int ShSteam_Init(unsigned int appId)
     s_LobbyOwner    = (PFN_MM_GetLobbyOwner)ShSteam_Sym("SteamAPI_ISteamMatchmaking_GetLobbyOwner");
     s_SetLobbyData  = (PFN_MM_SetLobbyData)ShSteam_Sym("SteamAPI_ISteamMatchmaking_SetLobbyData");
     s_GetLobbyData  = (PFN_MM_GetLobbyData)ShSteam_Sym("SteamAPI_ISteamMatchmaking_GetLobbyData");
+    s_RequestLobbyList    = (PFN_MM_RequestLobbyList)ShSteam_Sym("SteamAPI_ISteamMatchmaking_RequestLobbyList");
+    s_AddStringFilter     = (PFN_MM_AddStringFilter)ShSteam_Sym("SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter");
+    s_AddDistanceFilter   = (PFN_MM_AddDistanceFilter)ShSteam_Sym("SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter");
+    s_GetLobbyByIndex     = (PFN_MM_GetLobbyByIndex)ShSteam_Sym("SteamAPI_ISteamMatchmaking_GetLobbyByIndex");
+    s_GetLobbyMemberLimit = (PFN_MM_GetLobbyMemberLimit)ShSteam_Sym("SteamAPI_ISteamMatchmaking_GetLobbyMemberLimit");
+    s_IsOverlayEnabled    = (PFN_Utils_IsOverlayEnabled)ShSteam_Sym("SteamAPI_ISteamUtils_IsOverlayEnabled");
 
     s_SendToUser       = (PFN_Msg_SendMessageToUser)ShSteam_Sym("SteamAPI_ISteamNetworkingMessages_SendMessageToUser");
     s_ReceiveOnChannel = (PFN_Msg_ReceiveOnChannel)ShSteam_Sym("SteamAPI_ISteamNetworkingMessages_ReceiveMessagesOnChannel");
@@ -602,7 +645,13 @@ unsigned long long ShSteam_LobbyOwner(void)
     {
         return 0;
     }
-    return s_LobbyOwner(s_iMatchmaking, s_lobbyId);
+    /* Cached by ShSteam_RefreshMembers: this is asked several times a tick
+     * and each ask was an IPC round trip into the Steam client. */
+    if (!s_lobbyOwner)
+    {
+        s_lobbyOwner = s_LobbyOwner(s_iMatchmaking, s_lobbyId);
+    }
+    return s_lobbyOwner;
 #else
     return 0;
 #endif
@@ -636,10 +685,12 @@ static void ShSteam_RefreshMembers(void)
     int n, i;
 
     s_memberCount = 0;
+    s_lobbyOwner  = 0;
     if (!s_ready || !s_NumMembers || !s_MemberByIndex || !s_lobbyId)
     {
         return;
     }
+    s_lobbyOwner = s_LobbyOwner ? s_LobbyOwner(s_iMatchmaking, s_lobbyId) : 0;
     n = s_NumMembers(s_iMatchmaking, s_lobbyId);
     if (n > SHSTEAM_MAX_MEMBERS)
     {
@@ -747,14 +798,21 @@ void ShSteam_OpenInviteOverlay(void)
 #if defined(_WIN32)
     if (s_ready && s_InviteDialog && s_lobbyId)
     {
+        /* The overlay only exists when Steam injected it (the game launched
+         * through Steam, or added as a non-Steam game). Without it the call
+         * silently shows nothing. */
+        if (s_IsOverlayEnabled && s_iUtils && !s_IsOverlayEnabled(s_iUtils))
+        {
+            ShSteam_Err("Steam overlay is off: invite from your Steam friends list (right click, Invite to Game)");
+            return;
+        }
         s_InviteDialog(s_iFriends, s_lobbyId);
         SH_DBG("[STEAM] opened the invite overlay for lobby %llu",
                (unsigned long long)s_lobbyId);
     }
     else
     {
-        SH_DBG("[STEAM] invite overlay unavailable (in a lobby: %s, overlay export: %s)",
-               s_lobbyId ? "yes" : "no", s_InviteDialog ? "yes" : "no");
+        ShSteam_Err(s_lobbyId ? "Steam invite dialog unavailable" : "open a lobby first, then invite");
     }
 #endif
 }
@@ -800,18 +858,19 @@ void ShSteam_SetRichPresence(const char* key, const char* value)
 /* Peer to peer                                                        */
 /* ------------------------------------------------------------------ */
 
-void ShSteam_AcceptSession(unsigned long long steamId)
+int ShSteam_AcceptSession(unsigned long long steamId)
 {
 #if defined(_WIN32)
     ShSteamIdentity id;
     if (!s_ready || !s_AcceptSession || !steamId)
     {
-        return;
+        return 0;
     }
     ShSteamIdentity_Set(&id, steamId);
-    s_AcceptSession(s_iMessages, id.raw);
+    return s_AcceptSession(s_iMessages, id.raw) != 0;
 #else
     (void)steamId;
+    return 0;
 #endif
 }
 
@@ -894,12 +953,99 @@ int ShSteam_Recv(unsigned long long* outFrom, void* buf, int cap)
  * for. */
 static void ShSteam_HandleCallResult(const ShSteamCallbackMsg* msg)
 {
+    /* SteamAPICallCompleted_t { u64 hAsyncCall; int iCallback; u32 cubParam } */
     u64_ call = 0;
-    if (msg->cubParam >= (int)sizeof(u64_))
+    s32_ which = 0;
+    u32_ cub   = 0;
+    if (msg->cubParam < 16)
     {
-        memcpy(&call, msg->pubParam, sizeof(call));
+        return;
     }
-    (void)call;
+    memcpy(&call,  msg->pubParam + 0,  sizeof(call));
+    memcpy(&which, msg->pubParam + 8,  sizeof(which));
+    memcpy(&cub,   msg->pubParam + 12, sizeof(cub));
+    if (call == s_pendingListCall && which == CB_LobbyMatchList && s_MdResult)
+    {
+        u32_ n      = 0;
+        int  failed = 0;
+        int  i;
+        s_pendingListCall = 0;
+        if (!s_MdResult(s_pipe, call, &n, (int)sizeof(n), CB_LobbyMatchList, &failed) || failed)
+        {
+            ShSteam_Err("could not list Steam games");
+            return;
+        }
+        s_lobbyCount = 0;
+        for (i = 0; i < (int)n && s_lobbyCount < (int)(sizeof(s_lobbies) / sizeof(s_lobbies[0])); i++)
+        {
+            u64_        lobby = s_GetLobbyByIndex ? s_GetLobbyByIndex(s_iMatchmaking, i) : 0;
+            const char* game  = lobby && s_GetLobbyData ? s_GetLobbyData(s_iMatchmaking, lobby, "game") : NULL;
+            const char* name;
+            const char* map;
+            ShSteamLobbyRow* r;
+            if (!lobby || !game || strcmp(game, "silenthill-online") != 0)
+            {
+                continue;
+            }
+            r = &s_lobbies[s_lobbyCount++];
+            memset(r, 0, sizeof(*r));
+            r->id = lobby;
+            name  = s_GetLobbyData(s_iMatchmaking, lobby, "name");
+            map   = s_GetLobbyData(s_iMatchmaking, lobby, "map");
+            snprintf(r->host, sizeof(r->host), "%s", (name && name[0]) ? name : "Someone");
+            r->map     = (map && map[0]) ? atoi(map) : -1;
+            r->players = s_NumMembers ? s_NumMembers(s_iMatchmaking, lobby) : 0;
+            r->max     = s_GetLobbyMemberLimit ? s_GetLobbyMemberLimit(s_iMatchmaking, lobby) : 0;
+        }
+        SH_DBG("[STEAM] lobby list: %u lobbies, %d of ours", (unsigned)n, s_lobbyCount);
+    }
+}
+
+void ShSteam_RequestLobbyList(void)
+{
+#if defined(_WIN32)
+    if (!s_ready || !(s_interfaces & SHSTEAM_IF_MATCHMAKE) || !s_RequestLobbyList)
+    {
+        return;
+    }
+    if (s_pendingListCall)
+    {
+        return; /* one in flight is plenty */
+    }
+    if (s_AddStringFilter)   s_AddStringFilter(s_iMatchmaking, "game", "silenthill-online", 0 /* equal */);
+    if (s_AddDistanceFilter) s_AddDistanceFilter(s_iMatchmaking, 3 /* worldwide */);
+    s_pendingListCall = s_RequestLobbyList(s_iMatchmaking);
+    if (!s_pendingListCall)
+    {
+        ShSteam_Err("Steam would not list games");
+    }
+#endif
+}
+
+int ShSteam_LobbyListCount(void)
+{
+    return s_lobbyCount;
+}
+
+int ShSteam_LobbyListGet(int i, unsigned long long* id, char* host, int hostCap, int* players, int* max, int* map)
+{
+    if (i < 0 || i >= s_lobbyCount) return 0;
+    if (id)      *id      = s_lobbies[i].id;
+    if (players) *players = s_lobbies[i].players;
+    if (max)     *max     = s_lobbies[i].max;
+    if (map)     *map     = s_lobbies[i].map;
+    if (host && hostCap > 0) snprintf(host, (size_t)hostCap, "%s", s_lobbies[i].host);
+    return 1;
+}
+
+const char* ShSteam_LastError(void)
+{
+    /* Stale after a quarter minute: the status line should not nag. */
+    if (!s_lastErr[0] || SDL_GetTicks() - s_lastErrMs > 15000u)
+    {
+        return "";
+    }
+    return s_lastErr;
 }
 
 static void ShSteam_OnLobbyCreated(const u8_* p, int cb)
@@ -923,7 +1069,7 @@ static void ShSteam_OnLobbyCreated(const u8_* p, int cb)
     else
     {
         s_lobbyState = SHSTEAM_LOBBY_FAILED;
-        SH_DBG("[STEAM] lobby creation failed (EResult %d)", (int)result);
+        ShSteam_Err("Steam could not create the lobby (error %d)", (int)result);
     }
 }
 
@@ -950,7 +1096,11 @@ static void ShSteam_OnLobbyEnter(const u8_* p, int cb)
     else
     {
         s_lobbyState = SHSTEAM_LOBBY_FAILED;
-        SH_DBG("[STEAM] could not enter lobby (response %u)", (unsigned)response);
+        ShSteam_Err(response == 2 ? "that lobby no longer exists" :
+                    response == 3 ? "that lobby is full" :
+                    response == 4 ? "Steam refused the lobby (error)" :
+                    response == 6 ? "you are banned from that lobby" :
+                                    "could not join the lobby (code %u)", (unsigned)response);
     }
 }
 
@@ -1002,9 +1152,20 @@ static void ShSteam_OnSessionRequest(const u8_* p, int cb)
     {
         if (s_members[i] == from)
         {
-            ShSteam_AcceptSession(from);
-            SH_DBG("[STEAM] accepted a peer session from %llu (%s)",
-                   (unsigned long long)from, ShSteam_NameOf(from));
+            /* Steam re-posts the request while it waits, and a stalled
+             * worker drains hundreds at once: one line per peer per 10 s. */
+            static u64_         s_lastFrom;
+            static unsigned int s_lastMs;
+            int                 ok  = ShSteam_AcceptSession(from);
+            unsigned int        now = SDL_GetTicks();
+            if (from != s_lastFrom || now - s_lastMs > 10000u || !ok)
+            {
+                s_lastFrom = from;
+                s_lastMs   = now;
+                SH_DBG("[STEAM] %s a peer session from %llu (%s)", ok ? "accepted" : "could NOT accept",
+                       (unsigned long long)from, ShSteam_NameOf(from));
+                if (!ok) ShSteam_Err("could not accept %s's connection", ShSteam_NameOf(from));
+            }
             return;
         }
     }
@@ -1049,7 +1210,35 @@ void ShSteam_RunCallbacks(void)
             ShSteam_OnSessionRequest(msg.pubParam, msg.cubParam);
             break;
         case CB_MessagesSessionFailed:
-            SH_DBG("[STEAM] a peer session failed");
+            /* SteamNetworkingMessagesSessionFailed_t = SteamNetConnectionInfo_t,
+             * whose first member is the remote identity. */
+            if (msg.cubParam >= SNI_SIZE)
+            {
+                u64_ who = ShSteamIdentity_Get(msg.pubParam);
+                ShSteam_Err("connection to %s failed", ShSteam_NameOf(who));
+            }
+            else
+            {
+                ShSteam_Err("a peer connection failed");
+            }
+            break;
+        case CB_GameRichPresenceJoinRequested:
+            /* { CSteamID friend; char rgchConnect[256] }: the friends-list
+             * "Join Game" button, carrying our own connect string. */
+            if (msg.cubParam >= 8 + 16)
+            {
+                const char*        c = (const char*)msg.pubParam + 8;
+                unsigned long long id = 0;
+                if (strncmp(c, "+connect_lobby ", 15) == 0) id = strtoull(c + 15, NULL, 10);
+                if (id)
+                {
+                    s_pendingJoinLobby = id;
+                    SH_DBG("[STEAM] a friend's Join Game sent us to lobby %llu", id);
+                }
+            }
+            break;
+        case CB_SteamAPICallCompleted:
+            ShSteam_HandleCallResult(&msg);
             break;
         default:
             break;
@@ -1063,8 +1252,6 @@ void ShSteam_RunCallbacks(void)
      * needs GetAPICallResult has them. */
     (void)s_pendingCreateCall;
     (void)s_pendingJoinCall;
-    (void)s_MdResult;
-    (void)ShSteam_HandleCallResult;
 #endif
 }
 
@@ -1104,6 +1291,11 @@ void ShSteam_StatusLine(char* out, int cap)
         break;
     }
     (void)s_cmdLineLobby;
+    if (ShSteam_LastError()[0])
+    {
+        size_t l = strlen(out);
+        if (l < (size_t)cap - 4) snprintf(out + l, (size_t)cap - l, " - %s", s_lastErr);
+    }
     memcpy(s_statusLine, out, (size_t)((cap < (int)sizeof(s_statusLine)) ? cap : (int)sizeof(s_statusLine)));
     s_statusLine[sizeof(s_statusLine) - 1] = '\0';
 }

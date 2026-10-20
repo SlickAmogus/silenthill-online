@@ -561,6 +561,7 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         }
         break;
 
+
     case COOP_PAGE_HOST:
         ShSession_StatusLine(out, cap);
         if (!ShSession_IsHost() && ShSession_Active())
@@ -572,7 +573,11 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         break;
 
     case COOP_PAGE_JOIN:
-        if (ShSteam_LobbyState() == SHSTEAM_LOBBY_IN)
+        if (ShSteam_LastError()[0])
+        {
+            snprintf(out, cap, "Steam: %s", ShSteam_LastError());
+        }
+        else if (ShSteam_LobbyState() == SHSTEAM_LOBBY_IN)
         {
             /* Already in a friend's lobby: tell them whether it is still
              * gathering or already a game in progress (you drop straight in). */
@@ -593,8 +598,10 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         break;
 
     case COOP_PAGE_ROOMS:
-        if (ShSession_RoomCount() > 0) { ShSession_StatusLine(out, cap); }
-        else                           { snprintf(out, cap, "No open rooms - pick Refresh, or Host one."); }
+        if (s_msg[0])                       { snprintf(out, cap, "%s", s_msg); }
+        else if (ShSteam_LastError()[0])    { snprintf(out, cap, "Steam: %s", ShSteam_LastError()); }
+        else if (ShSession_RoomCount() > 0) { ShSession_StatusLine(out, cap); }
+        else                                { snprintf(out, cap, "No open games - pick Refresh, or Host one."); }
         break;
 
     case COOP_PAGE_INGAME:
@@ -790,8 +797,20 @@ static void Coop_Confirm(void)
         else if (s_sel == 2) { Coop_BeginEdit(COOP_EDIT_CODE); } /* type a room code */
         else if (s_sel == 3)
         {
-            /* Steam: the friend's invite is accepted from Steam's overlay, not
-             * here; this row is the reminder. The pending-join flow boots them. */
+            /* Steam: an invite is accepted in Steam itself (the overlay or the
+             * friends list's Join Game); this row explains that and opens the
+             * browser, where friends' public lobbies are listed too. */
+            if (!ShSteam_Available())
+            {
+                snprintf(s_msg, sizeof(s_msg), "Steam is not running.");
+            }
+            else
+            {
+                snprintf(s_msg, sizeof(s_msg), "Accept the invite in Steam, or use Join Game in your friends list.");
+                ShSession_RequestListServer(Coop_ServerIp(), Coop_ServerPort(), 1);
+                s_page = COOP_PAGE_ROOMS;
+                s_sel  = 0;
+            }
         }
         else { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
@@ -801,9 +820,12 @@ static void Coop_Confirm(void)
         int rc = ShSession_RoomCount();
         if (s_sel < rc)
         {
-            int code = 0;
+            int                code  = 0;
+            unsigned long long lobby = ShSession_RoomLobby(s_sel);
             ShSession_RoomGet(s_sel, &code, NULL, NULL, NULL, NULL, 0);
-            if (code > 0)
+            if (lobby)
+                ShSession_RequestJoin(lobby);
+            else if (code > 0)
                 ShSession_RequestJoinServer(Coop_ServerIp(), Coop_ServerPort(), code, 1);
             /* The guest boots when the host starts (title.c takes the world). */
         }

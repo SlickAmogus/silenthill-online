@@ -182,6 +182,7 @@ void ShSession_RequestListServer(const char* host, int port, int useWorld);
 /* Open server rooms from the last list request (for the Join browser). */
 int  ShSession_RoomCount(void);
 int  ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, char* host, int hostCap);
+unsigned long long ShSession_RoomLobby(int i); /* a Steam lobby's id, 0 for a server room */
 void ShSession_RequestLeave(void);
 void ShSession_RequestInvite(void);
 

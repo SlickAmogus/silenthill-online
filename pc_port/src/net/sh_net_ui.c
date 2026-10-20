@@ -1626,11 +1626,12 @@ static void Nu_DrawCoopMenu(int px)
                 char cell[96];
                 host[0] = '\0';
                 ShSession_RoomGet(k, &code, &players, &max, &map, host, (int)sizeof(host));
-                /* "Name's Game", the room code small beside it. */
+                /* "Name's Game", the room code (or Steam) small beside it. */
                 snprintf(cell, sizeof(cell), "%s's Game", host[0] ? host : "Someone");
                 {
                     float nw = Nu_DrawTextFit(cell, r.x + px * 0.8f, ty, r.w * 0.36f, px, lt, lt, lt, 1.0f);
-                    snprintf(cell, sizeof(cell), "#%d", code);
+                    if (ShSession_RoomLobby(k)) snprintf(cell, sizeof(cell), "Steam");
+                    else                        snprintf(cell, sizeof(cell), "#%d", code);
                     Nu_DrawText(cell, r.x + px * 1.3f + nw, ty + (textH - Nu_TextH(pxSmall)) * 0.5f,
                                 pxSmall, 0.55f, 0.60f, 1.0f, 0.85f);
                 }

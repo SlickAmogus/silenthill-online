@@ -153,7 +153,15 @@ int ShSteam_Recv(unsigned long long* outFrom, void* buf, int cap);
 
 /* Accept an incoming session from a lobby member. Called by the dispatch loop
  * itself; exposed for a caller that wants to allow someone outside the lobby. */
-void ShSteam_AcceptSession(unsigned long long steamId);
+int  ShSteam_AcceptSession(unsigned long long steamId); /* 1 = accepted */
+
+/* Open Silent Hill lobbies on Steam (the Join browser). RequestLobbyList
+ * is asynchronous; the list fills in on a later RunCallbacks. */
+void        ShSteam_RequestLobbyList(void);
+int         ShSteam_LobbyListCount(void);
+int         ShSteam_LobbyListGet(int i, unsigned long long* id, char* host, int hostCap, int* players, int* max, int* map);
+/* The last failure, for the menu; "" when nothing recent went wrong. */
+const char* ShSteam_LastError(void);
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
