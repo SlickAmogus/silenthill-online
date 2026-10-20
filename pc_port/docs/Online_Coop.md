@@ -21,21 +21,37 @@ Open **Multiplayer** on the title screen.
 | Steam | a Steam invite from the overlay | Steam running on both PCs |
 
 Then **Max Players**, whether the room is **Listed** or hidden (code only),
-the **FPS Lock** (60 is the default, and what the sync is tuned for), and
-whether to start a **New Game** or load a co-op save. **Open Room** opens it;
-**Start Game** boots everyone into the host's map.
+**Living World** (Private by default: just you and your friends, no
+strangers' ghosts or messages; Shown makes the game part of the living
+world), the **FPS Lock** (60 is the default, and what the sync is tuned for),
+and whether to start a **New Game** or load a co-op save. **Open Room** opens
+it; **Start Game** boots everyone into the host's map.
 
-**Join a game.** Browse Server Rooms, Join by IP, Enter Room Code, or accept a
-Steam invite. A guest who joins a game in progress is placed next to the host.
+**Join a game.** Browse Server Rooms lists every open game ("Name's Game",
+where it is, how many are in it), server rooms and Steam lobbies alike; or
+Join by IP, Enter Room Code, or accept a Steam invite (the friends list's
+Join Game works too). A guest who joins a game in progress is placed next to
+the host.
 
 **In game**, `M` opens the multiplayer menu: leave a message, save, change
 your **Character** (any of the fourteen playable characters; the body swaps
-in place and everyone sees the new one), toggle nameplates, see the players
-(with pings), leave. The host can also turn **Friendly Fire** on or off for
-everyone, allow or deny the **Guest Console** (the console and debug keys
-are off for guests unless the host turns this on), and remove a player from
-the Players list (select them twice). The lobby has the Character row too,
-so you can pick before the game starts.
+in place and everyone sees the new one), toggle nameplates and **Health
+Bars** (yours, your partners', both or none), see the players (with pings),
+leave. The host can also turn **Friendly Fire** on or off for everyone,
+allow **Guest Cheats** for all guests (the quick menu's cheat and debug
+pages, the console and binds are off for guests otherwise), and from the
+Players list allow cheats for one guest or remove them. The lobby has the
+Character row too, so you can pick before the game starts.
+
+**Pausing** is the host's: the host's pause pauses everyone, and a guest's
+pause button asks the host instead. Reading a note, a locked door message or
+an item does not stop the world for anyone. The quick menu (F10) opens
+without pausing.
+
+**Voice lines.** Hold `B` (key_vocalize) for a wheel of eight short lines of
+your character, point at one or press its number, let go: everyone on your
+map hears it from where you stand. A folder under gamedata/voices named by
+voice_pack can replace them with your own WAVs on your machine.
 
 ---
 
@@ -56,8 +72,14 @@ so you can pick before the game starts.
 - **Progress.** Doors unlocked, puzzles solved and pickups taken by anyone
   are taken for everyone. The item itself goes into every player's inventory.
 - **Friendly fire.** Off by default. When the host turns it on, a hit from
-  another player's weapon counts, and a dead player respawns next to a
-  partner after a few seconds.
+  another player's weapon counts (and bleeds where it landed), and a dead
+  player respawns next to a partner after a few seconds.
+- **Weapons.** Partners are drawn with the weapon they hold and heard with
+  its sounds, whatever you hold yourself.
+- **Cutscenes.** When a player starts a scene, everyone else on the map is
+  asked to join it (Enter joins, Cancel stays; it joins by itself after a
+  while). Joining places you where the scene began and plays it with the
+  others.
 
 **What stays yours.** Monster Cybil, the Incubus and cutscene actors run on
 each machine. Boss intros play on each machine; the boss is shared once yours
