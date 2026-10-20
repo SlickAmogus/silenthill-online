@@ -506,13 +506,13 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
 
     case COOP_PAGE_SPLIT:
-        if (i == 0)      snprintf(out, cap, "Player 2 Pad:  %s", Pc_Split_PadName(s_splitPad));
-        else if (i == 1) snprintf(out, cap, "Player 2 Is:  %s", Pc_PlayAs_Label(s_splitPlayAs));
+        if (i == 0)      snprintf(out, cap, "2P Pad:  %s", Pc_Split_PadName(s_splitPad));
+        else if (i == 1) snprintf(out, cap, "2P Character:  %s", Pc_PlayAs_Label(s_splitPlayAs));
         else if (i == 2) snprintf(out, cap, "Layout:  %s", g_PcConfig.splitLayout ? "Side by Side" : "Top and Bottom");
         else if (i == 3)
         {
             static const char* const au[3] = { "Effects Only", "Everything", "Muted" };
-            snprintf(out, cap, "Player 2 Sound:  %s", au[g_PcConfig.splitP2Audio % 3]);
+            snprintf(out, cap, "2P Sound:  %s", au[g_PcConfig.splitP2Audio % 3]);
         }
         else if (i == 4)
         {

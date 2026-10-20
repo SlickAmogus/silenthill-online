@@ -70,6 +70,11 @@ void        Pc_CoopMenu_Confirm(void);
  * game, 2 load (save name written to outName), and clears the request. */
 int         Pc_CoopMenu_TakeStartRequest(char* outName, int cap);
 
+/* Music for the front end (pc_coop_music.c): the results-screen piece while
+ * the multiplayer menu is up or a room is waited in at the title. Once a
+ * frame from ShNet_GameTick. */
+void        Pc_CoopMusic_Tick(void);
+
 #ifdef __cplusplus
 }
 #endif

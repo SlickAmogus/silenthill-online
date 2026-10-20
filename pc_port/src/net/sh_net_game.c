@@ -838,6 +838,7 @@ void ShNet_GameTick(void)
     ShNetRespawn_Tick();
     ShNetCut_Tick();
     ShNetVoice_Tick();
+    Pc_CoopMusic_Tick();
     /* The in-game multiplayer menu, drawn with the game's own primitives over
      * the live world (MainLoop runs this after the state update and before
      * the ordering tables are walked). */

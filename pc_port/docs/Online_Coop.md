@@ -69,6 +69,10 @@ Player 2's window runs on Player 1's config.cfg and never writes to it, and
 it stays out of the living world, Steam, Discord and RetroAchievements,
 which are per PC rather than per player.
 
+**Lobby music.** The title screen is silent, so the multiplayer menu and a
+room being waited in play the piece heard over the results screen after
+the credits. It stops when the menu closes or the game starts.
+
 **Mouse and keyboard in menus.** As soon as a key or a controller is used,
 the pointer hides and stops selecting the row under it until the mouse
 moves again, so a pointer left resting on a menu never drags the
