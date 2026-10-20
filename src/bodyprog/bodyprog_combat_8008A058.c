@@ -1922,6 +1922,7 @@ s32 func_8008B714(s_SubCharacter* attacker, s_SubCharacter* target, VECTOR3* arg
                         _deadSkipLogN++;
                     }
                 } else {
+                    { extern void Pc_NetHit_NoteHit(const void*, const VECTOR3*); Pc_NetHit_NoteHit(target, arg2); }
                     func_8005F6B0(target, arg2, var_a2, var_a3);
                 }
 #else

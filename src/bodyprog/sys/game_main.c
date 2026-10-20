@@ -62,6 +62,7 @@ extern VC_WORK vcWork;
 extern void vcGetNowCamPos(VECTOR3* cam_pos);
 extern void vcGetNowWatchPos(VECTOR3* watch_pos);
 extern const unsigned char* g_sdlKeyboardState;
+extern const unsigned char* g_PcMoveKeys; /* zeroed while a text field is open (dbg_overlay.c) */
 #include "dbg_overlay.h"
 #include "map_registry.h"
 #include "texpack_lazy.h"
@@ -794,10 +795,10 @@ static void Pc_TpsCamera_Apply(void)
                     static Uint32 s_lastMoveMs = 0;
                     Uint32 now   = SDL_GetTicks();
                     s32    held2 = g_Controller0->heldBtnFlags;
-                    int    moving = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) ||
-                                    (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) ||
-                                    (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) ||
-                                    (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) ||
+                    int    moving = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) ||
+                                    (g_PcMoveKeys[SDL_SCANCODE_A] != 0) ||
+                                    (g_PcMoveKeys[SDL_SCANCODE_S] != 0) ||
+                                    (g_PcMoveKeys[SDL_SCANCODE_D] != 0) ||
                                     (held2 & (ControllerFlag_LStickUp   | ControllerFlag_LStickDown  |
                                               ControllerFlag_LStickLeft | ControllerFlag_LStickRight |
                                               ControllerFlag_DpadUp     | ControllerFlag_DpadDown    |
@@ -2349,6 +2350,10 @@ void MainLoop(void) // 0x80032EE0
                 g_Controller0->releasedBtnFlags  = 0;
                 g_Controller0->pulsedBtnFlags    = 0;
                 g_Controller0->pulsedGuiBtnFlags = 0;
+                /* Online the world runs under the menu, so the sticks must
+                 * not keep steering Harry while the rows are being browsed. */
+                g_Controller0->sticks_20.rawData_0 = 0;
+                g_Controller0->sticks_24.rawData_0 = 0;
             }
         }
 

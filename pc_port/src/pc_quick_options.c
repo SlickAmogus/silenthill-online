@@ -1416,6 +1416,8 @@ int Pc_QuickOptions_ShowsMinimapRows(void)
     return 0;
 }
 
+static int qo_page_hidden(int page);
+
 static void qo_open(void)
 {
     if (s_phase == QO_OPENING || s_phase == QO_SHOWN)
@@ -1423,6 +1425,7 @@ static void qo_open(void)
     s_phase      = QO_OPENING;
     s_phaseStart = SDL_GetTicks();
     s_sel        = 0;
+    if (qo_page_hidden(s_page)) s_page = 0;
     g_PcQuickOptionsActive = 1;
 }
 
@@ -1499,11 +1502,27 @@ static int qo_key_edge(int sc)
     return edge;
 }
 
+/* The cheat and debug pages belong to whoever owns the world: in a co-op
+ * game the host, and the guests the host allowed. Everyone else pages
+ * straight past them. */
+static int qo_page_hidden(int page)
+{
+    extern int ShNet_CoopCheatsAllowed(void);
+    return page >= QO_PG_CHEATS1 && page <= QO_PG_DEBUG2 && !ShNet_CoopCheatsAllowed();
+}
+
 static void qo_set_page(int page)
 {
     int n;
     s_ddRow = -1;
-    s_page = (page + QO_PAGES) % QO_PAGES;
+    page = (page + QO_PAGES) % QO_PAGES;
+    if (qo_page_hidden(page))
+    {
+        /* Forward from View lands on Controls; backward from Controls on View. */
+        int forward = ((page - s_page + QO_PAGES) % QO_PAGES) <= QO_PAGES / 2;
+        page = forward ? QO_PG_CONTROLS : QO_PG_VIEW;
+    }
+    s_page = page;
     qo_page_rows(s_page, &n);
     if (s_sel >= n) s_sel = n - 1;
     if (s_sel < 0)  s_sel = 0;

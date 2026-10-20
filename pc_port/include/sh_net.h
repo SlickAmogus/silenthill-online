@@ -133,6 +133,7 @@ int         ShNet_LiveWorld(void);
 int         ShNet_CoopFriendlyFire(void);
 int         ShNet_CoopGuestConsole(void); /* host's choice: may guests use the console */
 int         ShNet_CoopLivingWorld(void);  /* is this game part of the living world (1 outside co-op) */
+int         ShNet_CoopSelfHealthPct(void); /* 0..100, -1 outside plain gameplay */
 /* Co-op pause: the host's pause is everyone's; a guest asks. */
 extern int  g_PcCoopHostPaused;
 int         ShNet_CoopPauseEnter(void);

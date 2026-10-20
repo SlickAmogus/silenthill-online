@@ -261,9 +261,9 @@ int  ShSession_GuestDebugGranted(void);
  * ONE victim; the victim drains it and applies the damage to its own player.
  * amount is Q12 HP, pre-difficulty, already PvP-scaled. */
 unsigned long long ShSession_SelfId(void);
-void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby, int kbz,
+void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby, int kbz, int weapon, int hx, int hy, int hz,
                            int reaction, short yaw);
-int  ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reaction, short* yaw);
+int  ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reaction, short* yaw, int* weapon, int* hx, int* hy, int* hz);
 
 #ifdef __cplusplus
 }

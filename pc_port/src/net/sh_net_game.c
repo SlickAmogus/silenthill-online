@@ -637,6 +637,18 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
     }
 }
 
+/* My health 0..100 for the overlay's own bar, -1 when not in plain gameplay. */
+int ShNet_CoopSelfHealthPct(void)
+{
+    int hp;
+    if (g_GameWork.gameState != GameState_InGame || g_SysWork.sysState != SysState_Gameplay)
+    {
+        return -1;
+    }
+    hp = (int)(g_SysWork.playerWork.player.health >> 12);
+    return hp < 0 ? 0 : hp > 100 ? 100 : hp;
+}
+
 /* Is this co-op game part of the living world (strangers' ghosts and
  * messages shown and ours placed)? Single-player: always. Co-op: the host's
  * choice, carried to guests in S_WORLD. Private is the default. */

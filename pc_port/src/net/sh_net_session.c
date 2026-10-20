@@ -187,6 +187,8 @@ typedef struct
     int                kbx, kby, kbz; /* Q12 knockback vector */
     unsigned char      reaction;      /* enemy attack id the victim flinches to */
     short              yaw;           /* attacker heading, for the flinch direction */
+    unsigned char      weapon;        /* the attacker's weapon attack id (blood class), 0xFF none */
+    int                hx, hy, hz;    /* hit point, relative to the victim (Q12) */
 } ShSessionDmg;
 static ShSessionDmg s_dmgOut[SESSION_DMG_Q];
 static int          s_dmgOutCount;
@@ -622,7 +624,7 @@ unsigned long long ShSession_SelfId(void)
     return Tp_SelfId();
 }
 
-void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby, int kbz,
+void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby, int kbz, int weapon, int hx, int hy, int hz,
                            int reaction, short yaw)
 {
     if (!s_lock || !toId || amount <= 0) return;
@@ -633,11 +635,13 @@ void ShSession_QueueDamage(unsigned long long toId, int amount, int kbx, int kby
         d->to = toId; d->amount = amount;
         d->kbx = kbx; d->kby = kby; d->kbz = kbz;
         d->reaction = (unsigned char)reaction; d->yaw = yaw;
+        d->weapon = (unsigned char)((weapon >= 0 && weapon < 70) ? weapon : 0xFF);
+        d->hx = hx; d->hy = hy; d->hz = hz;
     }
     SDL_UnlockMutex(s_lock);
 }
 
-int ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reaction, short* yaw)
+int ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reaction, short* yaw, int* weapon, int* hx, int* hy, int* hz)
 {
     int got = 0;
     if (!s_lock) return 0;
@@ -651,6 +655,10 @@ int ShSession_TakeDamage(int* amount, int* kbx, int* kby, int* kbz, int* reactio
         if (kbz)      *kbz      = d->kbz;
         if (reaction) *reaction = d->reaction;
         if (yaw)      *yaw      = d->yaw;
+        if (weapon)   *weapon   = (d->weapon == 0xFF) ? -1 : (int)d->weapon;
+        if (hx)       *hx       = d->hx;
+        if (hy)       *hy       = d->hy;
+        if (hz)       *hz       = d->hz;
         s_dmgInCount--;
         memmove(s_dmgIn, s_dmgIn + 1, (size_t)s_dmgInCount * sizeof(s_dmgIn[0]));
         got = 1;
@@ -1203,8 +1211,21 @@ static void ShSession_Receive(unsigned int now)
             d.kby      = (int)ShnGetU32(p, &o);
             d.kbz      = (int)ShnGetU32(p, &o);
             d.reaction = ShnGetU8(p, &o);
-            (void)ShnGetU8(p, &o);
+            d.weapon   = ShnGetU8(p, &o);
             d.yaw      = (short)ShnGetU16(p, &o);
+            d.hx = d.hy = d.hz = 0;
+            if (payLen >= 32)
+            {
+                d.hx = (int)ShnGetU32(p, &o);
+                d.hy = (int)ShnGetU32(p, &o);
+                d.hz = (int)ShnGetU32(p, &o);
+                /* A hit point is on the body, not across the room. */
+                if (d.hx > 4096 || d.hx < -4096 || d.hy > 10240 || d.hy < -10240 ||
+                    d.hz > 4096 || d.hz < -4096) /* Q12: one unit sideways, 2.5 up */
+                {
+                    d.hx = d.hy = d.hz = 0;
+                }
+            }
             /* A hit only counts from someone who opted into friendly fire
              * themselves, is on our map, and is not firing faster than any
              * weapon can. */
@@ -1739,15 +1760,18 @@ void ShSession_Tick(unsigned int nowMs)
         SDL_UnlockMutex(s_lock);
         for (q = 0; q < dn; q++)
         {
-            shn_u8 buf[SHNET_HDR_SIZE + 20];
+            shn_u8 buf[SHNET_HDR_SIZE + 32];
             int    off = SHNET_HDR_SIZE;
             ShnPutU32(buf, &off, (shn_u32)dmg[q].amount);
             ShnPutU32(buf, &off, (shn_u32)dmg[q].kbx);
             ShnPutU32(buf, &off, (shn_u32)dmg[q].kby);
             ShnPutU32(buf, &off, (shn_u32)dmg[q].kbz);
             ShnPutU8(buf, &off, dmg[q].reaction);
-            ShnPutU8(buf, &off, 0);
+            ShnPutU8(buf, &off, dmg[q].weapon);
             ShnPutU16(buf, &off, (shn_u16)dmg[q].yaw);
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].hx);
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].hy);
+            ShnPutU32(buf, &off, (shn_u32)dmg[q].hz);
             ShnPutHeader(buf, SHNET_MSG_S_DAMAGE, (shn_u16)(off - SHNET_HDR_SIZE), 0);
             Tp_Send(dmg[q].to, buf, off, 1);
         }

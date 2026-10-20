@@ -27,6 +27,7 @@ extern int g_DebugViewNpcSlot;   /* keyframe viewer target: -1 = Harry, else g_S
 extern int g_DebugAnimPlayGen;   /* bumped on each play (re)start so the loop cursor re-seeds */
 extern s32 g_TpsCamYaw;
 extern const unsigned char* g_sdlKeyboardState;
+extern const unsigned char* g_PcMoveKeys; /* zeroed while a text field is open (dbg_overlay.c) */
 /* Fixed (classic) camera world pose. The 2D screen-relative control path takes
  * "into the screen" from the camera's OWN look yaw (vwGetViewAngle -> worldang.vy);
  * the position is only used to spot a hard cut. */
@@ -1762,10 +1763,10 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * to face it. Works under the fixed classic camera (the authentic SH
                      * "2D control type") and under the TPS/OTS orbit camera (twin-stick). */
                     s32  held  = g_Controller0->heldBtnFlags;
-                    int  fwd   = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
-                    int  back  = (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
-                    int  left  = (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
-                    int  right = (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
+                    int  fwd   = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
+                    int  back  = (g_PcMoveKeys[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
+                    int  left  = (g_PcMoveKeys[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
+                    int  right = (g_PcMoveKeys[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
                     int  inX   = (right ? 1 : 0) - (left ? 1 : 0);
                     int  inZ   = (fwd   ? 1 : 0) - (back ? 1 : 0);
                     int  anyInput = (inX != 0) || (inZ != 0);
@@ -2019,10 +2020,10 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     if (g_PcFpsCam && !g_SysWork.playerCombat.isAiming)
                     {
                         s32 held   = g_Controller0->heldBtnFlags;
-                        int moveIn = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) ||
-                                     (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) ||
-                                     (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) ||
-                                     (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) ||
+                        int moveIn = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) ||
+                                     (g_PcMoveKeys[SDL_SCANCODE_A] != 0) ||
+                                     (g_PcMoveKeys[SDL_SCANCODE_S] != 0) ||
+                                     (g_PcMoveKeys[SDL_SCANCODE_D] != 0) ||
                                      (held & (ControllerFlag_LStickUp   | ControllerFlag_LStickDown  |
                                               ControllerFlag_LStickLeft | ControllerFlag_LStickRight |
                                               ControllerFlag_DpadUp     | ControllerFlag_DpadDown    |
@@ -2055,10 +2056,10 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * camera). */
                     {
                         s32  held  = g_Controller0->heldBtnFlags;
-                        int  fwd   = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
-                        int  back  = (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
-                        int  left  = (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
-                        int  right = (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
+                        int  fwd   = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
+                        int  back  = (g_PcMoveKeys[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
+                        int  left  = (g_PcMoveKeys[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
+                        int  right = (g_PcMoveKeys[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
 
                         g_Player_IsMovingForward     = (g_Player_IsMovingForward & 0x2) | (fwd ? 1 : 0);
                         g_Player_IsMovingBackward    = back  ? 1 : 0;

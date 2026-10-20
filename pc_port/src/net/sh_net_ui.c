@@ -1167,6 +1167,9 @@ void ShNetUi_TogglePlayerList(void)
     }
 }
 
+static float Nu_DrawTextFit(const char* text, float x, float y, float maxW, int px,
+                            float r, float g, float b, float a);
+
 static void Nu_DrawChat(int px)
 {
     const int   n    = ShNetChat_LineCount();
@@ -1187,7 +1190,7 @@ static void Nu_DrawChat(int px)
     if (comp)
     {
         float top = bot - lh * (float)(n + 1) - (float)px * 0.5f;
-        Nu_Panel(x - (float)px * 0.5f, top, s_vpW * 0.42f, bot - top + lh,
+        Nu_Panel(x - (float)px * 0.5f, top, s_vpW * 0.62f, bot - top + lh,
                  0.85f);
     }
 
@@ -1214,8 +1217,8 @@ static void Nu_DrawChat(int px)
         const int   g = (ShNetChat_Scope() == SHNET_CHAT_GAME);
         snprintf(line, sizeof(line), "%s %s_",
                  g ? "[Game]" : "[All]", ShNetChat_ComposeText());
-        Nu_DrawText(line, x, y, px,
-                    g ? 0.95f : 0.80f, g ? 0.90f : 0.86f, g ? 0.66f : 0.95f, 1.0f);
+        Nu_DrawTextFit(line, x, y, s_vpW * 0.60f, px,
+                       g ? 0.95f : 0.80f, g ? 0.90f : 0.86f, g ? 0.66f : 0.95f, 1.0f);
     }
 }
 
@@ -1913,16 +1916,12 @@ void ShNetUi_Draw(void)
     /* Co-op: my own health, bottom left, when asked for. */
     {
         extern int g_PcCoopGame;
-        if (g_PcCoopGame && (g_PcConfig.onlineHealthBars & 1) &&
-            g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
-            !Pc_CoopMenu_IsOpen())
+        int hp = ShNet_CoopSelfHealthPct();
+        if (g_PcCoopGame && (g_PcConfig.onlineHealthBars & 1) && hp >= 0 && !Pc_CoopMenu_IsOpen())
         {
             const float w  = s_vpW * 0.16f, h = (float)px * 0.55f;
             const float x  = s_vpH * 0.04f, y = s_vpH * 0.93f;
-            int         hp = (int)(g_SysWork.playerWork.player.health >> 12);
             float       f;
-            if (hp < 0) hp = 0;
-            if (hp > 100) hp = 100;
             f = (float)hp / 100.0f;
             Nu_FillPx(x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f, 0.03f, 0.03f, 0.08f, 0.75f);
             Nu_FillPx(x, y, w * f, h,

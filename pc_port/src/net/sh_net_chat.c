@@ -18,7 +18,7 @@
 #define CHAT_FADE_MS 1500
 #define CHAT_LOG_MAX 12       /* lines kept; the last few are shown */
 #define CHAT_SHOWN   6        /* lines drawn when idle */
-#define CHAT_INPUT_MAX 128    /* typed bytes, < SHNET_CHAT_MAX for name+": " */
+#define CHAT_INPUT_MAX 150    /* typed bytes; the name travels in its own field, SHNET_CHAT_MAX is 160 */
 
 typedef struct
 {

@@ -16,6 +16,8 @@
 #include "dbg_overlay.h" /* DbgOverlay_ToastLine — quick-heal result line */
 #include <stdio.h>
 #include "bodyprog/sound/sound_system.h"
+
+extern int Pc_TextInputActive(void); /* dbg_overlay.c: a text field owns the keyboard */
 extern int Pc_ConsoleIsOpen(void);
 
 extern const unsigned char* g_sdlKeyboardState;
@@ -658,7 +660,7 @@ void Pc_ExtraActionsUpdate(void)
     /* Typing in the console presses these keys too: the quick-heal letter fired
      * mid-command. Pc_ConsoleIsOpen also covers the apply window after Enter,
      * when input is briefly unfrozen but the panel is still up. */
-    if (Pc_ConsoleIsOpen())
+    if (Pc_ConsoleIsOpen() || Pc_TextInputActive())
     {
         g_PcQuickTurnRequest = 0;
         g_PcReloadRequest    = 0;
@@ -715,7 +717,8 @@ void Pc_RearLookUpdate(void)
     g_PcRearLookActive = (held && g_DebugThirdPersonCam && !g_PcFpsCam &&
                           g_GameWork.gameState == GameState_InGame &&
                           g_SysWork.sysState   == SysState_Gameplay &&
-                          !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame()) ? 1 : 0;
+                          !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame() &&
+                          !Pc_TextInputActive()) ? 1 : 0;
 }
 
 /* OTS/TPS free-aim aim assist.

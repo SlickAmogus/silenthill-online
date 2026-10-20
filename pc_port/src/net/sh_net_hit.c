@@ -83,6 +83,18 @@ static int HitReaction(int weapon, int* yawAdjust)
     return cls == 1 ? 57 : 43;
 }
 
+/* Where the last hit landed on each proxy, from the resolver's blood call. */
+static VECTOR3 s_proxyHit[SHSESSION_MAX_MEMBERS];
+
+void Pc_NetHit_NoteHit(const void* chara, const VECTOR3* at)
+{
+    int i = Pc_NetHit_ProxyIndex(chara);
+    if (i >= 0 && i < SHSESSION_MAX_MEMBERS && at != NULL)
+    {
+        s_proxyHit[i] = *at;
+    }
+}
+
 /* What this frame's attacks wrote into a proxy, off to its player. */
 static void HarvestProxy(int i, unsigned int now)
 {
@@ -121,7 +133,9 @@ static void HarvestProxy(int i, unsigned int now)
     }
 
     yaw = (g_SysWork.playerWork.player.rotation.vy + yawAdj) & 0xFFF;
-    ShSession_QueueDamage(s_proxyId[i], scaled, kb.vx, kb.vy, kb.vz, reaction, (short)yaw);
+    ShSession_QueueDamage(s_proxyId[i], scaled, kb.vx, kb.vy, kb.vz, weapon,
+                          s_proxyHit[i].vx - px->position.vx, s_proxyHit[i].vy - px->position.vy,
+                          s_proxyHit[i].vz - px->position.vz, reaction, (short)yaw);
     SH_DBG("[FF] hit player %llx: attack %d, %d.%02d HP", s_proxyId[i], weapon,
            scaled >> 12, ((scaled & 0xFFF) * 100) >> 12);
 }
@@ -251,10 +265,10 @@ void* Pc_NetHit_BulletTrace(void* attacker, const void* from, void* offset, void
 void Pc_NetHit_ApplyIncoming(void)
 {
     s_SubCharacter* me = &g_SysWork.playerWork.player;
-    int             amount, kbx, kby, kbz, reaction;
+    int             amount, kbx, kby, kbz, reaction, weapon, hx, hy, hz;
     short           yaw;
 
-    while (ShSession_TakeDamage(&amount, &kbx, &kby, &kbz, &reaction, &yaw))
+    while (ShSession_TakeDamage(&amount, &kbx, &kby, &kbz, &reaction, &yaw, &weapon, &hx, &hy, &hz))
     {
         if (!ShNet_CoopFriendlyFire())
         {
@@ -294,6 +308,21 @@ void Pc_NetHit_ApplyIncoming(void)
         me->field_40            = NO_VALUE;
         s_pendYaw    = yaw;
         s_pendYawSet = 1;
+
+        /* The blood a monster's hit would have drawn (func_8008B714 spawns it
+         * from the WEAPON's blood class at the hit point). */
+        if (weapon >= 0 && weapon < 70 && D_800AD4C8[weapon].field_12 > 0 && D_800AD4C8[weapon].field_12 < 8)
+        {
+            VECTOR3 at;
+            at.vx = me->position.vx + hx;
+            at.vy = me->position.vy + hy;
+            at.vz = me->position.vz + hz;
+            if (hx == 0 && hy == 0 && hz == 0)
+            {
+                at.vy -= Q12(1.0f); /* no point sent: mid-body */
+            }
+            func_8005F6B0(me, (VECTOR*)&at, D_800AD4C8[weapon].field_12, 1);
+        }
     }
 }
 

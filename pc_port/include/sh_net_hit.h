@@ -51,6 +51,8 @@ void* Pc_NetHit_Proxy(int i);
 
 /* Index of a proxy character, -1 if the pointer is not one of ours. */
 int   Pc_NetHit_ProxyIndex(const void* chara);
+/* The resolver tells us where a hit on a proxy landed (for the victim's blood). */
+void  Pc_NetHit_NoteHit(const void* chara, const VECTOR3* at);
 
 /* Gun hook: the bullet trace against the proxies (and the world). Returns the
  * hit proxy or NULL; outTrace (s_RayTrace*) receives the hit point and

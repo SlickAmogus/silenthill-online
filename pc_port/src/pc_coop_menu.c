@@ -19,6 +19,7 @@
 #include "pc_mouse_cursor.h" /* hover/click hit-test in Update, like the other windows */
 #include "sh_net.h"
 #include "sh_net_session.h"
+#include "sh_net_proto.h" /* SHNET_PERM_* */
 #include "sh_net_steam.h"
 #include "sh_log.h"
 #include "bodyprog/sound/sound_system.h" /* Sd_PlaySfx: the same menu sounds the title uses */
@@ -37,8 +38,12 @@ typedef enum
     COOP_PAGE_JOIN,
     COOP_PAGE_ROOMS,        /* server room browser */
     COOP_PAGE_INGAME,       /* in-game M menu: Resume / prefs / players / leave */
-    COOP_PAGE_PLAYERS       /* member list (in-game) */
+    COOP_PAGE_PLAYERS,      /* member list (in-game) */
+    COOP_PAGE_PLAYER        /* one member: allow cheats / remove (host) */
 } CoopPage;
+
+static unsigned long long s_playerId; /* the member COOP_PAGE_PLAYER is about */
+static char               s_playerName[SHSESSION_NAME_MAX];
 
 static int      s_open;
 static int      s_inGame;   /* 1 = opened in-game (M menu), 0 = main-menu popup */
@@ -351,6 +356,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
     case COOP_PAGE_INGAME:     return 11; /* Resume, Message, Save, Save&Exit, Character, Nameplates, Health Bars, Friendly Fire, Guest Console, Players, Leave */
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
+    case COOP_PAGE_PLAYER:     return 3; /* Allow Cheats, Remove, Back */
     default:                   return 1;
     }
 }
@@ -387,6 +393,7 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_ROOMS:      return "SERVER ROOMS";
     case COOP_PAGE_INGAME:     return "MULTIPLAYER";
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
+    case COOP_PAGE_PLAYER:     return s_playerName;
     default:                   return "MULTIPLAYER";
     }
 }
@@ -467,7 +474,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 7) snprintf(out, cap, "Friendly Fire:  %s%s",
                                   ShNet_CoopFriendlyFire() ? "On" : "Off",
                                   (ShSession_Active() && !ShSession_IsHost()) ? "  (host's choice)" : "");
-        else if (i == 8) snprintf(out, cap, "Guest Console:  %s%s",
+        else if (i == 8) snprintf(out, cap, "Guest Cheats:  %s%s",
                                   ShNet_CoopGuestConsole() ? "On" : "Off",
                                   (ShSession_Active() && !ShSession_IsHost()) ? "  (host's choice)" : "");
         else if (i == 9) snprintf(out, cap, "Players");
@@ -491,6 +498,12 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         break;
     }
+
+    case COOP_PAGE_PLAYER:
+        if (i == 0)      snprintf(out, cap, "Allow Cheats:  %s", (ShNet_CoopPermGet(s_playerId) & SHNET_PERM_CHEATS) ? "Yes" : "No");
+        else if (i == 1) snprintf(out, cap, "Remove From Game");
+        else             snprintf(out, cap, "Back");
+        break;
 
     case COOP_PAGE_JOIN:
         if (i == 0)      snprintf(out, cap, "Browse Server Rooms");
@@ -705,7 +718,7 @@ static void Coop_Confirm(void)
         else if (s_sel == 8)
         {
             if (ShSession_Active() && !ShSession_IsHost())
-                snprintf(s_msg, sizeof(s_msg), "Only the host can allow the console for guests.");
+                snprintf(s_msg, sizeof(s_msg), "Only the host can allow cheats for guests.");
             else
             {
                 g_PcConfig.onlineGuestConsole = !g_PcConfig.onlineGuestConsole;
@@ -725,33 +738,45 @@ static void Coop_Confirm(void)
     case COOP_PAGE_PLAYERS:
         if (s_sel < ShSession_MemberCount())
         {
-            /* Host: remove a player, on a second press of the same row so a
-             * stray click cannot kick a friend. */
-            static int          s_armRow = -1;
-            static unsigned int s_armMs;
+            /* Host: a page for that player (allow cheats, remove). */
             const ShSessionMember* m = ShSession_Member(s_sel);
             if (!ShSession_IsHost() || !m || m->steamId == ShSession_SelfId())
             {
                 break;
             }
-            if (s_armRow == s_sel && SDL_GetTicks() - s_armMs < 4000u)
-            {
-                ShSession_RequestKick(m->steamId);
-                snprintf(s_msg, sizeof(s_msg), "Removed %s.", m->name);
-                s_armRow = -1;
-            }
-            else
-            {
-                s_armRow = s_sel;
-                s_armMs  = SDL_GetTicks();
-                snprintf(s_msg, sizeof(s_msg), "Press again to remove %s from the game.", m->name);
-            }
+            s_playerId = m->steamId;
+            SDL_strlcpy(s_playerName, m->name, sizeof(s_playerName));
+            s_page = COOP_PAGE_PLAYER;
+            s_sel  = 0;
+            s_msg[0] = '\0';
             break;
         }
         /* Back returns to the in-game root (the Players row). */
         s_page = COOP_PAGE_INGAME;
         s_sel  = 9;
         s_msg[0] = '\0';
+        break;
+
+    case COOP_PAGE_PLAYER:
+        if (s_sel == 0)
+        {
+            int f = ShNet_CoopPermGet(s_playerId) ^ SHNET_PERM_CHEATS;
+            ShNet_CoopPermSet(s_playerId, f);
+            snprintf(s_msg, sizeof(s_msg), "%s %s use cheats and the console.", s_playerName,
+                     (f & SHNET_PERM_CHEATS) ? "may now" : "may no longer");
+        }
+        else if (s_sel == 1)
+        {
+            ShSession_RequestKick(s_playerId);
+            snprintf(s_msg, sizeof(s_msg), "Removed %s.", s_playerName);
+            s_page = COOP_PAGE_PLAYERS;
+            s_sel  = 0;
+        }
+        else
+        {
+            s_page = COOP_PAGE_PLAYERS;
+            s_sel  = 0;
+        }
         break;
 
     case COOP_PAGE_JOIN:
@@ -900,7 +925,12 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
     if (cancel)
     {
         Sd_PlaySfx(Sfx_MenuCancel, 0, Q8(0.25f));
-        if (s_page == COOP_PAGE_PLAYERS)
+        if (s_page == COOP_PAGE_PLAYER)
+        {
+            s_page = COOP_PAGE_PLAYERS;
+            s_sel  = 0;
+        }
+        else if (s_page == COOP_PAGE_PLAYERS)
         {
             s_page = COOP_PAGE_INGAME; /* back out of the member list */
             s_sel  = 9;

@@ -106,9 +106,10 @@ void Pc_QuickSaveLoadUpdate(void)
 
     /* Gameplay only: not menus, not cutscenes/map events, not while the
      * console input line is open. */
+    extern int Pc_TextInputActive(void);
     if (g_GameWork.gameState == GameState_InGame &&
         g_SysWork.sysState == SysState_Gameplay &&
-        !Pc_ConsoleIsOpen())
+        !Pc_ConsoleIsOpen() && !Pc_TextInputActive())
     {
         if (curSave && !prevSave && Pc_Save_BossActive()) {
             SH_DBG_ECHO("Can't quick save during a boss fight");

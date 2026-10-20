@@ -486,6 +486,21 @@ int Pc_ConsoleIsOpen(void)
     return s_console_open;
 }
 
+/* A text field owns the keyboard: the chat box, the co-op menu's typed
+ * field, the console prompt, the message composer. Readers of raw key state
+ * for actions check this (or read g_PcMoveKeys) so typing never moves Harry
+ * or fires a hotkey. */
+static const unsigned char s_noKeys[SDL_NUM_SCANCODES];
+const unsigned char*       g_PcMoveKeys = s_noKeys;
+
+int Pc_TextInputActive(void)
+{
+    extern int Pc_CoopMenu_Editing(void);
+    extern int ShNetMemo_ComposerActive(void);
+    return ShNetChat_IsOpen() || Pc_CoopMenu_Editing() || g_PcConsoleInputActive ||
+           ShNetMemo_ComposerActive();
+}
+
 /* Text a selection endpoint's line refers to (-1 = the live prompt input). */
 static const char* console_sel_text(int line)
 {
@@ -1481,7 +1496,12 @@ void DbgOverlay_Update(void)
      * Latch it here so the exit bind can tell "Esc closed chat" from a real
      * exit. */
     const int chatWasOpen = ShNetChat_IsOpen();
+    /* Same latch for every text field: the chat box, the co-op menu's IP /
+     * room-code field, the console line, the message composer. While one
+     * is up, the raw keyboard belongs to it and nothing else. */
+    const int textWasOpen = Pc_TextInputActive();
     if (!ks) return;
+    g_PcMoveKeys = textWasOpen ? s_noKeys : ks;
 
     /* First Update runs inside MainLoop — arm the top-left message toast now so
      * the boot-time init logging (pushed before MainLoop) is never toasted. */
@@ -1557,7 +1577,7 @@ void DbgOverlay_Update(void)
      * command would fire whatever its letters are bound to. */
     {
         extern int g_PcQuickOptionsActive;
-        if (!s_console_open && !g_PcQuickOptionsActive)
+        if (!s_console_open && !g_PcQuickOptionsActive && !textWasOpen)
             PcBinds_Update(ks);
     }
 
@@ -2023,7 +2043,7 @@ void DbgOverlay_Update(void)
     {
         static int s_prev_f2 = 0;
         int cur_f2 = ks[SDL_SCANCODE_F2];
-        if (cur_f2 && !s_prev_f2 && !ctrlHeld) {
+        if (cur_f2 && !s_prev_f2 && !ctrlHeld && !textWasOpen) {
             extern int g_cfg_postProcess;
             static const char* const s_postNames[] = {
                 "Off", "CRT", "Scanlines", "Vignette", "Color Grade",
@@ -2045,7 +2065,7 @@ void DbgOverlay_Update(void)
     {
         static int s_prev_f3 = 0;
         int cur_f3 = ks[SDL_SCANCODE_F3];
-        if (cur_f3 && !s_prev_f3 && !ctrlHeld) {
+        if (cur_f3 && !s_prev_f3 && !ctrlHeld && !textWasOpen) {
             extern int g_cfg_tonemap;
             static const char* const s_toneNames[] = { "Off", "Reinhard", "ACES", "Filmic" };
             const int count = (int)(sizeof(s_toneNames) / sizeof(s_toneNames[0]));
@@ -2063,7 +2083,7 @@ void DbgOverlay_Update(void)
     {
         static int s_prev_f4 = 0;
         int cur_f4 = ks[SDL_SCANCODE_F4];
-        if (cur_f4 && !s_prev_f4 && !ctrlHeld) {
+        if (cur_f4 && !s_prev_f4 && !ctrlHeld && !textWasOpen) {
             Pc_FlashlightModeApply((g_PcConfig.flashlightMode + 1) & 3, 1);
             SH_DBG_ECHO("F4 Flashlight: %s",
                         Pc_FlashlightModeLabel(g_PcConfig.flashlightMode));
@@ -2092,7 +2112,7 @@ void DbgOverlay_Update(void)
          * without this it both closed the box AND warm-reset to the title. */
         extern int ShNetMemo_ComposerActive(void);
         if (cur_exit && !s_prev_exit && !g_PcConsoleInputActive && !g_PcQuickOptionsActive &&
-            !chatWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive()) {
+            !chatWasOpen && !textWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive()) {
             /* The brightness screen owns the whole display (its calibration bar is
              * drawn outside the normal menu path), so warm-resetting out of it left
              * the bar on screen over the title. Back out to the options list the
