@@ -48,6 +48,7 @@ extern s_WorldEnvWork g_WorldEnvWork;
 #include "main/rng.h"
 #ifdef SH_PC_PORT
 #include "sh_net.h" /* co-op pause rules */
+#include "sh_net_cutscene.h"
 #endif
 #ifdef SH_PC_PORT
 #include <stdio.h>
@@ -306,6 +307,9 @@ void GameState_InGame_Update(void) // 0x80038BD4
                 }
 #endif
                 SysWork_StateSetNext(g_MapEventSysState);
+#ifdef SH_PC_PORT
+                ShNetCut_OnDispatch(); /* co-op: a scene starting here is everyone's */
+#endif
             }
         }
     }
@@ -627,6 +631,9 @@ void SysState_Gameplay_Update(void) // 0x80038BD4
         }
 #endif
         SysWork_StateSetNext(g_MapEventSysState);
+#ifdef SH_PC_PORT
+                ShNetCut_OnDispatch(); /* co-op: a scene starting here is everyone's */
+#endif
     }
     else if (((g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
 #ifdef SH_PC_PORT

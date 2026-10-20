@@ -21,6 +21,8 @@ extern "C" {
 
 /* Once per frame after the world update (ShNet_GameTick). */
 void  ShNetRespawn_Tick(void);
+/* Move a living player to a point on this map (shared cutscenes). */
+void  ShNetRespawn_PlaceAt(const void* pos /* const VECTOR3* */, short rot);
 
 /* 1 from the moment the local player dies in a co-op game until they are
  * standing again. */

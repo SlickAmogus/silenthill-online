@@ -282,6 +282,49 @@ static void Respawn(void)
     SH_DBG("[RESPAWN] back on your feet %s", how);
 }
 
+/* Put a living player somewhere else on this map (a shared cutscene's
+ * start): the respawn's placement without the stand-up, then the same
+ * settle (floor probe retries while the chunk streams in, a short grace). */
+void ShNetRespawn_PlaceAt(const void* posv, short rot)
+{
+    s_SubCharacter* p   = &g_SysWork.playerWork.player;
+    const VECTOR3*  pos = (const VECTOR3*)posv;
+
+    if (pos == NULL)
+    {
+        return;
+    }
+    p->position    = *pos;
+    p->rotation.vx = 0;
+    p->rotation.vy = rot;
+    p->rotation.vz = 0;
+    p->fallSpeed   = 0;
+    p->moveSpeed   = 0;
+    g_SysWork.cameraAngleY = rot;
+    {
+        extern int g_DebugThirdPersonCam;
+        extern s32 g_TpsCamYaw, g_TpsCamPitch;
+        if (g_DebugThirdPersonCam)
+        {
+            g_TpsCamYaw   = rot;
+            g_TpsCamPitch = 0;
+        }
+    }
+    func_8007E9C4();
+    Game_MapRoomIdxUpdate();
+    Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
+    vcSetCameraUseWarp(&p->position, g_SysWork.cameraAngleY);
+
+    s_settled      = ProbeGround();
+    s_settleFrames = RS_SETTLE_FRAMES;
+    g_Player_DisableDamage = true;
+    s_graceLeft            = RS_GRACE;
+    s_phase   = RS_SETTLE;
+    s_elapsed = 0;
+    SH_DBG("[RESPAWN] moved to (%d.%03d, %d.%03d) for a shared scene",
+           pos->vx >> 12, ((pos->vx & 0xFFF) * 1000) >> 12, pos->vz >> 12, ((pos->vz & 0xFFF) * 1000) >> 12);
+}
+
 /* ------------------------------------------------------------------ */
 /* Per frame                                                           */
 /* ------------------------------------------------------------------ */

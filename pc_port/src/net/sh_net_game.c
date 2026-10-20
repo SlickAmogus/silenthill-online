@@ -39,6 +39,7 @@
 #include "pc_config.h"
 #include "pc_playas.h"
 #include "pc_item_pool.h"
+#include "sh_net_cutscene.h"
 #include "pc_weapon_banks.h"
 #include "sh_log.h"
 
@@ -632,6 +633,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
                 ShNet_PostLocalEvent(line);
             }
             break;
+        case SHNET_CTRL_CUTSCENE:
+            ShNetCut_CtrlIn(from, p, len);
+            break;
         case SHNET_CTRL_PERM:
             if (!fromHost || len < 2 || ShSession_IsHost()) return;
             {
@@ -823,6 +827,7 @@ void ShNet_GameTick(void)
     /* Co-op respawn state machine. Before the living-world gate: it belongs to
      * the co-op game, not to the server connection. */
     ShNetRespawn_Tick();
+    ShNetCut_Tick();
 
     /* Lobby chime: someone joined the room (member count went UP). Your own
      * arrival (0 -> 1) is silent. Before the enabled gate so co-op-only (no
