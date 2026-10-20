@@ -21,6 +21,9 @@ extern int g_PcCoopGame;
 
 void Pc_CoopMenu_Open(void);        /* main-menu popup (Host / Join) */
 void Pc_CoopMenu_OpenInGame(void);  /* in-game M menu (Resume / players / leave) */
+void Pc_CoopMenu_OpenSplitGuest(void); /* split screen Player 2: the lobby, joining Player 1 */
+/* Split screen host: starts the game the moment Player 2's window has joined. */
+void Pc_CoopMenu_SplitAutoStart(void);
 void Pc_CoopMenu_Close(void);
 int  Pc_CoopMenu_IsOpen(void);
 int  Pc_CoopMenu_InGame(void);      /* 1 while the in-game M menu is up */

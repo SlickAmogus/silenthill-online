@@ -25,6 +25,7 @@
 #include "hires_override.h" /* HiresOverride_ClampBudgetToVram */
 #include "pc_audio_config.h"
 #include "pc_discord.h"
+#include "pc_split_screen.h"
 #include "map_registry.h"
 #include "main/fsqueue.h"
 #include "main/fileinfo.h"
@@ -686,6 +687,7 @@ static void ParseArgs(int argc, char* argv[])
         {
             strncpy(g_GameDataPath, argv[i + 1], sizeof(g_GameDataPath) - 1);
             g_GameDataPath[sizeof(g_GameDataPath) - 1] = '\0';
+            Pc_Split_NoteDataArg(argv[i + 1]);
             i++;
         }
         else if (strcmp(argv[i], "-skiptogame") == 0)
@@ -704,6 +706,12 @@ static void ParseArgs(int argc, char* argv[])
             ShSteam_SetCommandLineLobby(strtoull(argv[i + 1], NULL, 10));
             i++;
         }
+        else if (Pc_Split_ParseArg(argc, argv, &i))
+        {
+            /* Split screen: Player 2's window is this exe, launched by Player 1's
+             * with its half of the screen, its pad and the room on the command
+             * line (pc_split_screen.c). */
+        }
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
         {
             printf("Usage: SilentHillPC [options]\n");
@@ -711,6 +719,7 @@ static void ParseArgs(int argc, char* argv[])
             printf("  -data <path>          Path to game data directory or CD image\n");
             printf("  +connect_lobby <id>   Join a Steam lobby (Steam passes this itself)\n");
             printf("  -skiptogame           Skip the intros and start a new game\n");
+            printf("  -split2 ...           Player 2's window of a split-screen game (the game launches it itself)\n");
             printf("  -h, --help            Show this help\n");
             exit(0);
         }
@@ -741,6 +750,7 @@ int main(int argc, char* argv[])
     /* Load config file */
     PcConfig_Load("config.cfg");
     PcAudioConfig_Load("config.cfg");
+    Pc_Split_AfterConfigLoad(); /* Player 2's window: its half of the screen, no intros, no Steam, read-only config */
 
     /* After the config load, or the parsed skip_intros would clobber it.
      * map0_s00 is the compiled-in default, so a config still naming it counts as
@@ -1070,6 +1080,7 @@ int main(int argc, char* argv[])
     PsyX_Initialise("Silent Hill", windowWidth, windowHeight, g_PcConfig.fullscreen);
 
     SH_LOG("PsyCross initialized. Window: %dx%d", windowWidth, windowHeight);
+    Pc_Split_AfterWindow();
 
     /* Needs the GL context, so it runs here rather than beside the system-RAM
      * clamp above. Same rule as that one: only ever lowers. */
@@ -1419,6 +1430,7 @@ int main(int argc, char* argv[])
     /* Play-as character (config player_character): retargets Harry's
      * CHARA_FILE_INFOS row before the boot-time WorldGfx_HarryCharaLoad. */
     { extern void Pc_PlayAs_Init(void); Pc_PlayAs_Init(); }
+    Pc_Split_AfterPlayAsInit();
 
     CdInit();
 

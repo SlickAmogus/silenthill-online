@@ -2563,6 +2563,10 @@ void MainLoop(void) // 0x80032EE0
             Pc_MouseCursor_FrameUpdate();
         }
 
+        /* Split screen (pc_split_screen.c): Player 2's window joins Player 1's
+         * room and follows it; Player 1's watches the second window. */
+        { extern void Pc_Split_Tick(void); Pc_Split_Tick(); }
+
         /* Console `fmv`: once the fade-out it started lands, this blocks in
          * FMV_Play and fades back in afterwards. */
         {

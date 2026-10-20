@@ -16,6 +16,7 @@
 #include "pc_coop_save.h"
 #include "pc_config.h"
 #include "pc_playas.h" /* the Character row */
+#include "pc_split_screen.h"
 #include "pc_mouse_cursor.h" /* hover/click hit-test in Update, like the other windows */
 #include "sh_net.h"
 #include "sh_net_session.h"
@@ -34,6 +35,7 @@ typedef enum
 {
     COOP_PAGE_ROOT = 0,     /* main-menu: Host / Join / Back */
     COOP_PAGE_HOST_SETUP,
+    COOP_PAGE_SPLIT,        /* split screen: Player 2's pad, character, layout, sound, load, start */
     COOP_PAGE_HOST,
     COOP_PAGE_JOIN,
     COOP_PAGE_ROOMS,        /* server room browser */
@@ -74,6 +76,12 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #define COOP_HOST_SERVER 1
 #define COOP_HOST_STEAM  2
 static int s_hostMode = COOP_HOST_THISPC;
+
+/* Split screen (pc_split_screen.c): Player 2's controller (index among the
+ * attached ones) and character. The layout and what their window plays are
+ * config (split_layout, split_p2_audio). */
+static int s_splitPad    = 0;
+static int s_splitPlayAs = -1;
 
 /* The co-op relay server: the configured online server, or loopback. */
 static const char* Coop_ServerIp(void)
@@ -344,13 +352,71 @@ static void Coop_StartHosting(void)
     s_sel  = 0;
 }
 
+static void Coop_EnterSplit(void)
+{
+    s_saveCount = Pc_CoopSave_List(s_saves, (int)(sizeof(s_saves) / sizeof(s_saves[0])));
+    s_loadIdx   = -1;
+    if (s_splitPlayAs < 0 || s_splitPlayAs >= Pc_PlayAs_Count())
+        s_splitPlayAs = (Pc_PlayAs_Current() + 1) % Pc_PlayAs_Count(); /* someone other than Player 1 */
+    if (s_splitPad >= Pc_Split_PadCount())
+        s_splitPad = 0;
+    s_msg[0] = '\0';
+    s_page   = COOP_PAGE_SPLIT;
+    s_sel    = 0;
+}
+
+/* Start: a room on this PC's relay (what "Host on: This PC" opens, so a friend
+ * can still join over the network), then Player 2's window, which joins it.
+ * The lobby starts the game by itself once Player 2 is in. */
+static void Coop_StartSplit(void)
+{
+    const char* err = NULL;
+
+    if (Pc_Split_PadCount() == 0)
+    {
+        snprintf(s_msg, sizeof(s_msg), "Plug in a controller for Player 2 first.");
+        return;
+    }
+    SH_DBG("[COOP] split screen: pad %d, character %d, layout %d, p2 audio %d",
+           s_splitPad, s_splitPlayAs, g_PcConfig.splitLayout, g_PcConfig.splitP2Audio);
+    ShSession_RequestHostListen(Coop_ServerPort(), 4);
+    if (!Pc_Split_Start(s_splitPad, s_splitPlayAs, Coop_ServerPort(), &err))
+    {
+        snprintf(s_msg, sizeof(s_msg), "%s", err ? err : "Could not start split screen.");
+        ShSession_RequestLeave();
+        return;
+    }
+    s_page = COOP_PAGE_HOST;
+    s_sel  = 0;
+}
+
+void Pc_CoopMenu_SplitAutoStart(void)
+{
+    if (ShSession_Active() && ShSession_IsHost() && ShSession_MemberCount() >= 2)
+    {
+        Pc_Split_HostStarted();
+        Coop_RequestStart();
+    }
+}
+
+void Pc_CoopMenu_OpenSplitGuest(void)
+{
+    s_open   = 1;
+    s_inGame = 0;
+    s_page   = COOP_PAGE_JOIN;
+    s_sel    = 0;
+    s_msg[0] = '\0';
+    SH_DBG("[COOP] split screen Player 2: lobby opened");
+}
+
 /* Rows on the current page; the last row is always Back. */
 int Pc_CoopMenu_RowCount(void)
 {
     switch (s_page)
     {
-    case COOP_PAGE_ROOT:       return 3; /* Host, Join, Back */
+    case COOP_PAGE_ROOT:       return 4; /* Host, Join, Split Screen, Back */
     case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
+    case COOP_PAGE_SPLIT:      return 7; /* Pad, Character, Layout, Sound, Load, Start, Back */
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
@@ -366,6 +432,7 @@ int Pc_CoopMenu_View(void)
     switch (s_page)
     {
     case COOP_PAGE_HOST_SETUP: return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_SPLIT:      return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
@@ -388,6 +455,7 @@ const char* Pc_CoopMenu_Title(void)
     switch (s_page)
     {
     case COOP_PAGE_HOST_SETUP: return "HOST A GAME";
+    case COOP_PAGE_SPLIT:      return "SPLIT SCREEN";
     case COOP_PAGE_HOST:       return "LOBBY";
     case COOP_PAGE_JOIN:       return "JOIN A GAME";
     case COOP_PAGE_ROOMS:      return "GAMES";
@@ -410,6 +478,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
     case COOP_PAGE_ROOT:
         if (i == 0) snprintf(out, cap, "Host Game");
         else if (i == 1) snprintf(out, cap, "Join Game");
+        else if (i == 2) snprintf(out, cap, "Split Screen");
         else snprintf(out, cap, "Back");
         break;
 
@@ -434,6 +503,26 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         else if (i == 6) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
         else snprintf(out, cap, "Back");
+        break;
+
+    case COOP_PAGE_SPLIT:
+        if (i == 0)      snprintf(out, cap, "Player 2 Pad:  %s", Pc_Split_PadName(s_splitPad));
+        else if (i == 1) snprintf(out, cap, "Player 2 Is:  %s", Pc_PlayAs_Label(s_splitPlayAs));
+        else if (i == 2) snprintf(out, cap, "Layout:  %s", g_PcConfig.splitLayout ? "Side by Side" : "Top and Bottom");
+        else if (i == 3)
+        {
+            static const char* const au[3] = { "Effects Only", "Everything", "Muted" };
+            snprintf(out, cap, "Player 2 Sound:  %s", au[g_PcConfig.splitP2Audio % 3]);
+        }
+        else if (i == 4)
+        {
+            if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
+                snprintf(out, cap, "Load:  %s", s_saves[s_loadIdx].name);
+            else
+                snprintf(out, cap, "Load:  New Game");
+        }
+        else if (i == 5) snprintf(out, cap, "Start Split Screen");
+        else             snprintf(out, cap, "Back");
         break;
 
     case COOP_PAGE_HOST:
@@ -563,6 +652,11 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
 
 
     case COOP_PAGE_HOST:
+        if (Pc_Split_HostWaiting())
+        {
+            Pc_Split_StatusText(out, cap);
+            break;
+        }
         ShSession_StatusLine(out, cap);
         if (!ShSession_IsHost() && ShSession_Active())
         {
@@ -578,6 +672,11 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         break;
 
     case COOP_PAGE_JOIN:
+        if (Pc_Split_Role() == 2)
+        {
+            snprintf(out, cap, "Connecting to Player 1's game...");
+            break;
+        }
         if (ShSteam_LastError()[0])
         {
             snprintf(out, cap, "Steam: %s", ShSteam_LastError());
@@ -623,6 +722,12 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
             snprintf(out, cap, "Opens a Steam lobby; invite friends from the overlay.");
         break;
 
+    case COOP_PAGE_SPLIT:
+        if (s_msg[0])                      snprintf(out, cap, "%s", s_msg);
+        else if (Pc_Split_PadCount() == 0) snprintf(out, cap, "No controller found. Plug one in for Player 2.");
+        else                               snprintf(out, cap, "Player 1 keeps the keyboard, mouse and other pads. Player 2 gets the pad above.");
+        break;
+
     case COOP_PAGE_PLAYERS:
         if (s_msg[0])                 snprintf(out, cap, "%s", s_msg);
         else if (ShSession_IsHost())  snprintf(out, cap, "Select a player to remove them from the game.");
@@ -665,6 +770,7 @@ static void Coop_Confirm(void)
     case COOP_PAGE_ROOT:
         if (s_sel == 0)      { Coop_EnterHostSetup(); }
         else if (s_sel == 1) { s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); }
+        else if (s_sel == 2) { Coop_EnterSplit(); }
         else                 { Pc_CoopMenu_Close(); }
         break;
 
@@ -680,6 +786,30 @@ static void Coop_Confirm(void)
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
+    case COOP_PAGE_SPLIT:
+        if (s_sel == 0)
+        {
+            int n = Pc_Split_PadCount();
+            s_splitPad = (n > 0) ? (s_splitPad + 1) % n : 0;
+        }
+        else if (s_sel == 1) { s_splitPlayAs = (s_splitPlayAs + 1) % Pc_PlayAs_Count(); }
+        else if (s_sel == 2)
+        {
+            g_PcConfig.splitLayout = !g_PcConfig.splitLayout;
+            PcConfig_SaveKeyValue("split_layout", g_PcConfig.splitLayout ? "1" : "0");
+        }
+        else if (s_sel == 3)
+        {
+            char v[4];
+            g_PcConfig.splitP2Audio = (g_PcConfig.splitP2Audio + 1) % 3;
+            snprintf(v, sizeof(v), "%d", g_PcConfig.splitP2Audio);
+            PcConfig_SaveKeyValue("split_p2_audio", v);
+        }
+        else if (s_sel == 4) { s_loadIdx = (s_loadIdx + 1 >= s_saveCount) ? -1 : s_loadIdx + 1; }
+        else if (s_sel == 5) { Coop_StartSplit(); }
+        else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
+        break;
+
     case COOP_PAGE_HOST:
         if (ShSession_Active() && !ShSession_IsHost())
         {
@@ -691,7 +821,7 @@ static void Coop_Confirm(void)
         if (s_sel == 0)      { ShSession_RequestInvite(); }               /* Steam invite; the room code is informational */
         else if (s_sel == 1) { Pc_PlayAs_Cycle(1); }                      /* Character */
         else if (s_sel == 2) { Coop_RequestStart(); }                     /* Start Game */
-        else if (s_sel == 3) { ShSession_RequestLeave(); s_page = COOP_PAGE_ROOT; s_sel = 0; }
+        else if (s_sel == 3) { ShSession_RequestLeave(); Pc_Split_Stop(); s_page = COOP_PAGE_ROOT; s_sel = 0; } /* Close Room */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 

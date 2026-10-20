@@ -53,6 +53,27 @@ your character, point at one or press its number, let go: everyone on your
 map hears it from where you stand. A folder under gamedata/voices named by
 voice_pack can replace them with your own WAVs on your machine.
 
+**Split screen.** Two players on one PC: Multiplayer, **Split Screen**.
+Pick which controller is **Player 2's** (Player 1 keeps the keyboard, the
+mouse and every other controller), **Player 2's character**, the
+**Layout** (Player 2 below, or side by side), what Player 2's half plays
+(**Effects Only** by default, so the music is not heard twice; or
+Everything, or Muted), New Game or a co-op save, then **Start Split
+Screen**. The game opens a room on this PC, launches a second copy of
+itself for Player 2 in the other half of the screen, and starts as soon as
+that copy has joined; no port forwarding is needed, and a friend can still
+join the same game over the network by IP. Both halves are a normal co-op
+game from then on: Player 1 is the host, Player 1's pause pauses both,
+and the second window closes when Player 1 leaves to the title or quits.
+Player 2's window runs on Player 1's config.cfg and never writes to it, and
+it stays out of the living world, Steam, Discord and RetroAchievements,
+which are per PC rather than per player.
+
+**Mouse and keyboard in menus.** As soon as a key or a controller is used,
+the pointer hides and stops selecting the row under it until the mouse
+moves again, so a pointer left resting on a menu never drags the
+selection back.
+
 ---
 
 ## What is shared

@@ -413,6 +413,8 @@ static const struct { const char* key; size_t off; } s_GlobalBinds[] = {
 /* Remembered at load time so PcConfig_SaveMapName writes the same file. */
 static char s_configPath[512] = "config.cfg";
 
+int g_PcConfigReadOnly;
+
 static void TrimWhitespace(char* s)
 {
     /* trim trailing */
@@ -883,6 +885,15 @@ void PcConfig_Load(const char* path)
         {
             int v = atoi(value);
             g_PcConfig.onlineHealthBars = (v < 0) ? 0 : (v > 3) ? 3 : v;
+        }
+        else if (strcmp(key, "split_layout") == 0)
+        {
+            g_PcConfig.splitLayout = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "split_p2_audio") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.splitP2Audio = (v < 0) ? 0 : (v > 2) ? 2 : v;
         }
         else if (strcmp(key, "online_pvp_damage") == 0)
         {
@@ -1846,6 +1857,8 @@ void PcConfig_SaveKeyValues(const char* const* keys, const char* const* values, 
 
     if (keys == NULL || values == NULL || count <= 0)
         return;
+    if (g_PcConfigReadOnly)
+        return;
     if (count > (int)sizeof(found))
         count = (int)sizeof(found);
     memset(found, 0, (size_t)count);
@@ -1910,6 +1923,8 @@ void PcConfig_SaveKeyValues(const char* const* keys, const char* const* values, 
  * file, pasted into a message, and pasted back. */
 void PcConfig_SaveBindLines(const char* const* lines, int count)
 {
+    if (g_PcConfigReadOnly)
+        return;
     char** buf;
     int    total = 0;
     int    n = 0;
@@ -1986,6 +2001,8 @@ void PcConfig_ApplyXaVolume(float norm)
  * choice persists to the next New Game / launch. */
 void PcConfig_SaveMapName(const char* mapName)
 {
+    if (g_PcConfigReadOnly)
+        return;
     if (mapName == NULL || mapName[0] == '\0')
         return;
     PcConfig_SaveKeyValue("map", mapName);

@@ -532,6 +532,8 @@ typedef struct {
                                * ghosts and messages show, ours are placed). Off = private
                                * (online_coop_living_world). */
     int   onlineHealthBars;   /* co-op: 0 none, 1 mine, 2 partners', 3 both (online_health_bars) */
+    int   splitLayout;        /* split screen: 0 = Player 2 below Player 1, 1 = side by side (split_layout) */
+    int   splitP2Audio;       /* split screen, Player 2's window: 0 = effects only, 1 = everything, 2 = muted (split_p2_audio) */
     float onlinePvpDamage;    /* scale on weapon damage vs players (online_pvp_damage, default 0.15:
                                * weapons are tuned for 200-40000 HP monsters, Harry has 100) */
     float onlineRespawnSeconds; /* co-op: how long a dead player lies there before respawning
@@ -623,6 +625,10 @@ void PcConfig_SaveMapName(const char* mapName);
  * preserving every other line + comment. Used to persist runtime changes
  * (control_style) and to publish game-owned lists (control_styles) so the
  * launcher reflects whatever the installed build supports. */
+/* 1 = this process never writes the config: split screen's Player 2 window
+ * runs on Player 1's config.cfg and must not overwrite it. */
+extern int g_PcConfigReadOnly;
+
 void PcConfig_SaveKeyValue(const char* key, const char* value);
 
 /* Set the FMV/voice (XA) master volume [0,1]: clamps, updates g_PcConfig +
