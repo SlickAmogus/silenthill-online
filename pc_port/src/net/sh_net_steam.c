@@ -1022,6 +1022,19 @@ void ShSteam_RequestLobbyList(void)
 #endif
 }
 
+/* Whether Steam injected its overlay into this process: only when the game
+ * was launched through Steam (or added there as a non-Steam game). Without
+ * it the invite dialog cannot show and Steam does not list the player as in
+ * the game. */
+int ShSteam_OverlayEnabled(void)
+{
+#if defined(_WIN32)
+    return s_ready && s_IsOverlayEnabled && s_iUtils && s_IsOverlayEnabled(s_iUtils);
+#else
+    return 0;
+#endif
+}
+
 int ShSteam_LobbyListCount(void)
 {
     return s_lobbyCount;
@@ -1147,7 +1160,14 @@ static void ShSteam_OnSessionRequest(const u8_* p, int cb)
     from = ShSteamIdentity_Get(p);
 
     /* Only lobby members. Without this check anyone who learns the SteamID
-     * could open a session and start feeding the protocol parser. */
+     * could open a session and start feeding the protocol parser. A member's
+     * first message can beat the roster callback that lists them, so a miss
+     * re-reads the roster before deciding. */
+    for (i = 0; i < s_memberCount && s_members[i] != from; i++) {}
+    if (i == s_memberCount)
+    {
+        ShSteam_RefreshMembers();
+    }
     for (i = 0; i < s_memberCount; i++)
     {
         if (s_members[i] == from)

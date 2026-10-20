@@ -859,6 +859,16 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
     {
         g_SysWork.counters_1C[1] = 0;
     }
+    /* Same for the multiplayer front end and a room being waited in: the
+     * timer would cut to the intro movie under a lobby (and a guest pulled
+     * off the menu misses the host's start). The title music plays on. */
+    {
+        extern int ShSession_Active(void);
+        if (Pc_CoopMenu_IsOpen() || ShSession_Active())
+        {
+            g_SysWork.counters_1C[1] = 0;
+        }
+    }
 #endif
 
     if (!playInGameDemo)

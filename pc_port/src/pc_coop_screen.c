@@ -5,13 +5,16 @@
  * The menu model lives in pc_coop_menu.c (pages, rows, selection, input);
  * this is its drawer, in the style of the native Achievements and Controls
  * screens (pc_native_menu_draw.c: FONT16 text, retail bullets and the gliding
- * gold underline, black background on the title) with the inventory's blue
- * double frame around the panel. On the title screen it replaces the menu
- * art; in game it sits over the live world on a darkened slab, since a
- * co-op game never pauses.
+ * gold underline, scroll arrows, black background on the title) with the
+ * inventory's blue double frame around the panel. On the title screen it
+ * replaces the menu art; in game it sits over the live world on a darkened
+ * slab, since a co-op game never pauses.
  *
- * Everything is in the 320x224 text space the native layer uses, so the one
- * layout serves the 448-line title and the 224-line game.
+ * FONT16 is wide: about 27 glyphs fit the 320-wide text space, so a label
+ * shares its row with its value by measuring, and whatever still does not
+ * fit scrolls through its box (a word at a time, pausing at each end) rather
+ * than being cut. On the 448-line title the small 8-px font exists and the
+ * status and hint lines use it; in game only the tall font does.
  */
 
 #include <stdio.h>
@@ -24,24 +27,27 @@
 #include "lang_text.h"
 #include "pc_coop_menu.h"
 #include "pc_coop_screen.h"
+#include "pc_discord.h" /* Pc_MapAreaName */
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu.h"
 #include "pc_native_menu_draw.h"
+#include "sh_net_session.h"
 
-#define CS_X0        20
-#define CS_X1        300
+#define CS_X0        16
+#define CS_X1        304
 #define CS_FRAME_Y0  28
 #define CS_FRAME_Y1  214
 #define CS_HEADING_Y 8
-#define CS_LIST_Y    40
+#define CS_LIST_Y    38
+#define CS_LIST_Y1   186          /* rows stop here */
 #define CS_PITCH     18
-#define CS_VISIBLE   8
-#define CS_BULLET_X  36
+#define CS_ENTRY_H   30           /* a two-line table entry */
+#define CS_BULLET_X  28
 #define CS_TEXT_X    (CS_BULLET_X + NM_BULLET_TEXT_DX)
-#define CS_RIGHT_X   284
-#define CS_STATUS_Y  192
+#define CS_RIGHT_X   292
+#define CS_STATUS_Y  190
 #define CS_HINT_Y    216
-#define CS_TABLE_HDR_DY 14
+#define CS_MAX_ROWS  64
 
 #define CS_OT_LINE  6  /* with the rules */
 #define CS_OT_SHADE 9  /* with the highlight's shade */
@@ -90,7 +96,7 @@ static void cs_shade(int x0, int y0, int x1, int y1)
 
     setPolyF4(poly);
     setSemiTrans(poly, true);
-    setRGB0(poly, 104, 104, 104);
+    setRGB0(poly, 112, 112, 112);
     setXY4(poly, cs_px(x0), cs_py(y0), cs_px(x1), cs_py(y0), cs_px(x0), cs_py(y1), cs_px(x1), cs_py(y1));
     addPrim(&g_OrderingTable2[g_ActiveBufferIdx].org[CS_OT_SHADE], poly);
     GsOUT_PACKET_P = (PACKET*)(poly + 1);
@@ -104,21 +110,60 @@ static void cs_clean(const char* in, char* out, size_t cap)
     Nm_SanitizeGlyphs(in, out, cap, 1);
 }
 
-static void cs_text(int x, int y, int color, const char* s)
+static int cs_w(const char* s)
 {
-    Nm_TextDrawVerbatim(x, y, NM_TEXT_TALL, color, s);
+    return Pc_LangMenuTextWidth(s);
 }
 
-static void cs_text_fit(int x, int y, int maxW, int color, const char* s)
+/* The widest prefix of s (in whole glyphs) that fits maxW; its glyph count. */
+static int cs_fit_count(const char* s, int maxW)
 {
-    char fit[NM_LINE_MAX];
-    Nm_FitEllipsis(s, fit, sizeof(fit), maxW, Pc_LangMenuTextWidth);
-    cs_text(x, y, color, fit);
+    char buf[NM_LINE_MAX];
+    int  n = (int)strlen(s), k;
+    if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
+    for (k = n; k > 0; k--)
+    {
+        memcpy(buf, s, (size_t)k);
+        buf[k] = '\0';
+        if (cs_w(buf) <= maxW) return k;
+    }
+    return 0;
+}
+
+/* Text in a box: drawn whole when it fits, else a window of it that scrolls
+ * through, pausing a moment at each end. Stable across frames because it is
+ * keyed on the frame counter, not on who asked. */
+static void cs_text_box(int x, int y, int maxW, int size, int color, const char* s)
+{
+    char buf[NM_LINE_MAX];
+    int  n = (int)strlen(s), fit, over, period, phase, off, k;
+
+    if (n == 0) return;
+    if (cs_w(s) <= maxW)
+    {
+        Nm_TextDrawVerbatim(x, y, size, color, s);
+        return;
+    }
+    fit = cs_fit_count(s, maxW);
+    if (fit <= 0) return;
+    over   = n - fit;                 /* glyphs that must scroll past */
+    period = over + 6;                /* 3 beats parked at each end */
+    phase  = (int)((g_TickCount / 24u) % (unsigned)period);
+    off    = phase - 3;
+    if (off < 0) off = 0;
+    if (off > over) off = over;
+    /* The window from off may hold more glyphs than `fit` where the glyphs
+     * are narrower; measure again from there. */
+    k = cs_fit_count(s + off, maxW);
+    if (k > (int)sizeof(buf) - 1) k = (int)sizeof(buf) - 1;
+    memcpy(buf, s + off, (size_t)k);
+    buf[k] = '\0';
+    Nm_TextDrawVerbatim(x, y, size, color, buf);
 }
 
 static void cs_text_right(int rx, int y, int color, const char* s)
 {
-    cs_text(rx - Pc_LangMenuTextWidth(s), y, color, s);
+    Nm_TextDrawVerbatim(rx - cs_w(s), y, NM_TEXT_TALL, color, s);
 }
 
 /* "Label:  Value" rows show the value on the right. */
@@ -141,13 +186,13 @@ static int cs_split(const char* row, char* label, size_t lcap, char* value, size
     return 1;
 }
 
-static int cs_table_view(int view)
+static void cs_rule(int y)
 {
-    return view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS;
+    Nm_RuleDraw(CS_X0 + 8, CS_X1 - 8, y, 0);
 }
 
-/* Rows of the current page in the window: entries (table cells or bullet
- * rows) then the footer rows (Refresh / Back) as bullet rows. */
+/* Rows of the current page in the window: table entries (two lines each, a
+ * grey rule between) then the plain rows (Refresh / Back) as bullet rows. */
 void Pc_CoopScreen_Draw(void)
 {
     const int view    = Pc_CoopMenu_View();
@@ -155,11 +200,13 @@ void Pc_CoopScreen_Draw(void)
     const int sel     = Pc_CoopMenu_Selected();
     const int editing = Pc_CoopMenu_Editing();
     const int inGame  = Pc_CoopMenu_InGame();
-    const int table   = cs_table_view(view);
-    int       listY   = CS_LIST_Y + (table ? CS_TABLE_HDR_DY : 0);
-    int       visible = table ? CS_VISIBLE - 1 : CS_VISIBLE;
+    const int table   = (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS);
+    const int entries = (view == PC_COOP_VIEW_ROOMS) ? n - 2 : (view == PC_COOP_VIEW_PLAYERS) ? n - 1 : 0;
+    const int small   = cs_interlaced() ? NM_TEXT_SMALL : NM_TEXT_TALL;
+    int       rowY[CS_MAX_ROWS], rowH[CS_MAX_ROWS];
+    int       listY   = CS_LIST_Y + (table ? 16 : 0);
+    int       shown, y, i, hover = -1;
     char      text[NM_LINE_MAX], clean[NM_LINE_MAX];
-    int       i, hover = -1;
     NmInput   in;
 
     if (!Pc_CoopMenu_IsOpen())
@@ -167,10 +214,25 @@ void Pc_CoopScreen_Draw(void)
         return;
     }
 
-    /* Keep the selected row in the window. */
-    if (sel < s_top) s_top = sel;
-    if (sel >= s_top + visible) s_top = sel - visible + 1;
-    if (s_top > n - visible) s_top = n - visible;
+    /* Lay out from s_top until the list area is full; keep the selection in
+     * the window (rows have different heights, so this is iterative). */
+    for (;;)
+    {
+        y = listY;
+        shown = 0;
+        for (i = s_top; i < n && i < s_top + CS_MAX_ROWS; i++)
+        {
+            int h = (i < entries) ? CS_ENTRY_H : CS_PITCH;
+            if (y + h > CS_LIST_Y1) break;
+            rowY[shown] = y;
+            rowH[shown] = h;
+            y += h;
+            shown++;
+        }
+        if (sel < s_top && s_top > 0) { s_top = sel; continue; }
+        if (sel >= s_top + shown && shown > 0 && s_top + shown < n) { s_top++; continue; }
+        break;
+    }
     if (s_top < 0) s_top = 0;
 
     if (inGame)
@@ -191,10 +253,10 @@ void Pc_CoopScreen_Draw(void)
     NmInput_FromGame(&in);
     if (in.mouseOk && !editing)
     {
-        for (i = 0; i < visible && s_top + i < n; i++)
+        for (i = 0; i < shown; i++)
         {
-            int y = listY + i * CS_PITCH - 2;
-            if (in.mouseX >= CS_X0 && in.mouseX < CS_X1 && in.mouseY >= y && in.mouseY < y + CS_PITCH)
+            if (in.mouseX >= CS_X0 && in.mouseX < CS_X1 &&
+                in.mouseY >= rowY[i] - 2 && in.mouseY < rowY[i] - 2 + rowH[i])
             {
                 hover = s_top + i;
                 break;
@@ -210,100 +272,115 @@ void Pc_CoopScreen_Draw(void)
     /* Column headers. */
     if (table)
     {
-        const int y = CS_LIST_Y - 2;
+        const int hy = CS_LIST_Y - 2;
         if (view == PC_COOP_VIEW_ROOMS)
         {
-            cs_text(CS_BULLET_X, y, StringColorId_LightGrey, "GAME");
-            cs_text(164, y, StringColorId_LightGrey, "WHERE");
-            cs_text_right(CS_RIGHT_X, y, StringColorId_LightGrey, "PLAYERS");
+            Nm_TextDrawVerbatim(CS_BULLET_X, hy, NM_TEXT_TALL, StringColorId_LightGrey, "GAME");
+            cs_text_right(CS_RIGHT_X, hy, StringColorId_LightGrey, "PLAYERS");
         }
         else
         {
-            cs_text(CS_BULLET_X, y, StringColorId_LightGrey, "PLAYER");
-            cs_text_right(CS_RIGHT_X, y, StringColorId_LightGrey, "PING");
+            Nm_TextDrawVerbatim(CS_BULLET_X, hy, NM_TEXT_TALL, StringColorId_LightGrey, "PLAYER");
+            cs_text_right(CS_RIGHT_X, hy, StringColorId_LightGrey, "PING");
         }
-        Nm_RuleDraw(CS_X0 + 8, CS_X1 - 8, y + 15, 0);
+        cs_rule(hy + 15);
+        if (entries == 0)
+        {
+            Nm_TextDrawCentered(160, listY + 24, NM_TEXT_TALL, StringColorId_DarkGrey,
+                                view == PC_COOP_VIEW_ROOMS ? "NO_OPEN_GAMES_YET" : "NOBODY_HERE");
+        }
     }
 
-    for (i = 0; i < visible && s_top + i < n; i++)
+    for (i = 0; i < shown; i++)
     {
         const int row = s_top + i;
-        const int y   = listY + i * CS_PITCH;
+        const int ry  = rowY[i];
         const int on  = (row == sel) && !editing;
         const int col = on ? StringColorId_Gold : StringColorId_White;
 
         Pc_CoopMenu_RowText(row, text, (int)sizeof(text));
-        if (on)
-        {
-            Nm_HighlightDraw(CS_BULLET_X - 1, CS_RIGHT_X, y + 14);
-        }
 
-        if (view == PC_COOP_VIEW_ROOMS && row < n - 2)
+        if (row < entries)
         {
-            /* "<Host>'s Game  #code  (p/max)" -> three cells. */
-            char game[64] = "", where[48] = "", cnt[16] = "";
+            /* A list entry: name and the count on the first line, where it
+             * is on the second, a rule under it. */
+            char line1[64] = "", line2[64] = "", right[16] = "";
+            if (view == PC_COOP_VIEW_ROOMS)
             {
-                extern int  ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, char* host, int hostCap);
-                extern unsigned long long ShSession_RoomLobby(int i);
-                extern const char* Pc_MapAreaName(int idx);
                 int  code = 0, players = 0, max = 0, map = -1;
                 char host[40] = "";
                 ShSession_RoomGet(row, &code, &players, &max, &map, host, (int)sizeof(host));
-                snprintf(game, sizeof(game), "%s's Game", host[0] ? host : "Someone");
-                if (ShSession_RoomLobby(row)) snprintf(where, sizeof(where), "Steam  %s", map >= 0 ? Pc_MapAreaName(map) : "lobby");
-                else                          snprintf(where, sizeof(where), "%s", map >= 0 ? Pc_MapAreaName(map) : "In the lobby");
-                snprintf(cnt, sizeof(cnt), "%d/%d", players, max);
+                snprintf(line1, sizeof(line1), "%s's Game", host[0] ? host : "Someone");
+                if (ShSession_RoomLobby(row))
+                    snprintf(line2, sizeof(line2), "Steam  -  %s", map >= 0 ? Pc_MapAreaName(map) : "in the lobby");
+                else
+                    snprintf(line2, sizeof(line2), "Room %d  -  %s", code, map >= 0 ? Pc_MapAreaName(map) : "in the lobby");
+                snprintf(right, sizeof(right), "%d/%d", players, max);
             }
-            cs_clean(game, clean, sizeof(clean));
-            cs_text_fit(CS_BULLET_X, y, 120, col, clean);
-            cs_clean(where, clean, sizeof(clean));
-            cs_text_fit(164, y, 88, col, clean);
-            cs_clean(cnt, clean, sizeof(clean));
-            cs_text_right(CS_RIGHT_X, y, col, clean);
-            continue;
-        }
-        if (view == PC_COOP_VIEW_PLAYERS && row < n - 1)
-        {
-            /* "Name  (NNms)" -> name and ping. */
-            char* p = strstr(text, "  (");
-            if (p)
+            else
             {
-                char ping[16];
-                *p = '\0';
-                snprintf(ping, sizeof(ping), "%s", p + 3);
-                if (ping[0] && ping[strlen(ping) - 1] == ')') ping[strlen(ping) - 1] = '\0';
-                cs_clean(ping, clean, sizeof(clean));
-                cs_text_right(CS_RIGHT_X, y, col, clean);
+                const ShSessionMember* m = ShSession_Member(row);
+                snprintf(line1, sizeof(line1), "%s", m ? m->name : "?");
+                if (m && m->steamId == ShSession_HostId()) snprintf(line2, sizeof(line2), "Host");
+                else if (m && m->mapIdx >= 0)              snprintf(line2, sizeof(line2), "%s", Pc_MapAreaName(m->mapIdx));
+                else                                       snprintf(line2, sizeof(line2), "In the menus");
+                if (m && m->pingMs >= 0) snprintf(right, sizeof(right), "%d ms", m->pingMs);
             }
-            cs_clean(text, clean, sizeof(clean));
-            cs_text_fit(CS_BULLET_X, y, 180, col, clean);
+            if (on)
+            {
+                Nm_HighlightDraw(CS_BULLET_X - 1, CS_RIGHT_X, ry + 14);
+            }
+            cs_clean(right, clean, sizeof(clean));
+            cs_text_right(CS_RIGHT_X, ry, col, clean);
+            {
+                int rw = cs_w(clean);
+                cs_clean(line1, clean, sizeof(clean));
+                cs_text_box(CS_BULLET_X, ry, CS_RIGHT_X - rw - 8 - CS_BULLET_X, NM_TEXT_TALL, col, clean);
+            }
+            cs_clean(line2, clean, sizeof(clean));
+            cs_text_box(CS_BULLET_X + 8, ry + 14, CS_RIGHT_X - CS_BULLET_X - 8, small,
+                        on ? StringColorId_LightGrey : StringColorId_DarkGrey, clean);
+            cs_rule(ry + CS_ENTRY_H - 3);
             continue;
         }
 
-        Nm_BulletDraw(CS_BULLET_X, y, on);
+        if (on)
+        {
+            Nm_HighlightDraw(CS_BULLET_X - 1, CS_RIGHT_X, ry + 14);
+        }
+        Nm_BulletDraw(CS_BULLET_X, ry, on);
         {
             char label[NM_LINE_MAX], value[NM_LINE_MAX];
             if (cs_split(text, label, sizeof(label), value, sizeof(value)))
             {
-                cs_clean(label, clean, sizeof(clean));
-                cs_text_fit(CS_TEXT_X, y, 120, col, clean);
+                int vw;
                 cs_clean(value, clean, sizeof(clean));
-                cs_text_fit(CS_RIGHT_X - Pc_LangMenuTextWidth(clean) < CS_TEXT_X + 124
-                                ? CS_TEXT_X + 124 : CS_RIGHT_X - Pc_LangMenuTextWidth(clean),
-                            y, CS_RIGHT_X - (CS_TEXT_X + 124), on ? StringColorId_Gold : StringColorId_LightGrey, clean);
+                vw = cs_w(clean);
+                if (vw > 120) /* a value this long is the row's whole story */
+                {
+                    cs_text_box(CS_RIGHT_X - 120, ry, 120, NM_TEXT_TALL,
+                                on ? StringColorId_Gold : StringColorId_LightGrey, clean);
+                    vw = 120;
+                }
+                else
+                {
+                    cs_text_right(CS_RIGHT_X, ry, on ? StringColorId_Gold : StringColorId_LightGrey, clean);
+                }
+                cs_clean(label, clean, sizeof(clean));
+                cs_text_box(CS_TEXT_X, ry, CS_RIGHT_X - vw - 10 - CS_TEXT_X, NM_TEXT_TALL, col, clean);
             }
             else
             {
                 cs_clean(text, clean, sizeof(clean));
-                cs_text_fit(CS_TEXT_X, y, CS_RIGHT_X - CS_TEXT_X, col, clean);
+                cs_text_box(CS_TEXT_X, ry, CS_RIGHT_X - CS_TEXT_X, NM_TEXT_TALL, col, clean);
             }
         }
     }
 
-    if (n > visible)
+    if (s_top > 0 || s_top + shown < n)
     {
-        Nm_ScrollArrowDraw(160, CS_LIST_Y - 6, 1, s_top > 0);
-        Nm_ScrollArrowDraw(160, CS_STATUS_Y - 6, 0, s_top + visible < n);
+        Nm_ScrollArrowDraw(160, CS_LIST_Y - 8, 1, s_top > 0);
+        Nm_ScrollArrowDraw(160, CS_STATUS_Y - 4, 0, s_top + shown < n);
     }
 
     /* Status / the text being typed. */
@@ -311,7 +388,8 @@ void Pc_CoopScreen_Draw(void)
     if (text[0])
     {
         cs_clean(text, clean, sizeof(clean));
-        cs_text_fit(CS_X0 + 8, CS_STATUS_Y, CS_X1 - CS_X0 - 16, editing ? StringColorId_Gold : StringColorId_LightGrey, clean);
+        cs_text_box(CS_X0 + 8, CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0), CS_X1 - CS_X0 - 16, small,
+                    editing ? StringColorId_Gold : StringColorId_LightGrey, clean);
     }
 
     /* Key hints. */
@@ -320,7 +398,7 @@ void Pc_CoopScreen_Draw(void)
                          : Pc_CoopMenu_IsTopLevel() ? "ENTER CHOOSE    ESC CLOSE"
                                                     : "ENTER CHOOSE    ESC BACK";
         cs_clean(hint, clean, sizeof(clean));
-        Nm_TextDrawCentered(160, CS_HINT_Y, NM_TEXT_TALL, StringColorId_DarkGrey, clean);
+        Nm_TextDrawCentered(160, CS_HINT_Y + (small == NM_TEXT_SMALL ? 4 : 0), small, StringColorId_DarkGrey, clean);
     }
 
     Pc_MouseCursor_Show();

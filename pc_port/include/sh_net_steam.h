@@ -162,6 +162,7 @@ int         ShSteam_LobbyListCount(void);
 int         ShSteam_LobbyListGet(int i, unsigned long long* id, char* host, int hostCap, int* players, int* max, int* map);
 /* The last failure, for the menu; "" when nothing recent went wrong. */
 const char* ShSteam_LastError(void);
+int         ShSteam_OverlayEnabled(void); /* launched through Steam: overlay and invites work */
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */

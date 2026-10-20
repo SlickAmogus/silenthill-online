@@ -390,7 +390,7 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_HOST_SETUP: return "HOST A GAME";
     case COOP_PAGE_HOST:       return "LOBBY";
     case COOP_PAGE_JOIN:       return "JOIN A GAME";
-    case COOP_PAGE_ROOMS:      return "SERVER ROOMS";
+    case COOP_PAGE_ROOMS:      return "GAMES";
     case COOP_PAGE_INGAME:     return "MULTIPLAYER";
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
     case COOP_PAGE_PLAYER:     return s_playerName;
@@ -569,6 +569,11 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
             char live[128];
             SDL_strlcpy(live, out, sizeof(live));
             snprintf(out, cap, "%s   -   waiting for the host to start", live);
+        }
+        else if (s_hostMode == COOP_HOST_STEAM && ShSteam_Available() && !ShSteam_OverlayEnabled())
+        {
+            /* The one thing that makes Steam invites fail silently. */
+            snprintf(out, cap, "Steam overlay off: add the game to Steam (non-Steam game) and launch it there for invites.");
         }
         break;
 
