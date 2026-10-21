@@ -35,7 +35,8 @@ typedef enum
 {
     COOP_PAGE_ROOT = 0,     /* main-menu: Host / Join / Back */
     COOP_PAGE_HOST_SETUP,
-    COOP_PAGE_SPLIT,        /* split screen: Player 2's pad, character, layout, sound, load, start */
+    COOP_PAGE_SPLIT,        /* split screen: Player 2's pad, character, layout, sound, load, online, start */
+    COOP_PAGE_SPLIT_ONLINE, /* the online room's settings for a split-screen game */
     COOP_PAGE_HOST,
     COOP_PAGE_JOIN,
     COOP_PAGE_ROOMS,        /* server room browser */
@@ -82,6 +83,18 @@ static int s_hostMode = COOP_HOST_THISPC;
  * config (split_layout, split_p2_audio). */
 static int s_splitPad    = 0;
 static int s_splitPlayAs = -1;
+/* Online for a split-screen game: 0 = off (the room is still on this PC, so a
+ * friend can join by IP, and the game starts as soon as Player 2 is in);
+ * 1 = hosted on this PC, 2 = on my server. 1 and 2 wait in the lobby for
+ * Start Game. Steam cannot carry a split-screen game: Player 2's window has
+ * no Steam identity of its own. */
+#define COOP_SPLIT_OFF    0
+#define COOP_SPLIT_THISPC 1
+#define COOP_SPLIT_SERVER 2
+static int s_splitOnline = COOP_SPLIT_OFF;
+/* My Server: Player 2's window is launched once the room has its code. */
+static int          s_splitLaunch;
+static unsigned int s_splitLaunchMs;
 
 /* The co-op relay server: the configured online server, or loopback. */
 static const char* Coop_ServerIp(void)
@@ -356,6 +369,13 @@ static void Coop_EnterSplit(void)
 {
     s_saveCount = Pc_CoopSave_List(s_saves, (int)(sizeof(s_saves) / sizeof(s_saves[0])));
     s_loadIdx   = -1;
+    s_setMaxPlayers = g_PcConfig.onlineSteamMaxPlayers;
+    if (s_setMaxPlayers < 2) s_setMaxPlayers = 2;
+    if (s_setMaxPlayers > 4) s_setMaxPlayers = 4;
+    s_setPublic = 1;
+    s_setFps    = 60;
+    s_setLiving = g_PcConfig.onlineCoopLiving ? 1 : 0;
+    s_splitLaunch = 0;
     if (s_splitPlayAs < 0 || s_splitPlayAs >= Pc_PlayAs_Count())
         s_splitPlayAs = (Pc_PlayAs_Current() + 1) % Pc_PlayAs_Count(); /* someone other than Player 1 */
     if (s_splitPad >= Pc_Split_PadCount())
@@ -365,9 +385,10 @@ static void Coop_EnterSplit(void)
     s_sel    = 0;
 }
 
-/* Start: a room on this PC's relay (what "Host on: This PC" opens, so a friend
- * can still join over the network), then Player 2's window, which joins it.
- * The lobby starts the game by itself once Player 2 is in. */
+/* Start: a room (on this PC's relay, as "Host on: This PC" opens, so a friend
+ * can still join over the network; or on my server), then Player 2's window,
+ * which joins it. With Online off the lobby starts the game by itself once
+ * Player 2 is in; otherwise it waits for Start Game like any hosted room. */
 static void Coop_StartSplit(void)
 {
     const char* err = NULL;
@@ -377,10 +398,30 @@ static void Coop_StartSplit(void)
         snprintf(s_msg, sizeof(s_msg), "Plug in a controller for Player 2 first.");
         return;
     }
-    SH_DBG("[COOP] split screen: pad %d, character %d, layout %d, p2 audio %d",
-           s_splitPad, s_splitPlayAs, g_PcConfig.splitLayout, g_PcConfig.splitP2Audio);
-    ShSession_RequestHostListen(Coop_ServerPort(), 4);
-    if (!Pc_Split_Start(s_splitPad, s_splitPlayAs, Coop_ServerPort(), &err))
+    if (s_splitOnline == COOP_SPLIT_SERVER && !g_PcConfig.onlineServer[0])
+    {
+        snprintf(s_msg, sizeof(s_msg), "No server is configured (online_server in config.cfg).");
+        return;
+    }
+    SH_DBG("[COOP] split screen: pad %d, character %d, layout %d, p2 audio %d, online %d",
+           s_splitPad, s_splitPlayAs, g_PcConfig.splitLayout, g_PcConfig.splitP2Audio, s_splitOnline);
+    g_PcConfig.onlineSteamMaxPlayers = s_setMaxPlayers;
+    g_PcConfig.onlineSteamPublic     = s_setPublic;
+    g_PcConfig.fpsCap                = s_setFps;
+    g_PcConfig.onlineCoopLiving      = s_setLiving;
+    if (s_splitOnline == COOP_SPLIT_SERVER)
+    {
+        /* Player 2's window needs the room's code, which the server hands
+         * out once the room is open: launched from Pc_CoopMenu_SplitAutoStart. */
+        ShSession_RequestHostServer(Coop_ServerIp(), Coop_ServerPort(), s_setMaxPlayers, !s_setPublic, 1);
+        s_splitLaunch   = 1;
+        s_splitLaunchMs = SDL_GetTicks();
+        s_page = COOP_PAGE_HOST;
+        s_sel  = 0;
+        return;
+    }
+    ShSession_RequestHostListen(Coop_ServerPort(), s_splitOnline ? s_setMaxPlayers : 4);
+    if (!Pc_Split_Start(s_splitPad, s_splitPlayAs, Coop_ServerPort(), NULL, 0, &err))
     {
         snprintf(s_msg, sizeof(s_msg), "%s", err ? err : "Could not start split screen.");
         ShSession_RequestLeave();
@@ -392,7 +433,33 @@ static void Coop_StartSplit(void)
 
 void Pc_CoopMenu_SplitAutoStart(void)
 {
-    if (ShSession_Active() && ShSession_IsHost() && ShSession_MemberCount() >= 2)
+    if (s_splitLaunch)
+    {
+        const char*        err = NULL;
+        unsigned long long id  = ShSession_LobbyId();
+        if (ShSession_Active() && ShSession_IsHost() && id && id < 100000ull)
+        {
+            s_splitLaunch = 0;
+            if (!Pc_Split_Start(s_splitPad, s_splitPlayAs, Coop_ServerPort(), Coop_ServerIp(), (int)id, &err))
+            {
+                snprintf(s_msg, sizeof(s_msg), "%s", err ? err : "Could not start split screen.");
+                ShSession_RequestLeave();
+                s_page = COOP_PAGE_SPLIT;
+                s_sel  = 0;
+            }
+        }
+        else if ((int)(SDL_GetTicks() - s_splitLaunchMs) > 20000)
+        {
+            s_splitLaunch = 0;
+            snprintf(s_msg, sizeof(s_msg), "The server did not open a room.");
+            ShSession_RequestLeave();
+            s_page = COOP_PAGE_SPLIT;
+            s_sel  = 0;
+        }
+        return;
+    }
+    if (s_splitOnline == COOP_SPLIT_OFF && Pc_Split_HostWaiting() &&
+        ShSession_Active() && ShSession_IsHost() && ShSession_MemberCount() >= 2)
     {
         Pc_Split_HostStarted();
         Coop_RequestStart();
@@ -416,7 +483,8 @@ int Pc_CoopMenu_RowCount(void)
     {
     case COOP_PAGE_ROOT:       return 4; /* Host, Join, Split Screen, Back */
     case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
-    case COOP_PAGE_SPLIT:      return 7; /* Pad, Character, Layout, Sound, Load, Start, Back */
+    case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
+    case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
@@ -433,6 +501,7 @@ int Pc_CoopMenu_View(void)
     {
     case COOP_PAGE_HOST_SETUP: return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_SPLIT:      return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_SPLIT_ONLINE: return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
@@ -456,6 +525,7 @@ const char* Pc_CoopMenu_Title(void)
     {
     case COOP_PAGE_HOST_SETUP: return "HOST A GAME";
     case COOP_PAGE_SPLIT:      return "SPLIT SCREEN";
+    case COOP_PAGE_SPLIT_ONLINE: return "ONLINE SETTINGS";
     case COOP_PAGE_HOST:       return "LOBBY";
     case COOP_PAGE_JOIN:       return "JOIN A GAME";
     case COOP_PAGE_ROOMS:      return "GAMES";
@@ -521,7 +591,22 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
             else
                 snprintf(out, cap, "Load:  New Game");
         }
-        else if (i == 5) snprintf(out, cap, "Start Split Screen");
+        else if (i == 5)
+        {
+            const char* on = (s_splitOnline == COOP_SPLIT_SERVER) ? "My Server"
+                           : (s_splitOnline == COOP_SPLIT_THISPC) ? "This PC" : "Off";
+            snprintf(out, cap, "Online:  %s", on);
+        }
+        else if (s_splitOnline && i == 6) snprintf(out, cap, "Online Settings");
+        else if (i == (s_splitOnline ? 7 : 6)) snprintf(out, cap, "Start Split Screen");
+        else             snprintf(out, cap, "Back");
+        break;
+
+    case COOP_PAGE_SPLIT_ONLINE:
+        if (i == 0)      snprintf(out, cap, "Max Players:  %d", s_setMaxPlayers);
+        else if (i == 1) snprintf(out, cap, "Room List:  %s", s_setPublic ? "Listed" : "Hidden (code only)");
+        else if (i == 2) snprintf(out, cap, "Living World:  %s", s_setLiving ? "Shown" : "Private");
+        else if (i == 3) snprintf(out, cap, "FPS Lock:  %d", s_setFps);
         else             snprintf(out, cap, "Back");
         break;
 
@@ -652,6 +737,11 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
 
 
     case COOP_PAGE_HOST:
+        if (s_splitLaunch)
+        {
+            snprintf(out, cap, "Opening the room on the server...");
+            break;
+        }
         if (Pc_Split_HostWaiting())
         {
             Pc_Split_StatusText(out, cap);
@@ -806,8 +896,18 @@ static void Coop_Confirm(void)
             PcConfig_SaveKeyValue("split_p2_audio", v);
         }
         else if (s_sel == 4) { s_loadIdx = (s_loadIdx + 1 >= s_saveCount) ? -1 : s_loadIdx + 1; }
-        else if (s_sel == 5) { Coop_StartSplit(); }
+        else if (s_sel == 5) { s_splitOnline = (s_splitOnline + 1) % 3; }
+        else if (s_splitOnline && s_sel == 6) { s_page = COOP_PAGE_SPLIT_ONLINE; s_sel = 0; }
+        else if (s_sel == (s_splitOnline ? 7 : 6)) { Coop_StartSplit(); }
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
+        break;
+
+    case COOP_PAGE_SPLIT_ONLINE:
+        if (s_sel == 0)      { s_setMaxPlayers = (s_setMaxPlayers >= 4) ? 2 : s_setMaxPlayers + 1; }
+        else if (s_sel == 1) { s_setPublic = !s_setPublic; }
+        else if (s_sel == 2) { s_setLiving = !s_setLiving; }
+        else if (s_sel == 3) { s_setFps = (s_setFps == 60) ? 30 : 60; }
+        else                 { s_page = COOP_PAGE_SPLIT; s_sel = 6; }
         break;
 
     case COOP_PAGE_HOST:
@@ -1086,6 +1186,11 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
         {
             s_page = COOP_PAGE_PLAYERS;
             s_sel  = 0;
+        }
+        else if (s_page == COOP_PAGE_SPLIT_ONLINE)
+        {
+            s_page = COOP_PAGE_SPLIT;
+            s_sel  = 6;
         }
         else if (s_page == COOP_PAGE_PLAYERS)
         {

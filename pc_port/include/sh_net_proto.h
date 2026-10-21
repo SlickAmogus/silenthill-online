@@ -438,7 +438,8 @@ enum
     SHNET_CTRL_VOICE     = 4, /* member -> all: u8 chara, u8 line, u16 xaIdx */
     SHNET_CTRL_CUTSCENE  = 5, /* member -> all: u8 map, u8 row, s32 x,y,z, s16 rot (repeated while the scene runs) */
     SHNET_CTRL_DIE       = 6, /* member -> all: u8 map; I died in the alley (map0_s00), die with me */
-    SHNET_CTRL_GATE      = 7  /* member -> all: u8 map, u8 row, u8 state (1 waiting at a story door, 2 went through) */
+    SHNET_CTRL_GATE      = 7, /* member -> all: u8 map, u8 row, u8 state (1 waiting at a story door, 2 went through, 3 host: come through with me) */
+    SHNET_CTRL_SCENE_DONE = 8 /* member -> all: u8 map, u8 row; I am out of that scene */
 };
 #define SHNET_PERM_CHEATS 1    /* this guest may use the console, quick-menu cheats, binds */
 

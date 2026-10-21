@@ -53,6 +53,8 @@ static char          s_argGuid[64]; /* its GUID, in case the indices differ betw
 static int           s_argWin[4];   /* x, y, w, h of Player 2's window */
 static int           s_haveWin;
 static int           s_argPort;
+static char          s_argServer[64]; /* the room is on this server (My Server), not on Player 1's PC */
+static int           s_argRoom;       /* its code there */
 static unsigned long s_argParent;   /* Player 1's process id: when it is gone, so are we */
 static char          s_argName[24];
 static int           s_argPlayAs = -1;
@@ -104,6 +106,8 @@ int Pc_Split_ParseArg(int argc, char** argv, int* i)
     else if (strcmp(a, "-window") == 0)
         s_haveWin = (sscanf(v, "%d,%d,%d,%d", &s_argWin[0], &s_argWin[1], &s_argWin[2], &s_argWin[3]) == 4);
     else if (strcmp(a, "-port") == 0)    s_argPort = atoi(v);
+    else if (strcmp(a, "-server") == 0)  snprintf(s_argServer, sizeof(s_argServer), "%s", v);
+    else if (strcmp(a, "-room") == 0)    s_argRoom = atoi(v);
     else if (strcmp(a, "-parent") == 0)  s_argParent = strtoul(v, NULL, 10);
     else if (strcmp(a, "-name") == 0)    snprintf(s_argName, sizeof(s_argName), "%s", v);
     else if (strcmp(a, "-playas") == 0)  s_argPlayAs = atoi(v);
@@ -290,7 +294,7 @@ static void Split_RestoreOwnWindow(void)
     s_windowArranged = 0;
 }
 
-int Pc_Split_Start(int padK, int playAs, int port, const char** err)
+int Pc_Split_Start(int padK, int playAs, int port, const char* server, int code, const char** err)
 {
     static char cmd[1600];
     char        exe[512];
@@ -352,6 +356,8 @@ int Pc_Split_Start(int padK, int playAs, int port, const char** err)
     n = snprintf(cmd, sizeof(cmd),
                  "\"%s\" -split2 -pad %d -padguid %s -window %d,%d,%d,%d -port %d -parent %lu -name \"%s\" -playas %d -p2audio %d",
                  exe, dev, guid, r2.x, r2.y, r2.w, r2.h, port, PcProc_SelfPid(), name, playAs, g_PcConfig.splitP2Audio);
+    if (n > 0 && n < (int)sizeof(cmd) && server && server[0])
+        n += snprintf(cmd + n, sizeof(cmd) - (size_t)n, " -server \"%s\" -room %d", server, code);
     if (n > 0 && n < (int)sizeof(cmd) && s_dataArg[0])
         snprintf(cmd + n, sizeof(cmd) - (size_t)n, " -data \"%s\"", s_dataArg);
 
@@ -461,6 +467,10 @@ void Pc_Split_Tick(void)
 {
     unsigned int now = SDL_GetTicks();
 
+    /* A room on the server launches Player 2's window once it has its code;
+     * with Online off the game starts once Player 2 is in. */
+    Pc_CoopMenu_SplitAutoStart();
+
     if (s_child && s_childStopping)
     {
         if (!PcProc_Alive(s_child) || (int)(now - s_childStopMs) > 3000)
@@ -493,7 +503,8 @@ void Pc_Split_Tick(void)
         }
         if (s_hostWaiting)
         {
-            Pc_CoopMenu_SplitAutoStart();
+            if (ShSession_Active() && ShSession_MemberCount() >= 2)
+                Pc_Split_HostStarted(); /* Player 2 is in; an online room waits in the lobby */
             if (s_hostWaiting && (int)(now - s_hostWaitSince) > 90000)
                 snprintf(s_status, sizeof(s_status), "Player 2 did not connect. Close the room and try again.");
             else if (s_hostWaiting && ShSession_Active() && (int)(now - s_hostWaitSince) > 4000)
@@ -529,8 +540,17 @@ void Pc_Split_Tick(void)
                 int port = s_argPort ? s_argPort : SPLIT_DEFAULT_PORT;
                 s_nextJoinMs = now + 3000;
                 s_joinTries++;
-                ShSession_RequestJoinServer("127.0.0.1", port, 0, 0);
-                SH_DBG("[SPLIT] joining Player 1's room on 127.0.0.1:%d (try %d)", port, s_joinTries);
+                if (s_argServer[0])
+                {
+                    /* Player 1 hosts on their server: the same room, by its code. */
+                    ShSession_RequestJoinServer(s_argServer, port, s_argRoom, 1);
+                    SH_DBG("[SPLIT] joining Player 1's room %d on %s:%d (try %d)", s_argRoom, s_argServer, port, s_joinTries);
+                }
+                else
+                {
+                    ShSession_RequestJoinServer("127.0.0.1", port, 0, 0);
+                    SH_DBG("[SPLIT] joining Player 1's room on 127.0.0.1:%d (try %d)", port, s_joinTries);
+                }
             }
         }
         Split_ApplyP2Audio();

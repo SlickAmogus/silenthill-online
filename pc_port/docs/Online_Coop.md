@@ -54,20 +54,27 @@ map hears it from where you stand. A folder under gamedata/voices named by
 voice_pack can replace them with your own WAVs on your machine.
 
 **Split screen.** Two players on one PC: Multiplayer, **Split Screen**.
-Pick which controller is **Player 2's** (Player 1 keeps the keyboard, the
-mouse and every other controller), **Player 2's character**, the
-**Layout** (Player 2 below, or side by side), what Player 2's half plays
-(**Effects Only** by default, so the music, the voices and the movies are
-not heard twice; or Everything, or Muted), New Game or a co-op save, then
-**Start Split Screen**. The game opens a room on this PC, launches a second copy of
-itself for Player 2 in the other half of the screen, and starts as soon as
-that copy has joined; no port forwarding is needed, and a friend can still
-join the same game over the network by IP. Both halves are a normal co-op
-game from then on: Player 1 is the host, Player 1's pause pauses both,
-and the second window closes when Player 1 leaves to the title or quits.
-Player 2's window runs on Player 1's config.cfg and never writes to it, and
-it stays out of the living world, Steam, Discord and RetroAchievements,
-which are per PC rather than per player.
+Pick which controller is **2P Pad** (Player 1 keeps the keyboard, the mouse
+and every other controller), **2P Character**, the **Layout** (Player 2
+below, or side by side), what Player 2's half plays (**2P Sound**: Effects
+Only by default, so the music, the voices and the movies are not heard
+twice; or Everything, or Muted), New Game or a co-op save, and **Online**:
+
+| Online | What happens |
+|---|---|
+| Off | The game starts as soon as Player 2's window is in. The room still lives on this PC, so a friend can join by IP, before or during the game. |
+| This PC | The room lives on this PC and waits in the lobby until you press Start Game. Friends join by IP; **Online Settings** sets the player count, the room list, the living world and the FPS lock. |
+| My Server | The room is opened on your configured server; Player 2's window joins it there by its code, as do your friends (room list, code), and the lobby waits for Start Game. |
+
+Then **Start Split Screen**. The game launches a second copy of itself for
+Player 2 in the other half of the screen; no port forwarding is needed for
+Player 2. Both halves are a normal co-op game from then on: Player 1 is the
+host, Player 1's pause pauses both, and the second window closes when
+Player 1 leaves to the title or quits. Player 2's window runs on Player 1's
+config.cfg and never writes to it, and it stays out of the living world,
+Steam, Discord and RetroAchievements, which are per PC rather than per
+player. A split-screen game cannot be hosted on Steam: Player 2's window has
+no Steam identity of its own.
 
 **Lobby music.** The title screen is silent, so the multiplayer menu and a
 room being waited in play the piece heard over the results screen after
@@ -106,21 +113,27 @@ selection back.
   you too. A scene that starts the moment a map loads (the opening of the
   game, waking in the cafe) starts for everyone on the host's frame: the
   host waits for a partner who is still loading or still in a movie, and a
-  guest waits for the host's go. In every shared scene the players sit or
-  stand in the same arrangement on every screen: the host where the script
-  put them, each guest a step aside, and in the cafe the first guest sits
-  deeper on Harry's bench with the rest across the table. A partner on
-  another map is not pulled across; they play the scene when they get
-  there.
+  guest waits for the host's go. Scenes end together as well: the first
+  player out of one (finished, or skipped) waits on a black "Waiting for
+  cutscene..." screen that lists the scene's players, grey until each is
+  out, and the game goes on when all are. Someone who joins the game during
+  a scene plays it too, and the others wait for them at its end. In every
+  shared scene the players sit or stand in the same arrangement on every
+  screen: the host where the script put them, each guest a step aside, and
+  in the cafe the first guest sits deeper on Harry's bench with the rest
+  across the table. A partner on another map is not pulled across; they
+  play the scene when they get there.
 - **Story doors.** A door with a scene or a point of no return behind it
   (the two gates in the alley) does not pull anyone: whoever uses it waits
   there under "Waiting for other players..." until every partner on the map
   who has not been through it is close by, and partners get a note that
-  someone is waiting at a gate. Using the door again goes on without them,
-  and the wait gives up after a minute and a half on its own. The alley's
-  own progress (which gate you are past, the dark closing in) is each
-  player's, so a guest keeps their cameras and their gate until they walk
-  through it themselves.
+  someone is waiting at a gate. A guest can only wait (the wait gives up
+  after a minute and a half on its own). The host, using the door a second
+  time, is asked whether to bring everyone through: Action takes every
+  partner on the map through the door with the host, Cancel keeps waiting.
+  The alley's own progress (which gate you are past, the dark closing in)
+  is each player's, so a guest keeps their cameras and their gate until
+  they walk through it themselves.
 - **The alley.** Harry's death at the end of the opening is what takes him
   to the cafe, so in the alley one player's death is everyone's: when a
   partner falls there, you fall too, and the cafe scene starts for the whole

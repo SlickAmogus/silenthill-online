@@ -1933,16 +1933,38 @@ void ShNetUi_Draw(void)
                             (int)((float)px * 0.8f), 0.62f, 0.72f, 1.0f, 0.9f);
     }
 
-    /* Co-op: a scene waiting for a partner to load, or one we are joining. */
+    /* Co-op: the end of a scene, waiting for the others: a black screen with
+     * the scene's players, grey until they are out of it. */
+    if (ShNetCut_WaitActive())
     {
-        char line[128];
-        if (ShNetCut_StatusText(line, (int)sizeof(line)))
+        char  line[96];
+        int   i, ready = 0;
+        float y = s_vpH * 0.40f;
+        Nu_FillPx(0.0f, 0.0f, s_vpW, s_vpH, 0.0f, 0.0f, 0.0f, 1.0f);
+        Nu_DrawTextCentered("Waiting for cutscene...", s_vpW * 0.5f, y, px, 0.92f, 0.90f, 0.80f, 1.0f);
+        y += (float)px * 2.0f;
+        for (i = 0; i < 8 && ShNetCut_WaitEntry(i, line, (int)sizeof(line), &ready); i++)
         {
-            const float w = s_vpW * 0.40f, h = (float)px * 2.4f;
+            const float c = ready ? 0.95f : 0.42f;
+            Nu_DrawTextCentered(line, s_vpW * 0.5f, y, (int)((float)px * 0.9f), c, c, c, 1.0f);
+            y += (float)px * 1.3f;
+        }
+    }
+    else
+    {
+        /* A scene waiting for a partner, a door waiting for the others, a join. */
+        char line[128], hint[128];
+        if (ShNetCut_StatusText(line, (int)sizeof(line), hint, (int)sizeof(hint)))
+        {
+            const float w = s_vpW * 0.44f, h = (float)px * (hint[0] ? 3.6f : 2.4f);
             const float x = (s_vpW - w) * 0.5f, y = s_vpH * 0.30f;
             Nu_Panel(x, y, w, h, 0.88f);
             Nu_ShFrame(x, y, w, h, 1.0f, 0.9f);
             Nu_DrawTextCentered(line, s_vpW * 0.5f, y + (float)px * 0.7f, px, 0.92f, 0.90f, 0.80f, 1.0f);
+            if (hint[0])
+            {
+                Nu_DrawTextCentered(hint, s_vpW * 0.5f, y + (float)px * 2.2f, (int)((float)px * 0.8f), 0.62f, 0.72f, 1.0f, 0.95f);
+            }
         }
     }
 
