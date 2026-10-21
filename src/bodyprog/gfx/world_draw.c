@@ -1071,8 +1071,14 @@ s32 WorldGfx_PlayerHeldItemSet(e_InvItemId itemId) // 0x8003CDA0
         heldItem->lmHdr = Pc_BigLm_Redirect(fileIdx, heldItem->lmHdr);
 #endif
         heldItem->queueIdx = Fs_QueueStartRead(fileIdx, heldItem->lmHdr);
+#ifdef SH_PC_PORT
+        SH_DBG("[HELD] item %d: model file %d queued (entry %d)", (int)itemId, (int)fileIdx, (int)heldItem->queueIdx);
+#endif
         return heldItem->queueIdx;
     }
+#ifdef SH_PC_PORT
+    SH_DBG("[HELD] item %d: no model file for it", (int)itemId);
+#endif
 
     return 0;
 }
@@ -1112,6 +1118,21 @@ void WorldGfx_HeldItemDraw(void) // 0x8003D058
         coord = &g_SysWork.playerBoneCoords[HarryBone_RightHand];
     }
 
+#ifdef SH_PC_PORT
+    {
+        /* Once per change of item or of its readiness, so a hand that stays
+         * empty says why. */
+        static int s_lastItem = -2, s_lastReady = -1;
+        const int  ready = Fs_QueueIsEntryLoaded(heldItem->queueIdx) ? 1 : 0;
+        if (heldItem->itemId != s_lastItem || ready != s_lastReady)
+        {
+            s_lastItem  = heldItem->itemId;
+            s_lastReady = ready;
+            SH_DBG("[HELD] item %d: %s (entry %d, lm %p)", (int)heldItem->itemId,
+                   ready ? "model ready, drawing" : "waiting for its model", (int)heldItem->queueIdx, (void*)heldItem->lmHdr);
+        }
+    }
+#endif
     if (Fs_QueueIsEntryLoaded(heldItem->queueIdx))
     {
         lmHdr = heldItem->lmHdr;

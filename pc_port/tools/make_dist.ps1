@@ -66,8 +66,11 @@ foreach ($d in @("gamedata\FMV", "gamedata\temp")) {
     $p = Join-Path $Dist $d
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
 }
+# The tester's logs are evidence: moved aside, never deleted.
+$logKeep = Join-Path (Split-Path $Dist -Parent) "logs"
+New-Item -ItemType Directory -Force -Path $logKeep | Out-Null
 Get-ChildItem -Path $Dist -Filter *.log -File -ErrorAction SilentlyContinue |
-    Remove-Item -Force -ErrorAction SilentlyContinue
+    Move-Item -Destination $logKeep -Force -ErrorAction SilentlyContinue
 
 # Folders the game writes into at runtime; ship them empty so a fresh install
 # has somewhere to put saves without the disc data or anyone's progress.
