@@ -89,6 +89,9 @@ typedef struct
      * the chara flags (CharaFlag_Unk4 = in a reaction, cannot be grabbed). */
     unsigned char  pstate, atkRecv, cflags;
     unsigned char  health;            /* 0..100, for the partner health bars */
+    /* The scene (event row) the sender is in or about to join, 0xFF none,
+     * and 0 none / 1 about to join / 2 in it (sh_net_cutscene.c). */
+    unsigned char  sceneRow, sceneState;
     unsigned int   ms;                /* sender: capture time; ring: time on OUR clock */
     ShSessionSfx   sfx[SHSESSION_POSE_SFX];
 } ShSessionPose;
@@ -124,6 +127,8 @@ typedef struct
     unsigned short     frame;
     unsigned int       poseMs;     /* wall clock of the last pose, 0 = none */
     int                paperMapIdx; /* their paper-map page (floor), -1 unknown */
+    int                sceneRow;    /* the scene they are in or about to join, -1 none */
+    int                sceneState;  /* 0 none, 1 about to join, 2 in it */
 
     /* Recent samples, oldest first, for ShSession_MemberPoseNow. Arrival times
      * jitter by the network plus the worker's sleep, so samples are placed by

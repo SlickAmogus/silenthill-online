@@ -102,7 +102,10 @@ selection back.
   holds them until they mash free, and the host's monster lets go when they
   do.
 - **Progress.** Doors unlocked, puzzles solved and pickups taken by anyone
-  are taken for everyone. The item itself goes into every player's inventory.
+  are taken for everyone: every player's event flags reach every other
+  player, so whoever gets there first, host or guest, moves the story for
+  all. The item itself goes into every player's inventory. Puzzles and
+  story events inside a room are each player's to do; the result is shared.
 - **Friendly fire.** Off by default. When the host turns it on, a hit from
   another player's weapon counts (and bleeds where it landed), and a dead
   player respawns next to a partner after a few seconds.
@@ -110,30 +113,32 @@ selection back.
   its sounds, whatever you hold yourself.
 - **Cutscenes.** When a player starts a scene, everyone else on the map is
   brought into it: you are placed where the scene began and it plays for
-  you too. A scene that starts the moment a map loads (the opening of the
-  game, waking in the cafe) starts for everyone on the host's frame: the
-  host waits for a partner who is still loading or still in a movie, and a
-  guest waits for the host's go. Scenes end together as well: the first
-  player out of one (finished, or skipped) waits on a black "Waiting for
-  cutscene..." screen that lists the scene's players, grey until each is
-  out, and the game goes on when all are. Someone who joins the game during
-  a scene plays it too, and the others wait for them at its end. In every
-  shared scene the players sit or stand in the same arrangement on every
-  screen: the host where the script put them, each guest a step aside, and
-  in the cafe the first guest sits deeper on Harry's bench with the rest
-  across the table. A partner on another map is not pulled across; they
-  play the scene when they get there.
+  you too, once (a scene already played on this map never pulls you back).
+  A scene that starts the moment a map loads (the opening of the game,
+  waking in the cafe) starts for everyone on the host's frame: the host
+  waits for a partner who is still loading or still in a movie, and a guest
+  waits for the host's go. Scenes end together as well: the first player
+  out of one (finished, or skipped) waits on a black "Waiting for
+  cutscene..." screen that lists the players on the map, grey while they
+  are still in the scene or about to join it, and the game goes on when
+  none is. Someone who joins the game during a scene plays it too, and the
+  others wait for them at its end. In every shared scene the players sit or
+  stand in the same arrangement on every screen: the host where the script
+  put them, each guest a step aside, and in the cafe the first guest sits
+  deeper on Harry's bench with the rest across the table. A partner on
+  another map is not pulled across; they play the scene when they get
+  there.
 - **Story doors.** A door with a scene or a point of no return behind it
-  (the two gates in the alley) does not pull anyone: whoever uses it waits
-  there under "Waiting for other players..." until every partner on the map
+  (the two gates in the alley) does not pull anyone: whoever uses it stands
+  at it under "Waiting for other players..." until every partner on the map
   who has not been through it is close by, and partners get a note that
-  someone is waiting at a gate. A guest can only wait (the wait gives up
-  after a minute and a half on its own). The host, using the door a second
-  time, is asked whether to bring everyone through: Action takes every
-  partner on the map through the door with the host, Cancel keeps waiting.
-  The alley's own progress (which gate you are past, the dark closing in)
-  is each player's, so a guest keeps their cameras and their gate until
-  they walk through it themselves.
+  someone is waiting at a gate. Cancel turns back. The host can go through
+  at once with Action, and every partner on the map goes through the door
+  with them. A guest's wait gives up after a minute and a half on its own.
+  Ordinary doors, including ones to another part of the same map, are
+  walked through alone. The alley's own progress (which gate you are past,
+  the dark closing in) is each player's, so a guest keeps their cameras and
+  their gate until they walk through it themselves.
 - **The alley.** Harry's death at the end of the opening is what takes him
   to the cafe, so in the alley one player's death is everyone's: when a
   partner falls there, you fall too, and the cafe scene starts for the whole

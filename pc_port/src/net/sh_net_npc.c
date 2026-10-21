@@ -1247,7 +1247,7 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
 #define EVENT_FLAG_WORDS 52
 #define OVL_STATE_WORDS  45
 
-/* Event flags the host's copy must not set on a guest: the boss intros,
+/* Event flags another player's copy must not set on us: the boss intros,
  * whose fight code reads them the moment they are set, and every flag some
  * script CLEARS in normal play (positional latches, re-armed triggers,
  * per-frame zone flags): the host's set bit would undo the guest's clear
@@ -1277,25 +1277,29 @@ static int Npc_FlagLocal(int idx)
     return 0;
 }
 
-static void Npc_HostSendWorldFlags(void)
+/* Everyone sends their event flags: progress is the union of what every
+ * player has done (a guest who solves a puzzle or takes a key item first
+ * sets the host's flag too). Only the host sends monster states. */
+static void Npc_SendWorldFlags(int isHost)
 {
     static unsigned int s_lastMs;
     const unsigned int  now = ShNetPlat_Millis();
     shn_u8              b[8 + 4 * (EVENT_FLAG_WORDS + OVL_STATE_WORDS)];
     int                 o = 0, i;
+    const int           no = isHost ? OVL_STATE_WORDS : 0;
 
     if (now - s_lastMs < WORLD_FL_MS) return;
     s_lastMs = now;
     ShnPutU8(b, &o, (shn_u8)g_SavegamePtr->mapIdx);
     ShnPutU8(b, &o, EVENT_FLAG_WORDS);
-    ShnPutU8(b, &o, OVL_STATE_WORDS);
+    ShnPutU8(b, &o, (shn_u8)no);
     ShnPutU8(b, &o, 0);
     for (i = 0; i < EVENT_FLAG_WORDS; i++) ShnPutU32(b, &o, g_SavegamePtr->eventFlags[i]);
-    for (i = 0; i < OVL_STATE_WORDS; i++)  ShnPutU32(b, &o, (shn_u32)g_SavegamePtr->ovlEnemyStates[i]);
+    for (i = 0; i < no; i++)               ShnPutU32(b, &o, (shn_u32)g_SavegamePtr->ovlEnemyStates[i]);
     ShSession_SendGame(SHNET_MSG_S_WORLD_FL, b, o, 0, 0);
 }
 
-static void Npc_GuestWorldFlags(const shn_u8* p, int len)
+static void Npc_WorldFlagsIn(unsigned long long from, const shn_u8* p, int len)
 {
     int o = 0, i, ne, no;
     if (len < 4) return;
@@ -1322,6 +1326,7 @@ static void Npc_GuestWorldFlags(const shn_u8* p, int len)
         g_SavegamePtr->eventFlags[i] |= add;
     }
     /* A kill clears a bit; the host's word is the truth for every map. */
+    if (from != ShSession_HostId()) return;
     for (i = 0; i < no; i++)
     {
         g_SavegamePtr->ovlEnemyStates[i] &= (s32)ShnGetU32(p, &o);
@@ -1374,9 +1379,9 @@ void Pc_NetNpc_GameTick(void)
         {
             Npc_GuestApplyAttack(buf, len);
         }
-        else if (type == SHNET_MSG_S_WORLD_FL && role == PC_NETNPC_GUEST)
+        else if (type == SHNET_MSG_S_WORLD_FL && role != PC_NETNPC_NONE)
         {
-            Npc_GuestWorldFlags(buf, len);
+            Npc_WorldFlagsIn(from, buf, len);
         }
         else if (type == SHNET_MSG_S_FLAG_SET && role != PC_NETNPC_NONE)
         {
@@ -1391,7 +1396,10 @@ void Pc_NetNpc_GameTick(void)
     if (role == PC_NETNPC_HOST)
     {
         Npc_HostSend();
-        Npc_HostSendWorldFlags();
+    }
+    if (role != PC_NETNPC_NONE)
+    {
+        Npc_SendWorldFlags(role == PC_NETNPC_HOST);
     }
 
     /* Puppets outlive nothing: gone from the snapshots, out of the session,

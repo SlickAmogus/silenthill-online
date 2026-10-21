@@ -11,7 +11,13 @@
  * the scene began and started on the same row directly, bypassing the
  * trigger's flag and position gates. The scripts position the player and
  * camera themselves. A player who joins the game mid-scene hears the
- * repeats and plays it too.
+ * repeats and plays it too. A scene is joined once: the rows played on the
+ * current map are remembered, so a repeat never pulls anyone back.
+ *
+ * "In a scene" is the handler's state (SysState_EventCallback, or the movie
+ * inside it), never SysFlag_CutsceneActive: the Cheryl chase keeps that flag
+ * up for minutes, and reading it as "still in the scene" kept re-announcing
+ * a scene long over and pulled the partner back to it.
  *
  * Map-entry scenes (TriggerType_None rows, which fire the moment a map is
  * up) start together: the host holds its own back while a partner is still
@@ -22,15 +28,16 @@
  * within the one-way latency.
  *
  * Scenes end together too: the first player out of a scene (finished or
- * skipped) waits on a black "Waiting for cutscene..." screen, with every
- * player in it listed, until the rest are out as well.
+ * skipped) waits on a black "Waiting for cutscene..." screen until no
+ * partner on the map is still in it or about to join it, which every pose
+ * says (sceneRow / sceneState), so a lost message cannot strand anyone.
  *
  * Story doors (s_gates below: a door or gate with a scene, or a point of no
  * return, behind it) wait instead of pulling: whoever uses one stands at it
  * under "Waiting for other players..." until every partner on the map who
- * has not been through it is close by. A guest can only wait. The host,
- * using the door a second time, is asked whether to bring everyone: yes
- * takes every partner on the map through the door with them.
+ * has not been through it is close by. Cancel turns back. The host may go
+ * through at once with Action, and every partner on the map goes through
+ * the door with them.
  *
  * Seats: a scripted scene moves every player along the same path, so they
  * would stand inside each other. Each player's game offsets its OWN model
@@ -40,9 +47,9 @@
  * is never touched.
  *
  * The identifier on the wire is (map, row): eventParam alone repeats across
- * rows, and a disabledEventFlag arriving early through S_WORLD_FL would make
- * the ordinary trigger path skip the row forever, which is why the start is
- * forced rather than simulated.
+ * rows, and a disabledEventFlag arriving early through the flag sync would
+ * make the ordinary trigger path skip the row forever, which is why the
+ * start is forced rather than simulated.
  *
  * The alley (map0_s00) is the one place where dying is the story: Harry's
  * death there is what takes him to the cafe. A partner's death on that map
@@ -68,19 +75,18 @@
 #include "sh_net_cutscene.h"
 #include "sh_log.h"
 
-#define CUT_CONFIRM_MS    1000u  /* a dispatched row has this long to become a scene */
-#define CUT_JOIN_WAIT_MS  12000u /* a join waits this long for a menu or text box to close */
-#define CUT_DEDUPE_MS     60000u /* the same row announced again within this is the same scene */
+#define CUT_CONFIRM_MS    1000u   /* a dispatched row has this long to become a scene */
+#define CUT_JOIN_WAIT_MS  12000u  /* a join waits this long after the last repeat for a menu or movie to end */
 #define CUT_REANNOUNCE_MS 2000u
-#define CUT_HOLD_MS       20000u /* a map-entry scene waits this long for partners */
-#define CUT_END_WAIT_MS   60000u /* the end of a scene waits this long for the others */
+#define CUT_HOLD_MS       20000u  /* a map-entry scene waits this long for partners */
+#define CUT_END_WAIT_MS   120000u /* the end of a scene waits this long for the others */
 #define CUT_DIE_WAIT_MS   10000u
-#define CUT_GATE_WAIT_MS  90000u /* a story door waits this long for partners */
-#define CUT_GATE_GO_MS    5000u  /* a released door has this long to dispatch */
-#define CUT_FOLLOW_MS     20000u /* the host's "come with me" keeps this long */
+#define CUT_GATE_WAIT_MS  90000u  /* a story door waits this long for partners */
+#define CUT_GATE_GO_MS    5000u   /* a released door has this long to dispatch */
+#define CUT_FOLLOW_MS     20000u  /* the host's "come with me" keeps this long */
 #define CUT_GATE_NEAR     Q12(7.0f)
-#define CUT_POSE_FRESH_MS 2000u  /* a partner whose pose is older than this is not ready */
-#define CUT_PRESS_GRACE_MS 500u  /* the press that opened a door wait is not a second use */
+#define CUT_POSE_FRESH_MS 2000u   /* a partner whose pose is older than this is not ready, and not waited for */
+#define CUT_PRESS_GRACE_MS 500u   /* the press that opened a door wait is not a second use */
 
 /* Story doors: rows (LoadRoom / LoadOverlay) that wait for the partners who
  * have not been through them. Only doors with a scene or a point of no return
@@ -116,6 +122,10 @@ static VECTOR3      s_livePos;
 static short        s_liveRot;
 static unsigned int s_liveSentMs, s_liveSince;
 
+/* Rows played on the current map: never joined again. */
+static unsigned int s_played[4];
+static int          s_playedMap = -1;
+
 /* Receiver side: a scene to join. */
 static int          s_joinRow = -1;
 static int          s_joinMap = -1;
@@ -123,14 +133,6 @@ static VECTOR3      s_joinPos;
 static short        s_joinRot;
 static char         s_joinWho[SHSESSION_NAME_MAX];
 static unsigned int s_joinMs;
-static int          s_lastRow = -1, s_lastMap = -1;
-static unsigned int s_lastMs;
-
-/* Which scene each partner is in, and whether they are out of it. */
-typedef struct { unsigned long long id; int map, row, done; } CutPeer;
-#define CUT_PEERS 8
-static CutPeer      s_peer[CUT_PEERS];
-static int          s_peerN;
 
 /* The end of a scene, waiting for the others. */
 static int          s_waitMap = -1, s_waitRow = -1;
@@ -151,7 +153,7 @@ static char         s_holdWho[SHSESSION_NAME_MAX];
 static const s_EventData* s_gateRow;
 static int          s_gateMap, s_gateIdx;
 static unsigned int s_gateSince;
-static int          s_gateFroze, s_gateGo, s_gateInject, s_gateAsk, s_gateFollow;
+static int          s_gateFroze, s_gateGo, s_gateInject, s_gateFollow;
 static unsigned int s_gateGoMs;
 static unsigned int s_gatePrevHeld;
 typedef struct { unsigned long long id; unsigned char map, row; } CutPassed;
@@ -193,11 +195,16 @@ static int Cut_SceneLive(void)
            g_SysWork.cutsceneBorderState != CutsceneBorderState_None;
 }
 
-/* Our scene is still running: its handler has the state (a movie inside it
- * included), or the cutscene flag or borders are up. */
+/* A scene handler has the state (a movie inside it included). */
+static int Cut_HandlerRunning(void)
+{
+    return g_SysWork.sysState == SysState_EventCallback || g_SysWork.sysState == SysState_Fmv;
+}
+
+/* We are inside the scene we started or joined. */
 static int Cut_InMyScene(void)
 {
-    return Cut_SceneLive() || g_SysWork.sysState == SysState_EventCallback || g_SysWork.sysState == SysState_Fmv;
+    return s_liveRow >= 0 && Cut_HandlerRunning();
 }
 
 static const ShSessionMember* Cut_MemberById(unsigned long long id)
@@ -215,6 +222,11 @@ static const char* Cut_NameOf(unsigned long long id)
 {
     const ShSessionMember* m = Cut_MemberById(id);
     return (m && m->name[0]) ? m->name : "A partner";
+}
+
+static int Cut_PoseFresh(const ShSessionMember* m, unsigned int now)
+{
+    return m->poseMs != 0 && now - m->poseMs < CUT_POSE_FRESH_MS;
 }
 
 static void Cut_Freeze(void)
@@ -252,6 +264,21 @@ static void Cut_Announce(int map, int row, const VECTOR3* pos, short rot)
     ShSession_SendGame(SHNET_MSG_S_CTRL, b, o, 0, 1);
 }
 
+static int Cut_Played(int map, int row)
+{
+    return map == s_playedMap && row >= 0 && row < 128 && (s_played[row >> 5] & (1u << (row & 31)));
+}
+
+static void Cut_PlayedAdd(int map, int row)
+{
+    if (map != s_playedMap)
+    {
+        memset(s_played, 0, sizeof(s_played));
+        s_playedMap = map;
+    }
+    if (row >= 0 && row < 128) s_played[row >> 5] |= 1u << (row & 31);
+}
+
 /* The scene is ours from here: tell the room, twice. */
 static void Cut_GoLive(int row, unsigned int now)
 {
@@ -268,7 +295,7 @@ static void Cut_GoLive(int row, unsigned int now)
     }
     s_liveSentMs = now;
     s_liveSince  = now;
-    s_lastRow = row; s_lastMap = s_liveMap; s_lastMs = now;
+    Cut_PlayedAdd(s_liveMap, row);
     SH_DBG("[CUTSCENE] started map %d row %d; told the room", s_liveMap, s_liveRow);
 }
 
@@ -306,7 +333,7 @@ int ShNetCut_SelfOffset(int* ox, int* oz, int* turn)
     short          rot;
 
     *ox = *oz = *turn = 0;
-    if (!Cut_Coop() || g_GameWork.gameState != GameState_InGame || s_liveRow < 0 || !Cut_InMyScene())
+    if (!Cut_Coop() || g_GameWork.gameState != GameState_InGame || !Cut_InMyScene())
     {
         return 0;
     }
@@ -352,68 +379,44 @@ void ShNetCut_SelfOffsetApply(void* coordsIn)
 }
 
 /* ------------------------------------------------------------------ */
-/* Who is in which scene                                               */
+/* Scene state in the pose, and the end of a scene                    */
 /* ------------------------------------------------------------------ */
 
-static CutPeer* Cut_PeerFind(unsigned long long id)
+int ShNetCut_PoseScene(int* row)
 {
-    int i;
-    for (i = 0; i < s_peerN; i++)
+    *row = 0xFF;
+    if (!Cut_Coop() || g_GameWork.gameState != GameState_InGame) return 0;
+    if (Cut_InMyScene())
     {
-        if (s_peer[i].id == id) return &s_peer[i];
+        *row = s_liveRow;
+        return 2;
     }
-    return NULL;
-}
-
-static void Cut_PeerSet(unsigned long long id, int map, int row, int done)
-{
-    CutPeer* p = Cut_PeerFind(id);
-    if (!p)
+    if (s_joinRow >= 0 && s_joinMap == Cut_MyMap())
     {
-        if (s_peerN == CUT_PEERS)
-        {
-            memmove(&s_peer[0], &s_peer[1], sizeof(s_peer[0]) * (CUT_PEERS - 1));
-            s_peerN--;
-        }
-        p = &s_peer[s_peerN++];
-        p->id = id;
+        *row = s_joinRow;
+        return 1;
     }
-    else if (p->map == map && p->row == row && done == 0 && p->done)
+    if (s_holdFroze && s_holdRow >= 0)
     {
-        return; /* a repeat of a scene they already finished */
-    }
-    p->map  = map;
-    p->row  = row;
-    p->done = done;
-}
-
-/* A partner on this map still inside the scene (map, row). */
-static int Cut_PeerStillIn(int map, int row)
-{
-    int i;
-    for (i = 0; i < s_peerN; i++)
-    {
-        const ShSessionMember* m;
-        if (s_peer[i].map != map || s_peer[i].row != row || s_peer[i].done) continue;
-        m = Cut_MemberById(s_peer[i].id);
-        if (!m || !m->linked) continue;
-        if (m->mapIdx >= 0 && m->mapIdx != map) continue;
+        *row = s_holdRow;
         return 1;
     }
     return 0;
 }
 
-static void Cut_SendDone(int map, int row)
+/* A partner on this map whose pose says they are in, or about to be in,
+ * the scene (map, row). */
+static int Cut_PeerStillIn(int map, int row, unsigned int now)
 {
-    unsigned char b[3];
-    int           r;
-    b[0] = SHNET_CTRL_SCENE_DONE;
-    b[1] = (unsigned char)map;
-    b[2] = (unsigned char)row;
-    for (r = 0; r < 2; r++)
+    int i, n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
     {
-        ShSession_SendGame(SHNET_MSG_S_CTRL, b, 3, 0, 1);
+        const ShSessionMember* m = ShSession_Member(i);
+        if (!m || !m->linked || m->steamId == ShSession_SelfId()) continue;
+        if (m->mapIdx != map || !Cut_PoseFresh(m, now)) continue;
+        if (m->sceneRow == row && m->sceneState != 0) return 1;
     }
+    return 0;
 }
 
 static void Cut_WaitEnd(const char* why)
@@ -431,8 +434,7 @@ static void Cut_WaitEnd(const char* why)
 /* Our scene is over. */
 static void Cut_SceneEnded(int map, int row, unsigned int now)
 {
-    Cut_SendDone(map, row);
-    if (g_GameWork.gameState != GameState_InGame || Cut_MyMap() != map || !Cut_PeerStillIn(map, row))
+    if (g_GameWork.gameState != GameState_InGame || Cut_MyMap() != map || !Cut_PeerStillIn(map, row, now))
     {
         return;
     }
@@ -444,21 +446,16 @@ static void Cut_SceneEnded(int map, int row, unsigned int now)
     SH_DBG("[CUTSCENE] out of map %d row %d first; waiting for the others", map, row);
 }
 
-void ShNetCut_DoneIn(unsigned long long from, const unsigned char* p, int len)
-{
-    if (len < 3 || !Cut_Coop() || from == ShSession_SelfId()) return;
-    Cut_PeerSet(from, p[1], p[2], 1);
-}
-
 int ShNetCut_WaitActive(void)
 {
     return s_waitRow >= 0;
 }
 
-/* The players of the scene being waited for, host first: seat label, name,
- * and whether they are out of it. */
+/* The players on this map, host first: seat label, name, and whether they
+ * are out of the scene being waited for. */
 int ShNetCut_WaitEntry(int i, char* out, int cap, int* ready)
 {
+    const unsigned int now = ShNetPlat_Millis();
     int k, n = ShSession_MemberCount(), idx = 0, best = -1;
     unsigned long long me = ShSession_SelfId();
 
@@ -472,12 +469,7 @@ int ShNetCut_WaitEntry(int i, char* out, int cap, int* ready)
             const ShSessionMember* m = ShSession_Member(k);
             int                    seat;
             if (!m || !m->linked) continue;
-            if (m->steamId != me)
-            {
-                const CutPeer* pr = Cut_PeerFind(m->steamId);
-                if (!pr || pr->map != s_waitMap || pr->row != s_waitRow) continue;
-                if (m->mapIdx >= 0 && m->mapIdx != s_waitMap) continue;
-            }
+            if (m->steamId != me && m->mapIdx != s_waitMap) continue;
             seat = Cut_SeatOf(m->steamId);
             if (seat > best && seat < pickSeat)
             {
@@ -490,9 +482,12 @@ int ShNetCut_WaitEntry(int i, char* out, int cap, int* ready)
         if (idx == i)
         {
             const ShSessionMember* m = ShSession_Member(pick);
-            const CutPeer*         pr = (m->steamId == me) ? NULL : Cut_PeerFind(m->steamId);
             snprintf(out, (size_t)cap, "P%d  %s", pickSeat + 1, m->name[0] ? m->name : "Player");
-            if (ready) *ready = (m->steamId == me) ? 1 : (pr ? pr->done : 0);
+            if (ready)
+            {
+                *ready = (m->steamId == me) ? 1
+                       : !(Cut_PoseFresh(m, now) && m->sceneRow == s_waitRow && m->sceneState != 0);
+            }
             return 1;
         }
         idx++;
@@ -582,7 +577,6 @@ static void Cut_GateEnd(void)
 {
     s_gateRow    = NULL;
     s_gateGo     = 0;
-    s_gateAsk    = 0;
     s_gateFollow = 0;
     s_gateFroze  = 0;
     Cut_Thaw();
@@ -594,7 +588,6 @@ static void Cut_GateRelease(unsigned int now, const char* why)
     SH_DBG("[CUTSCENE] map %d row %d: %s", s_gateMap, s_gateIdx, why);
     s_gateGo    = 1;
     s_gateGoMs  = now;
-    s_gateAsk   = 0;
     s_gateFroze = 0;
     Cut_Thaw();
 }
@@ -606,7 +599,7 @@ static int Cut_GateHold(int map, int row, unsigned int now)
 
     if (s_gateRow == g_MapEventData)
     {
-        g_MapEventSysState = SysState_Invalid; /* a second use is read by the tick */
+        g_MapEventSysState = SysState_Invalid; /* the buttons are read by the tick */
         return 1;
     }
     if (!Cut_GateWaitingOn(map, row, who, (int)sizeof(who)))
@@ -620,7 +613,6 @@ static int Cut_GateHold(int map, int row, unsigned int now)
     s_gateIdx      = row;
     s_gateSince    = now;
     s_gateFroze    = 1;
-    s_gateAsk      = 0;
     s_gateFollow   = 0;
     s_gatePrevHeld = (unsigned int)g_Controller0->heldBtnFlags;
     Cut_Freeze();
@@ -634,7 +626,7 @@ void ShNetCut_GateInject(void)
 {
     if (!s_gateGo || s_gateRow == NULL) return;
     if (g_GameWork.gameState != GameState_InGame || g_SysWork.sysState != SysState_Gameplay ||
-        g_MapEventSysState != SysState_Invalid || Cut_MyMap() != s_gateMap || Cut_InMyScene())
+        g_MapEventSysState != SysState_Invalid || Cut_MyMap() != s_gateMap)
     {
         return;
     }
@@ -701,7 +693,7 @@ void ShNetCut_GateIn(unsigned long long from, const unsigned char* p, int len)
     }
 }
 
-/* The door wait, each frame: arrival, the host's second use, the give-up. */
+/* The door wait, each frame: arrival, the buttons, the give-up. */
 static void Cut_GateTick(unsigned int now)
 {
     const unsigned int held  = (unsigned int)g_Controller0->heldBtnFlags;
@@ -724,26 +716,17 @@ static void Cut_GateTick(unsigned int now)
     }
     if (now - s_gateSince > CUT_PRESS_GRACE_MS)
     {
-        if (press & g_GameWorkPtr->config.controllerConfig.action)
+        if (press & g_GameWorkPtr->config.controllerConfig.cancel)
         {
-            if (!ShSession_IsHost())
-            {
-                /* A guest can only wait. */
-            }
-            else if (!s_gateAsk)
-            {
-                s_gateAsk = 1;
-            }
-            else
-            {
-                Cut_GateTell(s_gateMap, s_gateIdx, 3);
-                Cut_GateRelease(now, "bringing everyone through");
-                return;
-            }
+            SH_DBG("[CUTSCENE] map %d row %d: turned back", s_gateMap, s_gateIdx);
+            Cut_GateEnd();
+            return;
         }
-        else if (s_gateAsk && (press & g_GameWorkPtr->config.controllerConfig.cancel))
+        if ((press & g_GameWorkPtr->config.controllerConfig.action) && ShSession_IsHost())
         {
-            s_gateAsk = 0;
+            Cut_GateTell(s_gateMap, s_gateIdx, 3);
+            Cut_GateRelease(now, "bringing everyone through");
+            return;
         }
     }
     if (!Cut_GateWaitingOn(s_gateMap, s_gateIdx, NULL, 0))
@@ -808,7 +791,7 @@ static int Cut_SomeoneNotReady(char* who, int cap)
             continue;
         }
         busy = (m->mapIdx < 0) ||
-               (m->mapIdx == myMap && ((m->flags & SHNET_PF_MENU) || m->poseMs == 0 || now - m->poseMs > CUT_POSE_FRESH_MS));
+               (m->mapIdx == myMap && ((m->flags & SHNET_PF_MENU) || !Cut_PoseFresh(m, now)));
         if (busy)
         {
             if (who) snprintf(who, (size_t)cap, "%s", m->name[0] ? m->name : "a partner");
@@ -854,9 +837,13 @@ int ShNetCut_HoldDispatch(void)
     }
     row = (int)(g_MapEventData - g_MapOverlayHdr.mapEvents);
     map = Cut_MyMap();
-    if ((s_gateRow != NULL && g_MapEventData != s_gateRow) || s_waitRow >= 0)
+    /* Nothing else while we wait at a door, for the others, or for a
+     * map-entry scene (standing in a trigger's box while held must not
+     * start that trigger instead). */
+    if ((s_gateRow != NULL && g_MapEventData != s_gateRow) || s_waitRow >= 0 ||
+        (s_holdFroze && row != s_holdRow))
     {
-        g_MapEventSysState = SysState_Invalid; /* nothing else while we wait */
+        g_MapEventSysState = SysState_Invalid;
         return 1;
     }
     if ((g_MapEventSysState == SysState_LoadRoom || g_MapEventSysState == SysState_LoadOverlay) &&
@@ -974,13 +961,18 @@ void ShNetCut_Tick(void)
         s_liveRow = -1;
         s_joinRow = -1;
         s_dieReq  = 0;
-        s_peerN   = 0;
+        s_playedMap = -1;
         Cut_Unhold();
         Cut_GateEnd();
         Cut_WaitEnd("no game");
         s_heldThisFrame = 0;
         s_gateInject    = 0;
         return;
+    }
+    if (Cut_MyMap() != s_playedMap)
+    {
+        memset(s_played, 0, sizeof(s_played));
+        s_playedMap = Cut_MyMap();
     }
 
     /* The hold is asserted by the dispatch site each frame it applies; a
@@ -996,12 +988,12 @@ void ShNetCut_Tick(void)
     /* Sender: the dispatched row became a scene (or did not). */
     if (s_pendRow >= 0)
     {
-        if (Cut_SceneLive() && g_GameWork.gameState == GameState_InGame)
+        if (Cut_SceneLive() && Cut_HandlerRunning() && g_GameWork.gameState == GameState_InGame)
         {
             Cut_GoLive(s_pendRow, now);
             s_pendRow = -1;
         }
-        else if (now - s_pendMs > CUT_CONFIRM_MS)
+        else if (now - s_pendMs > CUT_CONFIRM_MS || !Cut_HandlerRunning())
         {
             s_pendRow = -1; /* an item take, a message: not a scene */
         }
@@ -1015,7 +1007,7 @@ void ShNetCut_Tick(void)
         {
             s_liveRow = -1;
         }
-        else if (!Cut_InMyScene() && now - s_liveSince > CUT_CONFIRM_MS)
+        else if (!Cut_HandlerRunning() && now - s_liveSince > CUT_CONFIRM_MS)
         {
             const int map = s_liveMap, row = s_liveRow;
             s_liveRow = -1;
@@ -1035,7 +1027,7 @@ void ShNetCut_Tick(void)
         {
             Cut_WaitEnd("left the map");
         }
-        else if (!Cut_PeerStillIn(s_waitMap, s_waitRow))
+        else if (!Cut_PeerStillIn(s_waitMap, s_waitRow, now))
         {
             Cut_WaitEnd("everyone is out");
         }
@@ -1049,11 +1041,11 @@ void ShNetCut_Tick(void)
     if (s_joinRow >= 0)
     {
         if (g_GameWork.gameState != GameState_InGame || Cut_MyMap() != s_joinMap ||
-            Cut_SceneLive() || g_SysWork.playerWork.player.health <= 0 ||
+            Cut_InMyScene() || g_SysWork.playerWork.player.health <= 0 ||
             now - s_joinMs > CUT_JOIN_WAIT_MS)
         {
-            /* Left the map, already in a scene of our own, dead, or a menu
-             * stayed up too long. */
+            /* Left the map, in a scene of our own, dead, or the repeats
+             * stopped and a menu stayed up too long. */
             s_joinRow = -1;
         }
         else if (g_SysWork.sysState == SysState_Gameplay && s_gateRow == NULL && s_waitRow < 0)
@@ -1072,7 +1064,7 @@ void ShNetCut_Tick(void)
         {
             s_dieReq = 0;
         }
-        else if (g_SysWork.sysState == SysState_Gameplay && !Cut_SceneLive())
+        else if (g_SysWork.sysState == SysState_Gameplay && !Cut_HandlerRunning())
         {
             Cut_Die();
         }
@@ -1096,7 +1088,6 @@ void ShNetCut_CtrlIn(unsigned long long from, const unsigned char* p, int len)
     pos.vy = ShnGetS32(p, &o);
     pos.vz = ShnGetS32(p, &o);
     rot    = (short)ShnGetS16(p, &o);
-    Cut_PeerSet(from, map, row, 0); /* they are in it, whatever we do with it */
     if (g_SavegamePtr == NULL || map != Cut_MyMap() || row >= Cut_RowCount() ||
         g_MapOverlayHdr.mapEvents[row].sysState != SysState_EventCallback)
     {
@@ -1107,17 +1098,19 @@ void ShNetCut_CtrlIn(unsigned long long from, const unsigned char* p, int len)
     {
         return;
     }
-    /* Repeated every couple of seconds while it runs, and the same scene
-     * can be announced by two players, or be our own. */
-    if (row == s_lastRow && map == s_lastMap && now - s_lastMs < CUT_DEDUPE_MS)
+    if (Cut_Played(map, row))
     {
+        return; /* ours already, or joined before: a repeat */
+    }
+    if (s_joinRow == row && s_joinMap == map)
+    {
+        s_joinMs = now; /* still on: the join keeps waiting for its moment */
         return;
     }
-    if (Cut_SceneLive() || s_joinRow >= 0)
+    if (Cut_InMyScene() || s_joinRow >= 0)
     {
-        return; /* already in one, or already joining */
+        return; /* in one of our own, or joining another: the repeats will find us */
     }
-    s_lastRow = row; s_lastMap = map; s_lastMs = now;
     s_joinRow = row;
     s_joinMap = map;
     s_joinPos = pos;
@@ -1177,7 +1170,7 @@ void ShNetCut_DieIn(unsigned long long from, const unsigned char* p, int len)
 
 int ShNetCut_InScene(void)
 {
-    return Cut_Coop() && g_GameWork.gameState == GameState_InGame && Cut_SceneLive();
+    return Cut_Coop() && g_GameWork.gameState == GameState_InGame && Cut_InMyScene();
 }
 
 int ShNetCut_StatusText(char* out, int cap, char* hint, int hintCap)
@@ -1189,15 +1182,12 @@ int ShNetCut_StatusText(char* out, int cap, char* hint, int hintCap)
     if (hint && hintCap > 0) hint[0] = '\0';
     if (s_gateRow != NULL && !s_gateGo)
     {
-        if (s_gateAsk)
+        snprintf(out, (size_t)cap, "Waiting for other players...");
+        if (hint)
         {
-            snprintf(out, (size_t)cap, "Bring everyone through with you?");
-            if (hint) snprintf(hint, (size_t)hintCap, "Action: yes      Cancel: keep waiting");
-        }
-        else
-        {
-            snprintf(out, (size_t)cap, "Waiting for other players...");
-            if (hint && ShSession_IsHost()) snprintf(hint, (size_t)hintCap, "Use the door again to bring everyone through");
+            snprintf(hint, (size_t)hintCap, ShSession_IsHost()
+                     ? "Action: go through with everyone      Cancel: turn back"
+                     : "Cancel: turn back");
         }
         return 1;
     }

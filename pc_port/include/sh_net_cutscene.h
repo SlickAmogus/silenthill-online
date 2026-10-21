@@ -21,15 +21,17 @@ int  ShNetCut_HoldDispatch(void);
 void ShNetCut_GateInject(void);
 /* Once a frame from ShNet_GameTick. */
 void ShNetCut_Tick(void);
-/* SHNET_CTRL_CUTSCENE / _DIE / _GATE / _SCENE_DONE from the room (sh_net_game.c hands them over). */
+/* SHNET_CTRL_CUTSCENE / _DIE / _GATE from the room (sh_net_game.c hands them over). */
 void ShNetCut_CtrlIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_DieIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_GateIn(unsigned long long from, const unsigned char* p, int len);
-void ShNetCut_DoneIn(unsigned long long from, const unsigned char* p, int len);
 /* player_control.c: the alley death (map0_s00) just ended; everyone dies with us. */
 void ShNetCut_OnSharedDeath(void);
 /* We are in a scene (co-op, in game). */
 int  ShNetCut_InScene(void);
+/* For the pose: the scene row we are in or about to join (0xFF none), and
+ * the state: 0 none, 1 about to join it, 2 in it. */
+int  ShNetCut_PoseScene(int* row);
 /* Our seat in the scene we are in: the offset (Q19.12) and turn (Q3.12) to
  * draw and report ourselves at. 0 when there is none. */
 int  ShNetCut_SelfOffset(int* ox, int* oz, int* turn);

@@ -1044,6 +1044,18 @@ static void ShSession_Receive(unsigned int now)
                         smp.sfx[k].age4  = (unsigned char)ShnGetU8(p, &o);
                         smp.sfx[k].pitch = 0;
                     }
+                    if (46 + nsfx * 6 + 2 <= payLen)
+                    {
+                        smp.sceneRow   = (unsigned char)ShnGetU8(p, &o);
+                        smp.sceneState = (unsigned char)ShnGetU8(p, &o);
+                    }
+                    else
+                    {
+                        smp.sceneRow   = 0xFF;
+                        smp.sceneState = 0;
+                    }
+                    mb->sceneRow   = (smp.sceneRow == 0xFF) ? -1 : (int)smp.sceneRow;
+                    mb->sceneState = (int)smp.sceneState;
                 }
                 else
                 {
@@ -1707,7 +1719,7 @@ void ShSession_Tick(unsigned int nowMs)
         s_lastPosSeq = poseSeq;
         for (i = 0; i < s_memberCount; i++)
         {
-            shn_u8 buf[SHNET_HDR_SIZE + 48 + SHSESSION_POSE_SFX * 6];
+            shn_u8 buf[SHNET_HDR_SIZE + 50 + SHSESSION_POSE_SFX * 6];
             int    off = SHNET_HDR_SIZE;
             int    k;
             if (s_members[i].steamId == Tp_SelfId())
@@ -1747,6 +1759,8 @@ void ShSession_Tick(unsigned int nowMs)
                 ShnPutU8(buf, &off, pose.sfx[k].kind);
                 ShnPutU8(buf, &off, pose.sfx[k].age4);
             }
+            ShnPutU8(buf, &off, pose.sceneRow);
+            ShnPutU8(buf, &off, pose.sceneState);
             ShnPutHeader(buf, SHNET_MSG_S_POS, (shn_u16)(off - SHNET_HDR_SIZE), 0);
             /* On the relay one room-wide datagram replaces one per member:
              * at 60 Hz with three partners the per-member copies alone were

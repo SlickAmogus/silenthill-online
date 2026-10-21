@@ -455,6 +455,11 @@ static void ShNetG_PublishPose(int mapIdx, int flags)
                      ? (unsigned char)g_Player_LastWeaponSelected : 0xFF;
     pose.heldItem  = (held >= 0 && held < 0xFF) ? (unsigned char)held : 0xFF;
     pose.handBone  = (unsigned char)g_PcHarryHandBone;
+    {
+        int sr;
+        pose.sceneState = (unsigned char)ShNetCut_PoseScene(&sr);
+        pose.sceneRow   = (unsigned char)sr;
+    }
     pose.paperMap  = (unsigned char)(g_SavegamePtr->paperMapIdx + 1);
     {
         const s_SubCharacter* me = &g_SysWork.playerWork.player;
@@ -655,9 +660,6 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
             break;
         case SHNET_CTRL_GATE:
             ShNetCut_GateIn(from, p, len);
-            break;
-        case SHNET_CTRL_SCENE_DONE:
-            ShNetCut_DoneIn(from, p, len);
             break;
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);
