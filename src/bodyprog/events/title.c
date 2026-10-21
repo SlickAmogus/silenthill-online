@@ -365,6 +365,18 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                         skipToGameStep = 1; /* load failed -> fresh game */
                     }
                 }
+                else if (coopReq == 3)
+                {
+                    /* Guest moving to the host's map (Teleport to Host, Bring
+                     * Here): the autosave already holds our game with the
+                     * destination written in; boot it as a Continue and snap
+                     * beside the host once his pose is heard. */
+                    extern int g_PcCoopGuestSpawn;
+                    g_PcCoopGame                    = 1;
+                    g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
+                    g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
+                    g_PcCoopGuestSpawn              = 1;
+                }
                 else if (guestMap >= 0 && guestMap <= MapIdx_MAPX_S00)
                 {
                     /* Guest: the host is in this map -- boot a fresh game into it

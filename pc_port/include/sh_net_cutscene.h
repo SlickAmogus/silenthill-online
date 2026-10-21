@@ -25,6 +25,11 @@ void ShNetCut_Tick(void);
 void ShNetCut_CtrlIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_DieIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_GateIn(unsigned long long from, const unsigned char* p, int len);
+void ShNetCut_SummonIn(unsigned long long from, const unsigned char* p, int len);
+/* Host: bring that guest to where we stand (another map included). */
+void ShNetCut_Summon(unsigned long long id);
+/* Guest: go to where the host stands (another map included). */
+void ShNetCut_TeleportToHost(void);
 /* player_control.c: the alley death (map0_s00) just ended; everyone dies with us. */
 void ShNetCut_OnSharedDeath(void);
 /* We are in a scene (co-op, in game). */

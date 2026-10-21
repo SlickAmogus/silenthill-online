@@ -1009,13 +1009,14 @@ void ShNet_DrawWorld(GsOT* ot)
                                                cr, cg, cb, alpha);
                     }
                 }
+                /* No plates or bars over a scene. */
                 if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
-                    m->name[0] && m->name[0] != '?')
+                    m->name[0] && m->name[0] != '?' && !(g_SysWork.sysFlags & SysFlag_CutsceneActive))
                 {
                     poly = ShNetG_DrawNameplate(ot, poly, m->name, gx, gy, gz);
                     namesDrawn++;
                 }
-                if ((g_PcConfig.onlineHealthBars & 2) && m->healthPct1 != 0)
+                if ((g_PcConfig.onlineHealthBars & 2) && m->healthPct1 != 0 && !(g_SysWork.sysFlags & SysFlag_CutsceneActive))
                 {
                     poly = ShNetG_DrawHealthBar(ot, poly, gx, gy, gz, m->healthPct1 - 1);
                 }

@@ -167,6 +167,7 @@ static int Npc_BossIntroDone(int charaId)
         case Chara_SplitHead:    return Savegame_EventFlagGet(EventFlag_130) != 0;
         case Chara_Floatstinger: return Savegame_EventFlagGet(EventFlag_349) != 0;
         case Chara_Twinfeeler:   return Savegame_EventFlagGet(EventFlag_324) != 0;
+        case Chara_AirScreamer:  return Savegame_EventFlagGet(EventFlag_M0S01_AirScreamerIntroCutsceneStarted) != 0;
         default:                 return 1;
     }
 }
@@ -979,7 +980,8 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
          * drives slot 0 itself) and never during a cutscene, which may wipe
          * or warp slot 0. Menus leave it alone. */
         s_pupGated[row] = 0;
-        if (charaId == Chara_SplitHead || charaId == Chara_Floatstinger || charaId == Chara_Twinfeeler)
+        if (charaId == Chara_SplitHead || charaId == Chara_Floatstinger || charaId == Chara_Twinfeeler ||
+            charaId == Chara_AirScreamer)
         {
             if (!Npc_BossIntroDone(charaId) || (g_SysWork.sysFlags & SysFlag_CutsceneActive))
             {
@@ -1258,9 +1260,11 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
  * are the alley's progress (its two gates, the dark closing in, the
  * lighter): the gates are area loads that each player walks through, and
  * the map picks its cameras and disables the gate triggers by these, so a
- * guest given the host's copy lost its camera and its gate. */
+ * guest given the host's copy lost its camera and its gate. 45 is the cafe's
+ * Air Screamer intro, which each machine plays itself (its script drives
+ * slot 0), like the bosses'. */
 static const u16 s_flagLocal[] = {
-    13, 14, 15, 16, 17, 18, 19, 20, 25, 26, 49, 50, 52, 65, 66, 78, 79, 80, 81, 82, 92, 99, 118, 119, 121, 129, 130, 163,
+    13, 14, 15, 16, 17, 18, 19, 20, 25, 26, 45, 49, 50, 52, 65, 66, 78, 79, 80, 81, 82, 92, 99, 118, 119, 121, 129, 130, 163,
     172, 173, 174, 184, 185, 188, 219, 225, 288, 313, 324, 325, 335, 346, 348, 349,
     356, 357, 358, 359, 360, 362, 381, 395, 405, 406, 407, 408, 412, 414, 416, 420,
     428, 452, 454, 455, 476, 496, 497, 525, 549, 553, 554, 560, 575, 576, 591, 592, 593

@@ -328,6 +328,29 @@ static void Coop_RequestStart(void)
     Pc_CoopMenu_Close();
 }
 
+/* A guest moves to another map the way a co-op save boots: the current
+ * savegame (inventory, flags) with the destination written in becomes the
+ * autosave, the game resets to the title, and title.c boots it as a
+ * Continue (start request 3) and puts us beside the host once his pose is
+ * heard (g_PcCoopGuestSpawn). */
+void Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY)
+{
+    if (!g_PcCoopGame || !ShSession_Active() || g_SavegamePtr == NULL) return;
+    g_GameWork.autosave                 = *g_SavegamePtr;
+    g_GameWork.autosave.mapIdx          = mapIdx;
+    g_GameWork.autosave.playerPositionX = x;
+    g_GameWork.autosave.playerPositionZ = z;
+    g_GameWork.autosave.playerRotationY = rotY;
+    if (g_GameWork.autosave.playerHealth <= 0)
+    {
+        g_GameWork.autosave.playerHealth = Q12(100.0f);
+    }
+    s_startReq = 3;
+    g_SysWork.sysFlags |= SysFlag_DoWarmReset;
+    Pc_CoopMenu_Close();
+    SH_DBG("[COOP] warping to map %d", mapIdx);
+}
+
 int Pc_CoopMenu_TakeStartRequest(char* outName, int cap)
 {
     int req = s_startReq;
@@ -476,6 +499,13 @@ void Pc_CoopMenu_OpenSplitGuest(void)
     SH_DBG("[COOP] split screen Player 2: lobby opened");
 }
 
+/* The in-game menu has a Teleport to Host row for guests only, above
+ * Players; this is where Players sits. */
+static int Coop_PlayersRow(void)
+{
+    return (ShSession_Active() && !ShSession_IsHost()) ? 10 : 9;
+}
+
 /* Rows on the current page; the last row is always Back. */
 int Pc_CoopMenu_RowCount(void)
 {
@@ -488,9 +518,9 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
-    case COOP_PAGE_INGAME:     return 11; /* Resume, Message, Save, Save&Exit, Character, Nameplates, Health Bars, Friendly Fire, Guest Console, Players, Leave */
+    case COOP_PAGE_INGAME:     return Coop_PlayersRow() + 2; /* Resume, Message, Save, Save&Exit, Character, Nameplates, Health Bars, Friendly Fire, Guest Console, [Teleport to Host,] Players, Leave */
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
-    case COOP_PAGE_PLAYER:     return 3; /* Allow Cheats, Remove, Back */
+    case COOP_PAGE_PLAYER:     return 4; /* Allow Cheats, Bring Here, Remove, Back */
     default:                   return 1;
     }
 }
@@ -633,6 +663,11 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
 
     case COOP_PAGE_INGAME:
+        if (Coop_PlayersRow() == 10)
+        {
+            if (i == 9) { snprintf(out, cap, "Teleport to Host"); break; }
+            if (i > 9) i--;
+        }
         if (i == 0) snprintf(out, cap, "Resume");
         else if (i == 1) snprintf(out, cap, "Leave a Message");
         else if (i == 2) snprintf(out, cap, "Save");
@@ -675,7 +710,8 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
 
     case COOP_PAGE_PLAYER:
         if (i == 0)      snprintf(out, cap, "Allow Cheats:  %s", (ShNet_CoopPermGet(s_playerId) & SHNET_PERM_CHEATS) ? "Yes" : "No");
-        else if (i == 1) snprintf(out, cap, "Remove From Game");
+        else if (i == 1) snprintf(out, cap, "Bring Here");
+        else if (i == 2) snprintf(out, cap, "Remove From Game");
         else             snprintf(out, cap, "Back");
         break;
 
@@ -926,8 +962,21 @@ static void Coop_Confirm(void)
         break;
 
     case COOP_PAGE_INGAME:
-        if (s_sel == 0)      { Pc_CoopMenu_Close(); }                       /* Resume */
-        else if (s_sel == 1)                                                /* Leave a Message */
+    {
+        int sel = s_sel;
+        if (Coop_PlayersRow() == 10)
+        {
+            if (sel == 9)
+            {
+                extern void ShNetCut_TeleportToHost(void);
+                ShNetCut_TeleportToHost();
+                Pc_CoopMenu_Close();
+                break;
+            }
+            if (sel > 9) sel--;
+        }
+        if (sel == 0)      { Pc_CoopMenu_Close(); }                       /* Resume */
+        else if (sel == 1)                                                /* Leave a Message */
         {
             extern void ShNetMemo_ComposerToggle(void);
             if (!ShNet_CoopLivingWorld())
@@ -938,18 +987,18 @@ static void Coop_Confirm(void)
             Pc_CoopMenu_Close();         /* get the menu out of the way */
             ShNetMemo_ComposerToggle();  /* open the living-world message composer */
         }
-        else if (s_sel == 2) { Coop_DoSave(0); }                            /* Save */
-        else if (s_sel == 3) { Coop_DoSave(1); }                            /* Save & Exit */
-        else if (s_sel == 4) { Pc_PlayAs_Cycle(1); }                        /* Character: reloads the body in place */
-        else if (s_sel == 5) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
-        else if (s_sel == 6)
+        else if (sel == 2) { Coop_DoSave(0); }                            /* Save */
+        else if (sel == 3) { Coop_DoSave(1); }                            /* Save & Exit */
+        else if (sel == 4) { Pc_PlayAs_Cycle(1); }                        /* Character: reloads the body in place */
+        else if (sel == 5) { g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; }
+        else if (sel == 6)
         {
             char v[4];
             g_PcConfig.onlineHealthBars = (g_PcConfig.onlineHealthBars + 1) & 3;
             snprintf(v, sizeof(v), "%d", g_PcConfig.onlineHealthBars);
             PcConfig_SaveKeyValue("online_health_bars", v);
         }
-        else if (s_sel == 7)
+        else if (sel == 7)
         {
             /* One rule for the whole game, set by the world's owner. */
             if (ShSession_Active() && !ShSession_IsHost())
@@ -957,7 +1006,7 @@ static void Coop_Confirm(void)
             else
                 g_PcConfig.onlineFriendlyFire = !g_PcConfig.onlineFriendlyFire;
         }
-        else if (s_sel == 8)
+        else if (sel == 8)
         {
             if (ShSession_Active() && !ShSession_IsHost())
                 snprintf(s_msg, sizeof(s_msg), "Only the host can allow cheats for guests.");
@@ -967,7 +1016,7 @@ static void Coop_Confirm(void)
                 PcConfig_SaveKeyValue("online_guest_console", g_PcConfig.onlineGuestConsole ? "1" : "0");
             }
         }
-        else if (s_sel == 9) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
+        else if (sel == 9) { s_page = COOP_PAGE_PLAYERS; s_sel = 0; }     /* Players */
         else
         {
             /* Leave to Title without saving. */
@@ -976,6 +1025,7 @@ static void Coop_Confirm(void)
             Pc_CoopMenu_Close();
         }
         break;
+    }
 
     case COOP_PAGE_PLAYERS:
         if (s_sel < ShSession_MemberCount())
@@ -995,7 +1045,7 @@ static void Coop_Confirm(void)
         }
         /* Back returns to the in-game root (the Players row). */
         s_page = COOP_PAGE_INGAME;
-        s_sel  = 9;
+        s_sel  = Coop_PlayersRow();
         s_msg[0] = '\0';
         break;
 
@@ -1008,6 +1058,12 @@ static void Coop_Confirm(void)
                      (f & SHNET_PERM_CHEATS) ? "may now" : "may no longer");
         }
         else if (s_sel == 1)
+        {
+            extern void ShNetCut_Summon(unsigned long long id);
+            ShNetCut_Summon(s_playerId);
+            snprintf(s_msg, sizeof(s_msg), "Bringing %s here.", s_playerName);
+        }
+        else if (s_sel == 2)
         {
             ShSession_RequestKick(s_playerId);
             snprintf(s_msg, sizeof(s_msg), "Removed %s.", s_playerName);
@@ -1195,7 +1251,7 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
         else if (s_page == COOP_PAGE_PLAYERS)
         {
             s_page = COOP_PAGE_INGAME; /* back out of the member list */
-            s_sel  = 9;
+            s_sel  = Coop_PlayersRow();
         }
         else if (s_page == COOP_PAGE_ROOT || s_page == COOP_PAGE_INGAME)
         {

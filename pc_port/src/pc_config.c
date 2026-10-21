@@ -122,7 +122,7 @@ s_PcConfig g_PcConfig = {
     .xaVolume             = 1.0f, /* XA cutscene-voice volume, 0..1; 1.0 = unchanged */
     .fmvVolume            = 1.0f, /* FMV movie (SDL PCM) volume, 0..1; 1.0 = unchanged */
     .fmvPsxVolume         = 1,    /* PSX-faithful 80/128 movie-audio attenuation (SsSetSerialVol) */
-    .enableDebugLog = 0, /* 0=no SilentHill.log, 1=write SilentHill.log (debug builds) */
+    .enableDebugLog = 1, /* 0=no SilentHill.log, 1=write SilentHill.log (on: a report without a log is a guess) */
     .glVerbose      = 0, /* 1 = log GL/GLSL details + shader info logs on success; failures always log */
     .allowDebugControls = 0, /* 0=off (default), 1=enable dev/cheat keys */
     .controllerMovement = 2, /* 0=analog, 1=dpad, 2=both */

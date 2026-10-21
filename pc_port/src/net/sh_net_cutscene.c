@@ -95,7 +95,16 @@ typedef struct { unsigned char map, row; } CutGate;
 static const CutGate s_gates[] = {
     { MapIdx_MAP0_S00, 15 }, /* the alley's first gate: alley2 and its own cameras are past it */
     { MapIdx_MAP0_S00, 17 }, /* the second gate: the dark, the lighter and the end of the alley */
+    { MapIdx_MAP2_S00, 72 }, /* the school's Door of Eclipse: the otherworld is behind it */
 };
+
+/* A story door (s_gates) waits for everyone, and the host may bring them
+ * through. Any other change of map (a LoadOverlay row) is a level door: a
+ * guest may not use one while the host is on this map and not beside them,
+ * so nobody moves on to a new level without the host; a host who went on
+ * ahead is simply followed. The host walks through level doors freely. */
+#define DOOR_STORY 1
+#define DOOR_LEVEL 2
 
 /* Seats, in tenths of a metre from the scripted spot: ahead along the facing,
  * to the right across it, and a turn in degrees. Seat 0 is the host's and is
@@ -154,6 +163,7 @@ static const s_EventData* s_gateRow;
 static int          s_gateMap, s_gateIdx;
 static unsigned int s_gateSince;
 static int          s_gateFroze, s_gateGo, s_gateInject, s_gateFollow;
+static int          s_gateKind;
 static unsigned int s_gateGoMs;
 static unsigned int s_gatePrevHeld;
 typedef struct { unsigned long long id; unsigned char map, row; } CutPassed;
@@ -548,8 +558,9 @@ static void Cut_GateTell(int map, int row, int state)
 }
 
 /* A partner on this map who has not been through the door and is not beside
- * us (or is still loading the map). The first such name, for the log. */
-static int Cut_GateWaitingOn(int map, int row, char* who, int cap)
+ * us (or is still loading the map); only the host, for a level door. The
+ * first such name, for the log. */
+static int Cut_GateWaitingOn(int map, int row, int hostOnly, char* who, int cap)
 {
     const s_SubCharacter* me = &g_SysWork.playerWork.player;
     int                   i, n = ShSession_MemberCount();
@@ -559,6 +570,7 @@ static int Cut_GateWaitingOn(int map, int row, char* who, int cap)
         const ShSessionMember* m = ShSession_Member(i);
         int                    far;
         if (!m || m->steamId == ShSession_SelfId() || !m->linked) continue;
+        if (hostOnly && m->steamId != ShSession_HostId()) continue;
         if (Cut_Passed(m->steamId, map, row)) continue;
         if (m->mapIdx >= 0 && m->mapIdx != map) continue; /* elsewhere: cannot come */
         if (m->healthPct1 == 1) continue;                  /* dead */
@@ -593,7 +605,7 @@ static void Cut_GateRelease(unsigned int now, const char* why)
 }
 
 /* The door's row is about to dispatch. */
-static int Cut_GateHold(int map, int row, unsigned int now)
+static int Cut_GateHold(int map, int row, int kind, unsigned int now)
 {
     char who[SHSESSION_NAME_MAX];
 
@@ -602,15 +614,16 @@ static int Cut_GateHold(int map, int row, unsigned int now)
         g_MapEventSysState = SysState_Invalid; /* the buttons are read by the tick */
         return 1;
     }
-    if (!Cut_GateWaitingOn(map, row, who, (int)sizeof(who)))
+    if (!Cut_GateWaitingOn(map, row, kind == DOOR_LEVEL, who, (int)sizeof(who)))
     {
         Cut_PassedAdd(ShSession_SelfId(), map, row);
-        Cut_GateTell(map, row, 2);
+        if (kind == DOOR_STORY) Cut_GateTell(map, row, 2);
         return 0;
     }
     s_gateRow      = g_MapEventData;
     s_gateMap      = map;
     s_gateIdx      = row;
+    s_gateKind     = kind;
     s_gateSince    = now;
     s_gateFroze    = 1;
     s_gateFollow   = 0;
@@ -722,21 +735,124 @@ static void Cut_GateTick(unsigned int now)
             Cut_GateEnd();
             return;
         }
-        if ((press & g_GameWorkPtr->config.controllerConfig.action) && ShSession_IsHost())
+        if ((press & g_GameWorkPtr->config.controllerConfig.action) && ShSession_IsHost() && s_gateKind == DOOR_STORY)
         {
             Cut_GateTell(s_gateMap, s_gateIdx, 3);
             Cut_GateRelease(now, "bringing everyone through");
             return;
         }
     }
-    if (!Cut_GateWaitingOn(s_gateMap, s_gateIdx, NULL, 0))
+    if (!Cut_GateWaitingOn(s_gateMap, s_gateIdx, s_gateKind == DOOR_LEVEL, NULL, 0))
     {
         Cut_GateRelease(now, "everyone is here");
     }
     else if (now - s_gateSince > CUT_GATE_WAIT_MS)
     {
-        Cut_GateRelease(now, "gave up waiting");
+        if (ShSession_IsHost())
+        {
+            Cut_GateRelease(now, "gave up waiting");
+        }
+        else
+        {
+            /* A guest never goes on alone. */
+            SH_DBG("[CUTSCENE] map %d row %d: the others did not come; turned back", s_gateMap, s_gateIdx);
+            ShNet_PostLocalEvent("The others did not come; the door stays shut");
+            Cut_GateEnd();
+        }
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Bringing a player to another                                        */
+/* ------------------------------------------------------------------ */
+
+/* To a spot on this map at once; to another map through a reboot into it
+ * that keeps the inventory and flags (pc_coop_menu.c). */
+static void Cut_GoTo(int map, int x, int y, int z, short rot, const char* who)
+{
+    extern void Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY);
+    char line[96];
+
+    if (g_GameWork.gameState != GameState_InGame) return;
+    if (map == Cut_MyMap())
+    {
+        VECTOR3 pos;
+        if (Cut_HandlerRunning()) return; /* mid-scene: the script owns our place */
+        pos.vx = x; pos.vy = y; pos.vz = z;
+        ShNetRespawn_PlaceAt((const void*)&pos, rot);
+        snprintf(line, sizeof(line), "Brought to %s", who);
+        ShNet_PostLocalEvent(line);
+        SH_DBG("[CUTSCENE] brought to %s on map %d", who, map);
+        return;
+    }
+    SH_DBG("[CUTSCENE] going to %s's map %d", who, map);
+    Pc_CoopMenu_RequestWarp(map, x, z, rot);
+}
+
+void ShNetCut_Summon(unsigned long long id)
+{
+    const s_SubCharacter* p = &g_SysWork.playerWork.player;
+    unsigned char         b[32];
+    int                   o = 0, r;
+
+    if (!Cut_Coop() || !ShSession_IsHost() || g_GameWork.gameState != GameState_InGame || id == ShSession_SelfId())
+    {
+        return;
+    }
+    b[o++] = SHNET_CTRL_SUMMON;
+    ShnPutU64(b, &o, id);
+    b[o++] = (unsigned char)Cut_MyMap();
+    ShnPutS32(b, &o, p->position.vx);
+    ShnPutS32(b, &o, p->position.vy);
+    ShnPutS32(b, &o, p->position.vz);
+    ShnPutS16(b, &o, p->rotation.vy);
+    for (r = 0; r < 2; r++)
+    {
+        ShSession_SendGame(SHNET_MSG_S_CTRL, b, o, 0, 1);
+    }
+    SH_DBG("[CUTSCENE] bringing %s here (map %d)", Cut_NameOf(id), Cut_MyMap());
+}
+
+void ShNetCut_SummonIn(unsigned long long from, const unsigned char* p, int len)
+{
+    static unsigned int s_lastMs;
+    const unsigned int  now = ShNetPlat_Millis();
+    int                 o = 1, map;
+    unsigned long long  target;
+    VECTOR3             pos;
+    short               rot;
+
+    if (len < 24 || !Cut_Coop() || from != ShSession_HostId() || from == ShSession_SelfId()) return;
+    target = ShnGetU64(p, &o);
+    if (target != ShSession_SelfId()) return;
+    map    = p[o++];
+    pos.vx = ShnGetS32(p, &o);
+    pos.vy = ShnGetS32(p, &o);
+    pos.vz = ShnGetS32(p, &o);
+    rot    = (short)ShnGetS16(p, &o);
+    if (map > MapIdx_MAPX_S00 ||
+        pos.vx > SHNET_COORD_MAX || pos.vx < -SHNET_COORD_MAX || pos.vy > SHNET_COORD_MAX || pos.vy < -SHNET_COORD_MAX ||
+        pos.vz > SHNET_COORD_MAX || pos.vz < -SHNET_COORD_MAX)
+    {
+        return;
+    }
+    if (s_lastMs && now - s_lastMs < 1000u) return; /* sent twice */
+    s_lastMs = now;
+    Cut_GoTo(map, pos.vx, pos.vy, pos.vz, rot, Cut_NameOf(from));
+}
+
+void ShNetCut_TeleportToHost(void)
+{
+    const ShSessionMember* h;
+
+    if (!Cut_Coop() || ShSession_IsHost()) return;
+    h = Cut_MemberById(ShSession_HostId());
+    if (!h || !h->linked || h->mapIdx < 0 || h->poseMs == 0)
+    {
+        ShNet_PostLocalEvent("The host is between maps; try again in a moment");
+        return;
+    }
+    Cut_GoTo(h->mapIdx, h->x, h->y, h->z, h->rotY, h->name[0] ? h->name : "the host");
 }
 
 /* ------------------------------------------------------------------ */
@@ -846,10 +962,14 @@ int ShNetCut_HoldDispatch(void)
         g_MapEventSysState = SysState_Invalid;
         return 1;
     }
-    if ((g_MapEventSysState == SysState_LoadRoom || g_MapEventSysState == SysState_LoadOverlay) &&
-        Cut_IsGate(map, row))
+    if (g_MapEventSysState == SysState_LoadRoom || g_MapEventSysState == SysState_LoadOverlay)
     {
-        return Cut_GateHold(map, row, now);
+        const int kind = Cut_IsGate(map, row) ? DOOR_STORY
+                       : (g_MapEventSysState == SysState_LoadOverlay && !ShSession_IsHost()) ? DOOR_LEVEL : 0;
+        if (kind)
+        {
+            return Cut_GateHold(map, row, kind, now);
+        }
     }
     if (g_MapEventSysState != SysState_EventCallback || g_MapEventData->triggerType != TriggerType_None)
     {
@@ -1182,6 +1302,12 @@ int ShNetCut_StatusText(char* out, int cap, char* hint, int hintCap)
     if (hint && hintCap > 0) hint[0] = '\0';
     if (s_gateRow != NULL && !s_gateGo)
     {
+        if (s_gateKind == DOOR_LEVEL)
+        {
+            snprintf(out, (size_t)cap, "Waiting for the host...");
+            if (hint) snprintf(hint, (size_t)hintCap, "Cancel: turn back");
+            return 1;
+        }
         snprintf(out, (size_t)cap, "Waiting for other players...");
         if (hint)
         {

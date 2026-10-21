@@ -74,6 +74,8 @@ int         Pc_CoopMenu_TakeStartRequest(char* outName, int cap);
  * the multiplayer menu is up or a room is waited in at the title. Once a
  * frame from ShNet_GameTick. */
 void        Pc_CoopMusic_Tick(void);
+/* Guest: reboot into another map, keeping the game (Teleport to Host / Bring Here). */
+void        Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY);
 
 #ifdef __cplusplus
 }

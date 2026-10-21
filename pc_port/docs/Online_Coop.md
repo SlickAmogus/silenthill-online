@@ -36,12 +36,14 @@ the host.
 **In game**, `M` opens the multiplayer menu: leave a message, save, change
 your **Character** (any of the fourteen playable characters; the body swaps
 in place and everyone sees the new one), toggle nameplates and **Health
-Bars** (yours, your partners', both or none), see the players (with pings),
-leave. The host can also turn **Friendly Fire** on or off for everyone,
-allow **Guest Cheats** for all guests (the quick menu's cheat and debug
-pages, the console and binds are off for guests otherwise), and from the
-Players list allow cheats for one guest or remove them. The lobby has the
-Character row too, so you can pick before the game starts.
+Bars** (yours, your partners', both or none; neither shows during a scene),
+see the players (with pings), leave. A guest also has **Teleport to Host**.
+The host can also turn **Friendly Fire** on or off for everyone, allow
+**Guest Cheats** for all guests (the quick menu's cheat and debug pages, the
+console and binds are off for guests otherwise), and from the Players list
+allow cheats for one guest, bring them to where the host stands, or remove
+them. The lobby has the Character row too, so you can pick before the game
+starts.
 
 **Pausing** is the host's: the host's pause pauses everyone, and a guest's
 pause button asks the host instead. Reading a note, a locked door message or
@@ -128,17 +130,27 @@ selection back.
   deeper on Harry's bench with the rest across the table. A partner on
   another map is not pulled across; they play the scene when they get
   there.
-- **Story doors.** A door with a scene or a point of no return behind it
-  (the two gates in the alley) does not pull anyone: whoever uses it stands
-  at it under "Waiting for other players..." until every partner on the map
-  who has not been through it is close by, and partners get a note that
-  someone is waiting at a gate. Cancel turns back. The host can go through
-  at once with Action, and every partner on the map goes through the door
-  with them. A guest's wait gives up after a minute and a half on its own.
-  Ordinary doors, including ones to another part of the same map, are
-  walked through alone. The alley's own progress (which gate you are past,
-  the dark closing in) is each player's, so a guest keeps their cameras and
-  their gate until they walk through it themselves.
+- **Story doors.** A door with a point of no return behind it (the two
+  gates in the alley, the school's Door of Eclipse) does not pull anyone:
+  whoever uses it stands at it under "Waiting for other players..." until
+  every partner on the map who has not been through it is close by, and
+  partners get a note that someone is waiting at a gate. Cancel turns back.
+  The host can go through at once with Action, and every partner on the map
+  goes through the door with them; a guest only waits, and after a minute
+  and a half turns back on their own.
+- **Level doors.** A guest cannot leave for another map while the host is
+  on theirs and not beside them: the door waits under "Waiting for the
+  host..." (Cancel turns back). A host who went on ahead is followed
+  freely, so a guest left behind plays on in their own part of the world
+  until they catch up. The host walks through every ordinary door alone.
+  The alley's own progress (which gate you are past, the dark closing in)
+  is each player's, so a guest keeps their cameras and their gate until
+  they walk through it themselves.
+- **Teleport.** A guest's multiplayer menu (`M`) has **Teleport to Host**,
+  and the host's Players list has **Bring Here** for each guest. On the
+  same map the player is moved at once; across maps the guest's game
+  reboots into the host's map with their inventory and progress intact and
+  lands beside the host.
 - **The alley.** Harry's death at the end of the opening is what takes him
   to the cafe, so in the alley one player's death is everyone's: when a
   partner falls there, you fall too, and the cafe scene starts for the whole

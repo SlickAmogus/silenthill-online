@@ -661,6 +661,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_GATE:
             ShNetCut_GateIn(from, p, len);
             break;
+        case SHNET_CTRL_SUMMON:
+            ShNetCut_SummonIn(from, p, len);
+            break;
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);
             break;
