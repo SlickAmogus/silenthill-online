@@ -679,6 +679,23 @@ static void PrintBanner(void)
 
 static int s_SkipToGameArg = 0;
 
+/* Every way out of the process (the window's close box, Exit Game, the
+ * console's quit, a split-screen window following its parent) ends in
+ * exit(). The network worker, the embedded relay, Steam and the
+ * achievements uploader were still running then, and a thread inside SDL
+ * or winsock while the CRT unloads the DLLs is what left a game that had to
+ * be killed from Task Manager. */
+static void Pc_ShutdownThreads(void)
+{
+    static int s_done;
+    if (s_done) return;
+    s_done = 1;
+    { extern void ShNet_Shutdown(void); ShNet_Shutdown(); }
+    { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
+    Pc_Discord_Shutdown();
+    SH_DBG("[SH] network, achievements and Discord stopped");
+}
+
 static void ParseArgs(int argc, char* argv[])
 {
     for (int i = 1; i < argc; i++)
@@ -1494,10 +1511,15 @@ int main(int argc, char* argv[])
      *
      * On PC, everything is statically linked, so we call MainLoop() directly.
      */
+    /* Registered after PsyX_Initialise's own atexit(PsyX_Shutdown), so it
+     * runs before SDL is torn down, whichever way the process leaves. */
+    atexit(Pc_ShutdownThreads);
+
     MainLoop();
 
     /* Cleanup */
     SH_DBG("[SH] MainLoop exited normally. Shutting down...");
+    Pc_ShutdownThreads();
     { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
     { extern void Pc_Plugins_Shutdown(void); Pc_Plugins_Shutdown(); }
     Pc_Discord_Shutdown();

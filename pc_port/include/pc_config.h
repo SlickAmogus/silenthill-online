@@ -513,6 +513,7 @@ typedef struct {
     int  onlinePort;          /* UDP port; 0 = SHNET_DEFAULT_PORT (online_port) */
     char onlineName[24];      /* how other players see you (online_name) */
     char onlinePassword[64];  /* shared word for a private server, "" = none (online_password) */
+    unsigned int onlineUid;   /* persistent per-install id for the living world (online_uid); 0 until first run */
     int  onlineGhosts;        /* 1 = draw other players in the world (online_ghosts) */
     int  onlineMemos;         /* 1 = draw and place messages (online_memos) */
     int  onlineDeaths;        /* 1 = draw and report death markers (online_deaths) */

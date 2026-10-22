@@ -142,6 +142,7 @@ typedef struct
 {
     int                used;
     shn_u32            playerId;
+    shn_u32            uid;      /* the client's persistent id; 0 from an older client */
     shn_u32            session;
     struct sockaddr_in addr;
 
@@ -210,6 +211,10 @@ static Memo*         g_memos;
 static int           g_memoCount;
 static shn_u32       g_nextMemoId = 1;
 static shn_u32       g_nextPlayerId = 1;
+/* Who a client IS across visits: its persistent id, or for an older client
+ * the session's player id (which is what every memo was attributed to
+ * before, and why a newcomer could be handed someone else's). */
+#define SRV_IDENT(c) ((c)->uid ? (c)->uid : (c)->playerId)
 static shn_u8        g_cookieKey[16];
 
 static ShSock        g_sock = SH_INVALID_SOCK;
@@ -949,6 +954,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     char     build[SHNET_BUILD_MAX];
     shn_u32  proof;
     shn_u32  cookie;
+    shn_u32  uid;
     Client*  c;
     char     addr[64];
     char     text[SHNET_EVENT_MAX];
@@ -974,6 +980,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     ShnGetStr(p, &off, SHNET_BUILD_MAX, build, SHNET_BUILD_MAX);
     proof  = ShnGetU32(p, &off);
     cookie = ShnGetU32(p, &off);
+    uid    = (len >= SHNET_HELLO_LEN_UID) ? ShnGetU32(p, &off) : 0;
 
     if (ver != SHNET_PROTO_VER)
     {
@@ -1084,6 +1091,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     c->charaId = charaId;
     c->lastRxMs = now;
     memcpy(c->name, name, SHNET_NAME_MAX);
+    c->uid = uid;
 
     /* A client retries HELLO until it hears WELCOME; one answer per gap is
      * enough to get through loss and keeps a HELLO loop from being a pump. */
@@ -1263,6 +1271,7 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
             ShnPutS32(buf, &o, m->y);
             ShnPutS32(buf, &o, m->z);
             ShnPutS16(buf, &o, m->rotY);
+            ShnPutStr(buf, &o, m->ownerName, SHNET_NAME_MAX);
             count++;
         }
 
@@ -1296,9 +1305,9 @@ static void SrvPushMemo(const Memo* m)
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
         Client* o = &g_clients[i];
-        shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_MEMO_ENTRY];
+        shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_MEMO_ENTRY_NAMED];
         int     bo = SHNET_HDR_SIZE;
-        if (!o->used || o->mapIdx != m->mapIdx || o->playerId == m->ownerId)
+        if (!o->used || o->mapIdx != m->mapIdx || SRV_IDENT(o) == m->ownerId)
         {
             continue;
         }
@@ -1319,6 +1328,7 @@ static void SrvPushMemo(const Memo* m)
         ShnPutS32(buf, &bo, m->y);
         ShnPutS32(buf, &bo, m->z);
         ShnPutS16(buf, &bo, m->rotY);
+        ShnPutStr(buf, &bo, m->ownerName, SHNET_NAME_MAX);
         SrvSendTo(o, buf, bo - SHNET_HDR_SIZE, SHNET_MSG_MEMO_LIST);
     }
 }
@@ -1472,7 +1482,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     }
 
     m.memoId     = g_nextMemoId++;
-    m.ownerId    = c->playerId;
+    m.ownerId    = SRV_IDENT(c);
     m.ownerIp    = ip;
     m.rating     = 0;
     m.placedUnix = (long)time(NULL);
@@ -1553,7 +1563,7 @@ static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
         {
             continue;
         }
-        if (g_memos[i].ownerId == c->playerId)
+        if (g_memos[i].ownerId == SRV_IDENT(c))
         {
             return; /* no self-rating */
         }

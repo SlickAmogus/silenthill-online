@@ -825,6 +825,10 @@ void PcConfig_Load(const char* path)
             strncpy(g_PcConfig.onlinePassword, value, sizeof(g_PcConfig.onlinePassword) - 1);
             g_PcConfig.onlinePassword[sizeof(g_PcConfig.onlinePassword) - 1] = ' ';
         }
+        else if (strcmp(key, "online_uid") == 0)
+        {
+            g_PcConfig.onlineUid = (unsigned int)strtoul(value, NULL, 10);
+        }
         else if (strcmp(key, "online_ghosts") == 0)
         {
             g_PcConfig.onlineGhosts = (atoi(value) != 0);

@@ -145,6 +145,8 @@ static struct
 static SDL_mutex*  s_lock;
 static SDL_Thread* s_thread;
 static volatile int s_quit;
+/* This install's persistent id (online_uid): what memos are attributed to. */
+static unsigned int s_uid;
 static int          s_enabled;   /* the worker is running at all */
 static int          s_masterOn;  /* the master-server half is wanted */
 
@@ -268,6 +270,7 @@ static void ShNetW_SendHello(ShNetWorker* w, int charaId)
     ShnPutStr(buf, &off, ShBuild_Short(), SHNET_BUILD_MAX); /* exe hash: the server may allow-list it */
     ShnPutU32(buf, &off, ShnPasswordProof(s_password, w->cookie));
     ShnPutU32(buf, &off, w->cookie);
+    ShnPutU32(buf, &off, s_uid);
 
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), w->session);
     ShNetW_Send(w, buf, off);
@@ -635,6 +638,7 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
 {
     int off = 0;
     int mapIdx, count, i;
+    int entryLen, named;
 
     if (len < 8)
     {
@@ -650,6 +654,9 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
     {
         return;
     }
+    /* A newer server appends the author's name to every entry. */
+    entryLen = (count > 0) ? (len - 8) / count : SHNET_MEMO_ENTRY;
+    named    = entryLen >= SHNET_MEMO_ENTRY_NAMED;
 
     /* A list for a map the player has already left is stale by definition. */
     if (mapIdx != s_sh.localMap)
@@ -669,7 +676,10 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         ShNetMemo m;
         int       j;
         int       dup = 0;
+        const int start = off;
+        char      wire[SHNET_NAME_MAX];
 
+        wire[0] = '\0';
         memset(&m, 0, sizeof(m));
         m.memoId  = ShnGetU32(p, &off);
         m.ownerId = ShnGetU32(p, &off);
@@ -684,13 +694,22 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         m.y       = ShnGetS32(p, &off);
         m.z       = ShnGetS32(p, &off);
         m.rotY    = ShnGetS16(p, &off);
+        if (named)
+        {
+            ShnGetStr(p, &off, SHNET_NAME_MAX, wire, SHNET_NAME_MAX);
+        }
+        off = start + entryLen;
 
-        /* The wire carries only ownerId; name the author from the roster the
-         * way ghosts are named, so a memo shows who left it instead of
-         * "Someone". Our own memos resolve to our name. */
-        if (m.ownerId == s_sh.selfId)
+        /* Ours by this install's id (or the session's, for an old server);
+         * otherwise the name the server recorded when it was left, and for
+         * an old server the roster, the way ghosts are named. */
+        if (m.ownerId == s_uid || (!named && m.ownerId == s_sh.selfId))
         {
             SDL_strlcpy(m.owner, s_name, SHNET_NAME_MAX);
+        }
+        else if (wire[0])
+        {
+            SDL_strlcpy(m.owner, wire, SHNET_NAME_MAX);
         }
         else
         {
@@ -891,6 +910,16 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
 /* Worker loop                                                         */
 /* ------------------------------------------------------------------ */
 
+/* A wait the shutdown can cut short. */
+static void ShNetW_Nap(unsigned int ms)
+{
+    const unsigned int t0 = SDL_GetTicks();
+    while (!s_quit && SDL_GetTicks() - t0 < ms)
+    {
+        SDL_Delay(50);
+    }
+}
+
 static int SDLCALL ShNet_Worker(void* unused)
 {
     ShNetWorker w;
@@ -990,7 +1019,7 @@ static int SDLCALL ShNet_Worker(void* unused)
                 SDL_UnlockMutex(s_lock);
                 /* A failed lookup is usually "no network yet"; retrying every
                  * few seconds costs nothing and recovers on its own. */
-                SDL_Delay(4000);
+                ShNetW_Nap(4000);
                 continue;
             }
         }
@@ -1020,7 +1049,7 @@ static int SDLCALL ShNet_Worker(void* unused)
                      * freshly-arrived packet as five seconds old -- which is
                      * most of the way to a spurious timeout. */
                     w.helloTries = 0;
-                    SDL_Delay(5000);
+                    ShNetW_Nap(5000);
                     continue;
                 }
             }
@@ -1192,6 +1221,20 @@ void ShNet_Init(void)
                 sizeof(s_name));
     ShNet_SanitizeName(s_name);
     SDL_strlcpy(s_password, g_PcConfig.onlinePassword, sizeof(s_password));
+    /* Made once and kept in config.cfg; below 0x10000 cannot collide with
+     * the player ids memos were attributed to before. */
+    s_uid = g_PcConfig.onlineUid;
+    if (s_uid < 0x10000u)
+    {
+        char v[16];
+        unsigned long long t = SDL_GetPerformanceCounter();
+        s_uid = (unsigned int)(t ^ (t >> 32)) ^ (SDL_GetTicks() * 2654435761u) ^ (unsigned int)(size_t)&v;
+        if (s_uid < 0x10000u) s_uid += 0x10000u;
+        g_PcConfig.onlineUid = s_uid;
+        SDL_snprintf(v, sizeof(v), "%u", s_uid);
+        PcConfig_SaveKeyValue("online_uid", v);
+        SH_DBG("[NET] new player id %u for this install", s_uid);
+    }
     /* Logged so an admin can read the id of an approved build straight off a
      * client log (the server also logs it on every join). */
     SH_DBG("[NET] build id %s  (sha256 %s)", ShBuild_Short(), ShBuild_Hash());

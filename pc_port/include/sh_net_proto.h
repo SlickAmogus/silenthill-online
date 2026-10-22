@@ -225,10 +225,13 @@ enum
 #define SHNET_SNAP_ENTRY   24
 #define SHNET_ROSTER_ENTRY 36
 #define SHNET_MEMO_ENTRY   34
+/* A list entry with the author's name after it (servers from 2026-10-21);
+ * a client reads the name when the entries are that long. */
+#define SHNET_MEMO_ENTRY_NAMED (SHNET_MEMO_ENTRY + SHNET_NAME_MAX)
 
 #define SHNET_SNAP_MAX   ((SHNET_MAX_PAYLOAD - 8) / SHNET_SNAP_ENTRY)
 #define SHNET_ROSTER_MAX ((SHNET_MAX_PAYLOAD - 8) / SHNET_ROSTER_ENTRY)
-#define SHNET_MEMO_MAX   ((SHNET_MAX_PAYLOAD - 8) / SHNET_MEMO_ENTRY)
+#define SHNET_MEMO_MAX   ((SHNET_MAX_PAYLOAD - 8) / SHNET_MEMO_ENTRY_NAMED)
 
 /* ------------------------------------------------------------------ */
 /* Serialization primitives                                            */
@@ -467,6 +470,10 @@ static inline unsigned long long ShnGetU64(const shn_u8* b, int* off)
 
 #define SHNET_HELLO_LEN_OLD (2 + 1 + 1 + 4 + SHNET_NAME_MAX + SHNET_BUILD_MAX + 4)
 #define SHNET_HELLO_LEN     (SHNET_HELLO_LEN_OLD + 4)
+/* + uid u32: a persistent per-install id (online_uid), the identity memos
+ * are attributed to. The session's player id is reused across visits, so it
+ * cannot be. 0 = an older client; the server uses its player id then. */
+#define SHNET_HELLO_LEN_UID (SHNET_HELLO_LEN + 4)
 
 /* SipHash-2-4 (Aumasson and Bernstein), the standard keyed hash for exactly
  * this: short inputs, a secret key, outputs an attacker must not predict. */
