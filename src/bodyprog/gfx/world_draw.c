@@ -158,6 +158,9 @@ void Item_HeldItemModelFree(void) // 0x8003C0C0
 
     heldItem = &g_WorldGfxWork.heldItem;
 
+#ifdef SH_PC_PORT
+    SH_DBG("[HELD] model freed (was item %d)", (int)heldItem->itemId);
+#endif
     heldItem->itemId                       = NO_VALUE;
     heldItem->lmHdr                       = HELD_ITEM_LM_BUFFER;
     heldItem->bone.modelInfo.field_0    = 0;
@@ -1103,6 +1106,24 @@ void WorldGfx_HeldItemDraw(void) // 0x8003D058
 
     // Check if held item is valid.
     heldItem = &g_WorldGfxWork.heldItem;
+#ifdef SH_PC_PORT
+    {
+        /* Once per change of item, readiness or the hidden bit, so a hand
+         * that stays empty says why. */
+        static int s_lastItem = -2, s_lastReady = -1, s_lastHidden = -1;
+        const int  ready  = (heldItem->itemId != NO_VALUE && Fs_QueueIsEntryLoaded(heldItem->queueIdx)) ? 1 : 0;
+        const int  hidden = (heldItem->bone.modelInfo.field_0 & (1u << 31)) ? 1 : 0;
+        if (heldItem->itemId != s_lastItem || ready != s_lastReady || hidden != s_lastHidden)
+        {
+            s_lastItem   = heldItem->itemId;
+            s_lastReady  = ready;
+            s_lastHidden = hidden;
+            SH_DBG("[HELD] item %d: %s%s (entry %d, lm %p)", (int)heldItem->itemId,
+                   heldItem->itemId == NO_VALUE ? "none" : ready ? "model ready" : "waiting for its model",
+                   hidden ? ", hidden" : "", (int)heldItem->queueIdx, (void*)heldItem->lmHdr);
+        }
+    }
+#endif
     if (heldItem->itemId == NO_VALUE)
     {
         return;
@@ -1118,21 +1139,6 @@ void WorldGfx_HeldItemDraw(void) // 0x8003D058
         coord = &g_SysWork.playerBoneCoords[HarryBone_RightHand];
     }
 
-#ifdef SH_PC_PORT
-    {
-        /* Once per change of item or of its readiness, so a hand that stays
-         * empty says why. */
-        static int s_lastItem = -2, s_lastReady = -1;
-        const int  ready = Fs_QueueIsEntryLoaded(heldItem->queueIdx) ? 1 : 0;
-        if (heldItem->itemId != s_lastItem || ready != s_lastReady)
-        {
-            s_lastItem  = heldItem->itemId;
-            s_lastReady = ready;
-            SH_DBG("[HELD] item %d: %s (entry %d, lm %p)", (int)heldItem->itemId,
-                   ready ? "model ready, drawing" : "waiting for its model", (int)heldItem->queueIdx, (void*)heldItem->lmHdr);
-        }
-    }
-#endif
     if (Fs_QueueIsEntryLoaded(heldItem->queueIdx))
     {
         lmHdr = heldItem->lmHdr;
