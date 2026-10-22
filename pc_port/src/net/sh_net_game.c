@@ -840,6 +840,19 @@ void ShNet_OnMapChanged(int mapIdx)
 
 void ShNet_GameTick(void)
 {
+    {
+        /* The log is fully buffered; a window that is killed (or a split-screen
+         * window closed with its parent) lost its last 64 KB, which is the part
+         * that says what went wrong. Once a second costs nothing. */
+        static unsigned int s_flushMs;
+        const unsigned int  t = ShNetPlat_Millis();
+        if (t - s_flushMs >= 1000u)
+        {
+            extern FILE* g_ShDebugLog;
+            s_flushMs = t;
+            if (g_ShDebugLog) fflush(g_ShDebugLog);
+        }
+    }
     int   inWorld;
     int   mapIdx;
     int   flags;
@@ -965,6 +978,14 @@ void ShNet_GameTick(void)
     {
         ShNet_PublishLocal(0, s_lastMap < 0 ? 0 : s_lastMap, ShNetG_LocalChara(), 0,
                            0, 0, 0, 0, 0, 0, 0);
+        /* Back at the title the next game starts fresh: its first map is a
+         * change, so a host announces it even when the last game ended on
+         * the same map (a second split-screen start sat on map 0 and never
+         * told Player 2 to boot). */
+        if (g_GameWork.gameState == GameState_MainMenu)
+        {
+            s_lastMap = -1;
+        }
         ShSession_PublishLocalPos(-1, 0, 0, NULL); /* no pose outside a map */
         ShSession_PublishPresence("In the menus", -1);
         ShNet_PumpToGameThread();
