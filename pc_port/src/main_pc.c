@@ -43,6 +43,13 @@
 #include <PsyX/PsyX_backend.h>
 #include <PsyX/common/glad.h>
 
+#include <unistd.h> /* _exit */
+#ifdef _WIN32
+/* windows.h collides with the PSX headers (RECT, byte); only these two. */
+__declspec(dllimport) void* __stdcall GetCurrentProcess(void);
+__declspec(dllimport) int __stdcall TerminateProcess(void* process, unsigned int code);
+#endif
+
 /* Null device differs by platform: NUL on Windows, /dev/null on POSIX. */
 #ifdef _WIN32
 #define SH_NULL_DEVICE "NUL"
@@ -679,6 +686,27 @@ static void PrintBanner(void)
 
 static int s_SkipToGameArg = 0;
 
+/* The end of every exit. Everything with state is down by now (threads,
+ * Steam, Discord, the window, audio, the log); what is left is the CRT
+ * unloading DLLs, which waits on every thread still alive inside one of
+ * them (a Steam or winsock worker left behind, an audio driver thread). That
+ * wait is the game nobody can close, so the process ends here instead.
+ * Saves and config.cfg are written when they change, never at exit. */
+static void Pc_FinalExit(void)
+{
+    extern FILE* g_ShDebugLog;
+    if (g_ShDebugLog)
+    {
+        fputs("[SH] process ending\n", g_ShDebugLog);
+        fflush(g_ShDebugLog);
+    }
+    fflush(NULL);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), 0);
+#endif
+    _exit(0);
+}
+
 /* Every way out of the process (the window's close box, Exit Game, the
  * console's quit, a split-screen window following its parent) ends in
  * exit(). The network worker, the embedded relay, Steam and the
@@ -690,7 +718,10 @@ static void Pc_ShutdownThreads(void)
     static int s_done;
     if (s_done) return;
     s_done = 1;
+    SH_DBG("[SH] exit: stopping network");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
     { extern void ShNet_Shutdown(void); ShNet_Shutdown(); }
+    SH_DBG("[SH] exit: stopping achievements");
     { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
     Pc_Discord_Shutdown();
     SH_DBG("[SH] network, achievements and Discord stopped");
@@ -758,6 +789,8 @@ int main(int argc, char* argv[])
     /* Log file is NOT opened until after config load. SH_DBG calls before
      * that point are silently no-ops (the macro short-circuits on a NULL
      * handle). Avoids creating SilentHill.log when enable_debug_log=0. */
+    /* Registered first, so it runs last, after PsyX_Shutdown. */
+    atexit(Pc_FinalExit);
     atexit(Sh_LogAtExitFlush);
     Sh_InstallCrashFilter();
 

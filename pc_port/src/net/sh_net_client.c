@@ -145,6 +145,7 @@ static struct
 static SDL_mutex*  s_lock;
 static SDL_Thread* s_thread;
 static volatile int s_quit;
+static volatile int s_workerDone; /* the worker has returned */
 /* This install's persistent id (online_uid): what memos are attributed to. */
 static unsigned int s_uid;
 static int          s_enabled;   /* the worker is running at all */
@@ -1179,13 +1180,16 @@ static int SDLCALL ShNet_Worker(void* unused)
         SDL_Delay(5);
     }
 
+    SH_DBG("[NET] worker stopping: co-op session");
     ShSession_Shutdown();
+    SH_DBG("[NET] worker stopping: living world");
     if (w.session)
     {
         ShNetW_SendSimple(&w, SHNET_MSG_BYE);
     }
     ShNetPlat_Close(w.sock);
     ShNetPlat_Shutdown();
+    s_workerDone = 1;
     return 0;
 }
 
@@ -1246,8 +1250,9 @@ void ShNet_Init(void)
         return;
     }
 
-    s_quit    = 0;
-    s_enabled = 1;
+    s_quit       = 0;
+    s_workerDone = 0;
+    s_enabled    = 1;
     if (s_masterOn)
     {
         ShNet_SetStatus(SHNET_ST_RESOLVING, "Looking up server...");
@@ -1279,7 +1284,26 @@ void ShNet_Shutdown(void)
         return;
     }
     s_quit = 1;
-    SDL_WaitThread(s_thread, NULL);
+    {
+        /* Bounded: Steam's own shutdown can block from this thread, and an
+         * exit that waits on it is a game that has to be killed. */
+        const unsigned int t0 = SDL_GetTicks();
+        while (!s_workerDone && SDL_GetTicks() - t0 < 2500u)
+        {
+            SDL_Delay(10);
+        }
+    }
+    if (s_workerDone)
+    {
+        SDL_WaitThread(s_thread, NULL);
+    }
+    else
+    {
+        SH_DBG("[NET] worker did not stop in time; left behind");
+        SDL_DetachThread(s_thread);
+        s_thread = NULL;
+        return; /* its mutex stays: the thread may still take it */
+    }
     s_thread = NULL;
     if (s_lock)
     {
