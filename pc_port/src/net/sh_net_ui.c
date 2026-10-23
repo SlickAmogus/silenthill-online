@@ -61,7 +61,7 @@
 #define NU_ATLAS_PAD 2
 #define NU_SLOT_MAX  192
 #define NU_CACHE_MAX 128
-#define NU_TEXT_MAX  72
+#define NU_TEXT_MAX  160
 
 /* Rows the player list shows at once before it starts saying "and N more". */
 #define NU_LIST_ROWS 14
@@ -1172,13 +1172,80 @@ void ShNetUi_TogglePlayerList(void)
 static float Nu_DrawTextFit(const char* text, float x, float y, float maxW, int px,
                             float r, float g, float b, float a);
 
+/* Width of the first n bytes of text at px, from the font's metrics alone
+ * (no bake), for wrapping. */
+static float Nu_MeasureText(const char* text, int n, int px)
+{
+    float scale, w = 0.0f;
+    int   i, prev = 0;
+    if (!s_fontOk || px < 6) return 0.0f;
+    scale = stbtt_ScaleForPixelHeight(&s_font, (float)px);
+    for (i = 0; i < n && text[i]; i++)
+    {
+        int cp = (unsigned char)text[i], adv, lsb;
+        if (prev) w += (float)stbtt_GetCodepointKernAdvance(&s_font, prev, cp) * scale;
+        stbtt_GetCodepointHMetrics(&s_font, cp, &adv, &lsb);
+        w += (float)adv * scale;
+        prev = cp;
+    }
+    return w + 4.0f;
+}
+
+/* Breaks text into rows no wider than maxW, at spaces where it can. Returns
+ * the row count; starts[] / lens[] get each row (up to cap rows). */
+#define NU_WRAP_MAX 12
+static int Nu_Wrap(const char* text, float maxW, int px, int* starts, int* lens, int cap)
+{
+    const int total = (int)strlen(text);
+    int       rows = 0, at = 0;
+    while (at < total && rows < cap)
+    {
+        int n = total - at, sp = -1, k;
+        if (n > NU_TEXT_MAX - 1 || Nu_MeasureText(text + at, n, px) > maxW)
+        {
+            for (k = 1; k <= n && k < NU_TEXT_MAX; k++)
+            {
+                if (Nu_MeasureText(text + at, k, px) > maxW) break;
+                if (text[at + k - 1] == ' ') sp = k;
+            }
+            n = (k > 1) ? k - 1 : 1;
+            if (sp > 0 && at + n < total && text[at + n] != ' ') n = sp;
+        }
+        starts[rows] = at;
+        lens[rows]   = n;
+        rows++;
+        at += n;
+        while (at < total && text[at] == ' ') at++;
+    }
+    return rows;
+}
+
+static void Nu_DrawWrapped(const char* text, const int* starts, const int* lens, int rows, float x, float* y,
+                           float lh, int px, float r, float g, float b, float a)
+{
+    int k;
+    for (k = 0; k < rows; k++)
+    {
+        char seg[NU_TEXT_MAX];
+        int  len = lens[k] < NU_TEXT_MAX - 1 ? lens[k] : NU_TEXT_MAX - 1;
+        memcpy(seg, text + starts[k], (size_t)len);
+        seg[len] = '\0';
+        if (a > 0.0f) Nu_DrawText(seg, x, *y, px, r, g, b, a);
+        *y += lh;
+    }
+}
+
 static void Nu_DrawChat(int px)
 {
-    const int   n    = ShNetChat_LineCount();
-    const int   comp = ShNetChat_Composing();
-    const float lh   = (float)px * 1.32f;
-    const float x    = s_vpH * 0.03f;
-    const float bot  = s_vpH * (comp ? 0.9f : 0.93f);
+    const int   n     = ShNetChat_LineCount();
+    const int   comp  = ShNetChat_Composing();
+    const float lh    = (float)px * 1.32f;
+    const float x     = s_vpH * 0.03f;
+    const float bot   = s_vpH * (comp ? 0.9f : 0.93f);
+    const float wrapW = s_vpW * 0.60f;
+    char        compose[512];
+    int         cs[NU_WRAP_MAX], cl[NU_WRAP_MAX];
+    int         rows = 0, compRows = 0;
     float       y;
     int         i;
 
@@ -1187,39 +1254,46 @@ static void Nu_DrawChat(int px)
         return;
     }
 
+    /* A line wider than the box wraps: the baker refuses very wide text, so
+     * a long line would otherwise draw as nothing. */
+    for (i = 0; i < n; i++)
+    {
+        int st[NU_WRAP_MAX], ln[NU_WRAP_MAX];
+        rows += Nu_Wrap(ShNetChat_LineText(i), wrapW, px, st, ln, NU_WRAP_MAX);
+    }
+    if (comp)
+    {
+        const int g = (ShNetChat_Scope() == SHNET_CHAT_GAME);
+        snprintf(compose, sizeof(compose), "%s %s_", g ? "[Game]" : "[All]", ShNetChat_ComposeText());
+        compRows = Nu_Wrap(compose, wrapW, px, cs, cl, NU_WRAP_MAX);
+    }
+
     /* Backing slab only while composing -- idle lines float over the scene the
      * way a console-style feed does, so they never box off the corner. */
     if (comp)
     {
-        float top = bot - lh * (float)(n + 1) - (float)px * 0.5f;
+        float top = bot - lh * (float)(rows + compRows) - (float)px * 0.5f;
         Nu_Panel(x - (float)px * 0.5f, top, s_vpW * 0.62f, bot - top + lh,
                  0.85f);
     }
 
-    y = bot - lh * (float)(n + (comp ? 1 : 0));
+    y = bot - lh * (float)(rows + compRows);
     for (i = 0; i < n; i++)
     {
-        float a = ShNetChat_LineAlpha(i);
-        int   g = (ShNetChat_LineScope(i) == SHNET_CHAT_GAME);
-        if (a <= 0.0f)
-        {
-            y += lh;
-            continue;
-        }
-        Nu_DrawText(ShNetChat_LineText(i), x, y, px,
-                    g ? 0.86f : 0.72f,
-                    g ? 0.80f : 0.78f,
-                    g ? 0.62f : 0.86f, a);
-        y += lh;
+        const char* t = ShNetChat_LineText(i);
+        const int   g = (ShNetChat_LineScope(i) == SHNET_CHAT_GAME);
+        int         st[NU_WRAP_MAX], ln[NU_WRAP_MAX];
+        const int   r = Nu_Wrap(t, wrapW, px, st, ln, NU_WRAP_MAX);
+        Nu_DrawWrapped(t, st, ln, r, x, &y, lh, px,
+                       g ? 0.86f : 0.72f,
+                       g ? 0.80f : 0.78f,
+                       g ? 0.62f : 0.86f, ShNetChat_LineAlpha(i));
     }
 
     if (comp)
     {
-        char        line[200];
-        const int   g = (ShNetChat_Scope() == SHNET_CHAT_GAME);
-        snprintf(line, sizeof(line), "%s %s_",
-                 g ? "[Game]" : "[All]", ShNetChat_ComposeText());
-        Nu_DrawTextFit(line, x, y, s_vpW * 0.60f, px,
+        const int g = (ShNetChat_Scope() == SHNET_CHAT_GAME);
+        Nu_DrawWrapped(compose, cs, cl, compRows, x, &y, lh, px,
                        g ? 0.95f : 0.80f, g ? 0.90f : 0.86f, g ? 0.66f : 0.95f, 1.0f);
     }
 }

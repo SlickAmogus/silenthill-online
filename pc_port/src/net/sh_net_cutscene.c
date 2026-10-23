@@ -33,11 +33,14 @@
  * says (sceneRow / sceneState), so a lost message cannot strand anyone.
  *
  * Story doors (s_gates below: a door or gate with a scene, or a point of no
- * return, behind it) wait instead of pulling: whoever uses one stands at it
- * under "Waiting for other players..." until every partner on the map who
- * has not been through it is close by. Cancel turns back. The host may go
- * through at once with Action, and every partner on the map goes through
- * the door with them.
+ * return, behind it) belong to the host. A guest who uses one stands at it
+ * under "Waiting for other players..." until the host goes through. The host
+ * goes through once every partner on the map who has not been through it is
+ * close by (or at once with Action), and every such partner goes through
+ * with them in the same moment. Two machines deciding on their own would let
+ * one slip through while the other is a step short, and the one left behind
+ * may then find the door shut by the flags the first one sent.
+ * Cancel turns back.
  *
  * Seats: a scripted scene moves every player along the same path, so they
  * would stand inside each other. Each player's game offsets its OWN model
@@ -558,11 +561,13 @@ static void Cut_GateTell(int map, int row, int state)
 }
 
 /* A partner on this map who has not been through the door and is not beside
- * us (or is still loading the map); only the host, for a level door. The
- * first such name, for the log. */
-static int Cut_GateWaitingOn(int map, int row, int hostOnly, char* who, int cap)
+ * us (or is still loading the map). A guest waits on the host alone: beside
+ * them for a level door, through it for a story door. The first such name,
+ * for the log. */
+static int Cut_GateWaitingOn(int map, int row, int kind, char* who, int cap)
 {
-    const s_SubCharacter* me = &g_SysWork.playerWork.player;
+    const s_SubCharacter* me       = &g_SysWork.playerWork.player;
+    const int             hostOnly = !ShSession_IsHost();
     int                   i, n = ShSession_MemberCount();
 
     for (i = 0; i < n; i++)
@@ -574,7 +579,7 @@ static int Cut_GateWaitingOn(int map, int row, int hostOnly, char* who, int cap)
         if (Cut_Passed(m->steamId, map, row)) continue;
         if (m->mapIdx >= 0 && m->mapIdx != map) continue; /* elsewhere: cannot come */
         if (m->healthPct1 == 1) continue;                  /* dead */
-        far = (m->mapIdx < 0 || m->poseMs == 0 ||
+        far = (m->mapIdx < 0 || m->poseMs == 0 || (hostOnly && kind == DOOR_STORY) ||
                ABS(m->x - me->position.vx) > CUT_GATE_NEAR || ABS(m->z - me->position.vz) > CUT_GATE_NEAR);
         if (far)
         {
@@ -614,10 +619,14 @@ static int Cut_GateHold(int map, int row, int kind, unsigned int now)
         g_MapEventSysState = SysState_Invalid; /* the buttons are read by the tick */
         return 1;
     }
-    if (!Cut_GateWaitingOn(map, row, kind == DOOR_LEVEL, who, (int)sizeof(who)))
+    if (!Cut_GateWaitingOn(map, row, kind, who, (int)sizeof(who)))
     {
         Cut_PassedAdd(ShSession_SelfId(), map, row);
-        if (kind == DOOR_STORY) Cut_GateTell(map, row, 2);
+        if (kind == DOOR_STORY)
+        {
+            if (ShSession_IsHost()) Cut_GateTell(map, row, 3);
+            Cut_GateTell(map, row, 2);
+        }
         return 0;
     }
     s_gateRow      = g_MapEventData;
@@ -742,15 +751,17 @@ static void Cut_GateTick(unsigned int now)
             return;
         }
     }
-    if (!Cut_GateWaitingOn(s_gateMap, s_gateIdx, s_gateKind == DOOR_LEVEL, NULL, 0))
+    if (!Cut_GateWaitingOn(s_gateMap, s_gateIdx, s_gateKind, NULL, 0))
     {
+        if (ShSession_IsHost() && s_gateKind == DOOR_STORY) Cut_GateTell(s_gateMap, s_gateIdx, 3);
         Cut_GateRelease(now, "everyone is here");
     }
     else if (now - s_gateSince > CUT_GATE_WAIT_MS)
     {
         if (ShSession_IsHost())
         {
-            Cut_GateRelease(now, "gave up waiting");
+            if (s_gateKind == DOOR_STORY) Cut_GateTell(s_gateMap, s_gateIdx, 3);
+            Cut_GateRelease(now, "gave up waiting; bringing everyone");
         }
         else
         {

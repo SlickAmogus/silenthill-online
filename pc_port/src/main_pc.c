@@ -713,18 +713,38 @@ static void Pc_FinalExit(void)
  * achievements uploader were still running then, and a thread inside SDL
  * or winsock while the CRT unloads the DLLs is what left a game that had to
  * be killed from Task Manager. */
+/* Whatever still blocks the way out (a pipe write to Discord, a driver
+ * thread SDL joins), the process ends this long after the exit began. */
+#define PC_EXIT_WATCHDOG_MS 5000u
+static int SDLCALL Pc_ExitWatchdog(void* unused)
+{
+    (void)unused;
+    SDL_Delay(PC_EXIT_WATCHDOG_MS);
+    SH_DBG("[SH] exit stalled for %u ms; ending the process", PC_EXIT_WATCHDOG_MS);
+    Pc_FinalExit();
+    return 0;
+}
+
 static void Pc_ShutdownThreads(void)
 {
     static int s_done;
     if (s_done) return;
     s_done = 1;
+    {
+        SDL_Thread* wd = SDL_CreateThread(Pc_ExitWatchdog, "SH_EXIT", NULL);
+        if (wd) SDL_DetachThread(wd);
+    }
     SH_DBG("[SH] exit: stopping network");
     if (g_ShDebugLog) fflush(g_ShDebugLog);
     { extern void ShNet_Shutdown(void); ShNet_Shutdown(); }
     SH_DBG("[SH] exit: stopping achievements");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
     { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
+    SH_DBG("[SH] exit: stopping Discord");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
     Pc_Discord_Shutdown();
     SH_DBG("[SH] network, achievements and Discord stopped");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
 }
 
 static void ParseArgs(int argc, char* argv[])

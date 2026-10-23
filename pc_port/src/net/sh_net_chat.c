@@ -18,7 +18,8 @@
 #define CHAT_FADE_MS 1500
 #define CHAT_LOG_MAX 12       /* lines kept; the last few are shown */
 #define CHAT_SHOWN   6        /* lines drawn when idle */
-#define CHAT_INPUT_MAX 150    /* typed bytes; the name travels in its own field, SHNET_CHAT_MAX is 160 */
+#define CHAT_INPUT_MAX 450    /* typed bytes; sent as several lines of at most CHAT_PIECE_MAX */
+#define CHAT_PIECE_MAX 150    /* one line on the wire: SHNET_CHAT_MAX is 160 with the NUL */
 
 typedef struct
 {
@@ -134,8 +135,27 @@ static void Chat_Submit(void)
         if (ShNet_Status() == SHNET_ST_CONNECTED)
         {
             /* No local echo: the server sends the line back to everyone
-             * including us, so it lands in the same list, in order. */
-            ShNet_SendChat(s_scope, s_input);
+             * including us, so it lands in the same list, in order. A long
+             * message goes as several lines, broken at a space. */
+            const char* p = s_input;
+            while (*p)
+            {
+                char piece[CHAT_PIECE_MAX + 1];
+                int  n;
+                while (*p == ' ') p++;
+                n = (int)strlen(p);
+                if (n <= 0) break;
+                if (n > CHAT_PIECE_MAX)
+                {
+                    int k = CHAT_PIECE_MAX;
+                    while (k > CHAT_PIECE_MAX / 2 && p[k] != ' ') k--;
+                    n = (p[k] == ' ') ? k : CHAT_PIECE_MAX;
+                }
+                memcpy(piece, p, (size_t)n);
+                piece[n] = '\0';
+                ShNet_SendChat(s_scope, piece);
+                p += n;
+            }
         }
         else
         {
