@@ -813,6 +813,112 @@ static void ShNetG_CoopGuestSpawn(int mapIdx)
     SH_DBG("[COOP] guest placed next to host on map %d", mapIdx);
 }
 
+/* Partners standing in each other. Every door, warp and cutscene end puts all
+ * players on the same spawn point, and nothing in the game separates them: a
+ * partner is drawn, not collided with. Each client moves only its OWN player,
+ * so no client overrides another's position; both sides step apart at once.
+ * The step goes through the player's own wall query, so it never pushes
+ * anyone through a wall. Two players on exactly the same spot split along a
+ * direction both derive from the pair of ids, in opposite senses. */
+#define SHNET_SEP_RATE  Q12(1.5f)  /* metres per second, per side */
+#define SHNET_SEP_MAX_Y Q12(1.0f)  /* further apart vertically: a stair or a floor above */
+#define SHNET_SEP_STALE 3000u
+
+static void ShNetG_PartnerSeparate(int mapIdx)
+{
+    extern int         g_PcCoopGame;
+    s_SubCharacter*    me = &g_SysWork.playerWork.player;
+    unsigned long long self;
+    unsigned int       now;
+    q19_12             sep, stepMax, pushX = 0, pushZ = 0;
+    int                i, n;
+
+    if (!g_PcCoopGame || !ShSession_Active() || g_DeltaTime <= Q12(0.0f) || me->health <= Q12(0.0f))
+    {
+        return;
+    }
+    if (ShNetG_BuildFlags() & (SHNET_PF_CUTSCENE | SHNET_PF_MENU))
+    {
+        return;
+    }
+
+    sep     = (me->collision.cylinder.radius > Q12(0.1f) ? me->collision.cylinder.radius : Q12(0.3f)) * 2;
+    stepMax = Q12_MULT(SHNET_SEP_RATE, g_DeltaTime);
+    self    = ShSession_SelfId();
+    now     = ShNetPlat_Millis();
+    n       = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        ShSessionPoseNow       pn;
+        q19_12                 dx, dz, dy, dist, step;
+
+        if (!m || m->poseMs == 0 || m->steamId == self || m->mapIdx != mapIdx)
+        {
+            continue;
+        }
+        if (!(m->flags & SHNET_PF_ALIVE) || (m->flags & (SHNET_PF_CUTSCENE | SHNET_PF_MENU)) ||
+            now - m->poseMs > SHNET_SEP_STALE)
+        {
+            continue;
+        }
+        if (!ShSession_MemberPoseNow(i, &pn))
+        {
+            continue;
+        }
+
+        dy = me->position.vy - pn.y;
+        if (dy > SHNET_SEP_MAX_Y || dy < -SHNET_SEP_MAX_Y)
+        {
+            continue;
+        }
+        dx   = me->position.vx - pn.x;
+        dz   = me->position.vz - pn.z;
+        dist = Vc_VectorMagnitudeCalc(dx, Q12(0.0f), dz);
+        if (dist >= sep)
+        {
+            continue;
+        }
+
+        if (dist < Q12(0.01f))
+        {
+            const unsigned long long lo = (self < m->steamId) ? self : m->steamId;
+            const unsigned long long hi = (self < m->steamId) ? m->steamId : self;
+            const q3_12              a  = (q3_12)((lo * 2654435761ull ^ hi) & 0xFFF);
+
+            dx   = Math_Sin(a);
+            dz   = Math_Cos(a);
+            if (self == lo)
+            {
+                dx = -dx;
+                dz = -dz;
+            }
+            dist = Q12(1.0f);
+        }
+        /* Half the overlap each: the partner is stepping away from us too. */
+        step = (sep - dist) / 2 + 1;
+        if (step > stepMax)
+        {
+            step = stepMax;
+        }
+        pushX += (q19_12)(((s64)dx * step) / dist);
+        pushZ += (q19_12)(((s64)dz * step) / dist);
+    }
+
+    if (pushX != 0 || pushZ != 0)
+    {
+        s_CollisionResult res;
+        VECTOR3           off;
+
+        off.vx = pushX;
+        off.vy = Q12(0.0f);
+        off.vz = pushZ;
+        Collision_CharaCollisionSetup(&res, &off, me);
+        me->position.vx += res.offset.vx;
+        me->position.vz += res.offset.vz;
+    }
+}
+
 void ShNet_OnMapChanged(int mapIdx)
 {
     if (mapIdx == s_lastMap)
@@ -1037,6 +1143,7 @@ void ShNet_GameTick(void)
 
     /* Co-op: place a joining guest next to the host once his pose is known. */
     ShNetG_CoopGuestSpawn(mapIdx);
+    ShNetG_PartnerSeparate(mapIdx);
     /* Co-op: the host's monsters out to everyone, puppets in from the host. */
     Pc_NetNpc_GameTick();
     {
