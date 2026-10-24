@@ -92,7 +92,7 @@ static int s_splitPlayAs = -1;
 #define COOP_SPLIT_THISPC 1
 #define COOP_SPLIT_SERVER 2
 static int s_splitOnline = COOP_SPLIT_OFF;
-/* My Server: Player 2's window is launched once the room has its code. */
+/* Server: Player 2's window is launched once the room has its code. */
 static int          s_splitLaunch;
 static unsigned int s_splitLaunchMs;
 
@@ -586,7 +586,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         if (i == 0)
         {
             const char* where = (s_hostMode == COOP_HOST_STEAM)  ? "Steam"
-                              : (s_hostMode == COOP_HOST_SERVER)  ? "My Server"
+                              : (s_hostMode == COOP_HOST_SERVER)  ? "Server"
                                                                   : "This PC";
             snprintf(out, cap, "Host on:  %s", where);
         }
@@ -623,7 +623,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         else if (i == 5)
         {
-            const char* on = (s_splitOnline == COOP_SPLIT_SERVER) ? "My Server"
+            const char* on = (s_splitOnline == COOP_SPLIT_SERVER) ? "Server"
                            : (s_splitOnline == COOP_SPLIT_THISPC) ? "This PC" : "Off";
             snprintf(out, cap, "Online:  %s", on);
         }

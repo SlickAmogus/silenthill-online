@@ -29,7 +29,7 @@ s_PcConfig g_PcConfig = {
     .preloadChunks  = 1,
     .vsync          = 0,
     .refreshRate    = 0,
-    .fpsCap         = 30,
+    .fpsCap         = 0,
     .weatherSimHz      = 60,   /* per-frame weather sim; 30 = the console's cadence */
     .cutsceneLineGapMs = 300,
     .darkHarry         = 1,   /* on by default for now */

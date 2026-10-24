@@ -17,7 +17,7 @@ Open **Multiplayer** on the title screen.
 | Host on | How friends join | Needs |
 |---|---|---|
 | This PC | your IP address (Join by IP) | UDP port 27888 forwarded |
-| My Server | they browse the room list, or enter the 4-digit room code | nothing |
+| Server | they browse the room list, or enter the 4-digit room code | nothing |
 | Steam | a Steam invite from the overlay | Steam running on both PCs |
 
 Then **Max Players**, whether the room is **Listed** or hidden (code only),
@@ -66,7 +66,7 @@ twice; or Everything, or Muted), New Game or a co-op save, and **Online**:
 |---|---|
 | Off | The game starts as soon as Player 2's window is in. The room still lives on this PC, so a friend can join by IP, before or during the game. |
 | This PC | The room lives on this PC and waits in the lobby until you press Start Game. Friends join by IP; **Online Settings** sets the player count, the room list, the living world and the FPS lock. |
-| My Server | The room is opened on your configured server; Player 2's window joins it there by its code, as do your friends (room list, code), and the lobby waits for Start Game. |
+| Server | The room is opened on your configured server; Player 2's window joins it there by its code, as do your friends (room list, code), and the lobby waits for Start Game. |
 
 Then **Start Split Screen**. The game launches a second copy of itself for
 Player 2 in the other half of the screen; no port forwarding is needed for

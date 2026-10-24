@@ -1190,7 +1190,7 @@ public partial class Form1 : Form
         radioVsyncNo.Checked = config.Get("vsync", "0") == "0";
 
         // enable debug logging (writes SH_DBG output to SilentHill.log)
-        loggingYes.Checked = config.Get("enable_debug_log", "0") == "1";
+        loggingYes.Checked = config.Get("enable_debug_log", "1") == "1";
         loggingNo.Checked = !loggingYes.Checked;
 
         // External console: Yes = external window (show_console=1). The in-game
@@ -1207,12 +1207,12 @@ public partial class Form1 : Form
         pgxpYes.Checked = config.Get("use_pgxp", "0") == "1";
         pgxpNo.Checked = !pgxpYes.Checked;
 
-        comboFps.SelectedItem = config.Get("fps_cap", "30");
-        string fps = config.Get("fps_cap", "30");
+        comboFps.SelectedItem = config.Get("fps_cap", "0");
+        string fps = config.Get("fps_cap", "0");
         if (comboFps.Items.Contains(fps))
             comboFps.SelectedItem = fps;
         else
-            comboFps.SelectedItem = "30";
+            comboFps.SelectedItem = "0";
 
         /* Dithering and Filtering used to share one key (psx_dither), which meant
          * the authentic dither could not be combined with a smoothing mode. They

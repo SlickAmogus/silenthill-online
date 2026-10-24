@@ -53,7 +53,7 @@ static char          s_argGuid[64]; /* its GUID, in case the indices differ betw
 static int           s_argWin[4];   /* x, y, w, h of Player 2's window */
 static int           s_haveWin;
 static int           s_argPort;
-static char          s_argServer[64]; /* the room is on this server (My Server), not on Player 1's PC */
+static char          s_argServer[64]; /* the room is on this server (Server), not on Player 1's PC */
 static int           s_argRoom;       /* its code there */
 static unsigned long s_argParent;   /* Player 1's process id: when it is gone, so are we */
 static char          s_argName[24];

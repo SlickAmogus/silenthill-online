@@ -216,7 +216,7 @@ namespace SilentHillPC_Launcher
             };
             grpRooms.Controls.AddRange(new Control[]
             {
-                Note("Open a room from the in-game Multiplayer menu: Host Game, Host on: My Server. " +
+                Note("Open a room from the in-game Multiplayer menu: Host Game, Host on: Server. " +
                      "Friends join from Browse Server Rooms or with the 4-digit room code. No port forwarding.",
                      14, 18, 508, 30),
                 Lbl("Players (default)", 328, 40, 100), _numRoomMax

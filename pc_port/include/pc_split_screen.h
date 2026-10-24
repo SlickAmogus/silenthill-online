@@ -51,7 +51,7 @@ const char* Pc_Split_PadName(int k);
  * their character and the room port, and stop reading that pad here. The room
  * must already be requested (ShSession_RequestHostListen). 0 and *err on
  * failure. */
-/* server/code: the room is on that server (My Server) rather than on this PC. */
+/* server/code: the room is on that server (Server) rather than on this PC. */
 int  Pc_Split_Start(int padK, int playAs, int port, const char* server, int code, const char** err);
 
 /* Player 2's window is up but has not joined yet: the lobby shows the status
