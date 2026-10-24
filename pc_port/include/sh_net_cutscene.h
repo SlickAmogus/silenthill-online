@@ -40,6 +40,7 @@ int  ShNetCut_PoseScene(int* row);
 /* Our seat in the scene we are in: the offset (Q19.12) and turn (Q3.12) to
  * draw and report ourselves at. 0 when there is none. */
 int  ShNetCut_SelfOffset(int* ox, int* oz, int* turn);
+int  ShNetCut_SelfSeat(void); /* 0 = the host, guests 1.. in id order */
 /* player_control.c: applies that seat to the model's root, after the
  * position copy. The simulated position is untouched. */
 void ShNetCut_SelfOffsetApply(void* coords); /* GsCOORDINATE2* */

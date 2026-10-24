@@ -813,6 +813,155 @@ static void ShNetG_CoopGuestSpawn(int mapIdx)
     SH_DBG("[COOP] guest placed next to host on map %d", mapIdx);
 }
 
+/* Arrivals: a door, a warp or the end of a scene leaves every player on one
+ * spot. Within a few seconds of coming back to gameplay, a player who finds a
+ * partner on top of them walks to their own place in a small square around
+ * the host's spot (seat 0 stays, 1 beside, 2 behind, 3 behind and beside):
+ * 0.7 m apart, so four fit in a corridor. Coming out of a scene, the place is
+ * the scene's seat, so nobody visibly moves. A wall on the chosen side flips
+ * the slot to the other side. The overlap push below covers whatever is left. */
+#define SHNET_FORM_ARM_MS  3000u
+#define SHNET_FORM_STACKED Q12(0.45f)
+#define SHNET_FORM_SPACING Q12(0.7f)
+#define SHNET_FORM_STEP    Q12(0.15f)
+
+static unsigned int s_formArmMs;
+static int          s_formPrevSys = -1;
+static unsigned int s_formSeatMs;
+static q19_12       s_formSeatX, s_formSeatZ;
+
+static int ShNetG_PartnerStacked(int mapIdx)
+{
+    const s_SubCharacter* me = &g_SysWork.playerWork.player;
+    int                   i, n = ShSession_MemberCount();
+
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        ShSessionPoseNow       pn;
+        q19_12                 dy;
+
+        if (!m || m->poseMs == 0 || m->steamId == ShSession_SelfId() || m->mapIdx != mapIdx) continue;
+        if (!(m->flags & SHNET_PF_ALIVE) || !ShSession_MemberPoseNow(i, &pn)) continue;
+        dy = me->position.vy - pn.y;
+        if (dy > Q12(1.0f) || dy < -Q12(1.0f)) continue;
+        if (Vc_VectorMagnitudeCalc(me->position.vx - pn.x, Q12(0.0f), me->position.vz - pn.z) < SHNET_FORM_STACKED) return 1;
+    }
+    return 0;
+}
+
+/* Walks the offset in short steps through the player's wall query; returns
+ * how far it got. */
+static q19_12 ShNetG_WalkOffset(q19_12 ox, q19_12 oz)
+{
+    s_SubCharacter* me   = &g_SysWork.playerWork.player;
+    q19_12          len  = Vc_VectorMagnitudeCalc(ox, Q12(0.0f), oz);
+    q19_12          done = 0;
+
+    while (len - done > Q12(0.01f))
+    {
+        s_CollisionResult res;
+        VECTOR3           off;
+        q19_12            step = (len - done > SHNET_FORM_STEP) ? SHNET_FORM_STEP : len - done;
+        q19_12            got;
+
+        off.vx = (q19_12)(((s64)ox * step) / len);
+        off.vy = Q12(0.0f);
+        off.vz = (q19_12)(((s64)oz * step) / len);
+        Collision_CharaCollisionSetup(&res, &off, me);
+        me->position.vx += res.offset.vx;
+        me->position.vz += res.offset.vz;
+        got   = Vc_VectorMagnitudeCalc(res.offset.vx, Q12(0.0f), res.offset.vz);
+        done += step;
+        if (got < step / 2)
+        {
+            return done - step + got;
+        }
+    }
+    return len;
+}
+
+static void ShNetG_Formation(int mapIdx)
+{
+    extern int         g_PcCoopGame;
+    s_SubCharacter*    me  = &g_SysWork.playerWork.player;
+    const unsigned int now = ShNetPlat_Millis();
+    int                ox, oz, turn, seat;
+
+    if (!g_PcCoopGame || !ShSession_Active())
+    {
+        s_formArmMs = 0;
+        return;
+    }
+    if (ShNetCut_SelfOffset(&ox, &oz, &turn))
+    {
+        s_formSeatX  = ox;
+        s_formSeatZ  = oz;
+        s_formSeatMs = now;
+    }
+    if (g_SysWork.sysState == SysState_Gameplay && s_formPrevSys != SysState_Gameplay && s_formPrevSys != -1)
+    {
+        s_formArmMs = now;
+    }
+    s_formPrevSys = g_SysWork.sysState;
+
+    if (s_formArmMs == 0 || g_SysWork.sysState != SysState_Gameplay || me->health <= Q12(0.0f))
+    {
+        return;
+    }
+    if (now - s_formArmMs > SHNET_FORM_ARM_MS)
+    {
+        s_formArmMs = 0;
+        return;
+    }
+    if (!ShNetG_PartnerStacked(mapIdx))
+    {
+        return;
+    }
+    s_formArmMs = 0;
+
+    if (now - s_formSeatMs < 1000u && (s_formSeatX != 0 || s_formSeatZ != 0))
+    {
+        ox = s_formSeatX;
+        oz = s_formSeatZ;
+    }
+    else
+    {
+        static const signed char k_slots[4][2] = { { 0, 0 }, { 0, 1 }, { -1, 0 }, { -1, 1 } }; /* fwd, side */
+        const short              rot           = me->rotation.vy;
+        q19_12                   fwd, side;
+
+        seat = ShNetCut_SelfSeat();
+        if (seat <= 0)
+        {
+            return;
+        }
+        fwd  = k_slots[seat & 3][0] * SHNET_FORM_SPACING - (seat >> 2) * SHNET_FORM_SPACING;
+        side = k_slots[seat & 3][1] * SHNET_FORM_SPACING;
+        ox   = Q12_MULT(Math_Sin(rot), fwd) + Q12_MULT(Math_Cos(rot), side);
+        oz   = Q12_MULT(Math_Cos(rot), fwd) - Q12_MULT(Math_Sin(rot), side);
+        if (ox == 0 && oz == 0)
+        {
+            return;
+        }
+    }
+    {
+        const q19_12 len = Vc_VectorMagnitudeCalc(ox, Q12(0.0f), oz);
+        const q19_12 got = ShNetG_WalkOffset(ox, oz);
+
+        if (got < len / 2)
+        {
+            /* Blocked: the mirror slot, from where the first try stopped. */
+            const short  rot  = me->rotation.vy;
+            const q19_12 rx   = Math_Cos(rot), rz = -Math_Sin(rot); /* the side axis */
+            const q19_12 side = Q12_MULT(ox, rx) + Q12_MULT(oz, rz);
+            ShNetG_WalkOffset(ox - 2 * Q12_MULT(side, rx) - (q19_12)(((s64)ox * got) / len),
+                              oz - 2 * Q12_MULT(side, rz) - (q19_12)(((s64)oz * got) / len));
+        }
+        SH_DBG("[COOP] stepped aside from a partner (seat %d)", ShNetCut_SelfSeat());
+    }
+}
+
 /* Partners standing in each other. Every door, warp and cutscene end puts all
  * players on the same spawn point, and nothing in the game separates them: a
  * partner is drawn, not collided with. Each client moves only its OWN player,
@@ -1143,6 +1292,7 @@ void ShNet_GameTick(void)
 
     /* Co-op: place a joining guest next to the host once his pose is known. */
     ShNetG_CoopGuestSpawn(mapIdx);
+    ShNetG_Formation(mapIdx);
     ShNetG_PartnerSeparate(mapIdx);
     /* Co-op: the host's monsters out to everyone, puppets in from the host. */
     Pc_NetNpc_GameTick();

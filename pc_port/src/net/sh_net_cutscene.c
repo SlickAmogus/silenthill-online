@@ -88,6 +88,8 @@
 #define CUT_GATE_GO_MS    5000u   /* a released door has this long to dispatch */
 #define CUT_FOLLOW_MS     20000u  /* the host's "come with me" keeps this long */
 #define CUT_GATE_NEAR     Q12(7.0f)
+#define CUT_STRAND_MS     30000u  /* a scene step this long unchanged, with everyone else out: stuck */
+#define CUT_STRAND_HARD_MS 5000u  /* after the script's own ending was asked for */
 #define CUT_POSE_FRESH_MS 2000u   /* a partner whose pose is older than this is not ready, and not waited for */
 #define CUT_PRESS_GRACE_MS 500u   /* the press that opened a door wait is not a second use */
 
@@ -337,6 +339,11 @@ static const CutSeat* Cut_SeatTable(void)
 {
     if (s_liveMap == MapIdx_MAP0_S01 && s_liveRow == 3) return s_seatsCafe;
     return s_seatsDefault;
+}
+
+int ShNetCut_SelfSeat(void)
+{
+    return Cut_Coop() ? Cut_SeatOf(ShSession_SelfId()) : 0;
 }
 
 int ShNetCut_SelfOffset(int* ox, int* oz, int* turn)
@@ -1082,6 +1089,70 @@ static void Cut_Die(void)
     s_dieReq = 0;
 }
 
+/* A joined scene can wait on state only its starter had: the alley's
+ * "getting darker" step waits for a darkness value that grows from the
+ * player's own walk down the alley, and a partner placed at the scene's start
+ * never walked it. Nobody can leave such a scene. When everyone else on the
+ * map is out of it and our script has sat on one step for CUT_STRAND_MS, ask
+ * the script for its own ending (each handler's default case fades back,
+ * unfreezes and returns to gameplay); if even that does not end it, return to
+ * gameplay directly. The flags the scene would have set arrive from the
+ * partners through the flag sync. */
+static int          s_strandStep = -1;
+static unsigned int s_strandMs;
+static unsigned int s_strandKickMs;
+
+static int Cut_PeerOnMap(int map, unsigned int now)
+{
+    int i, n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && m->linked && m->steamId != ShSession_SelfId() && m->mapIdx == map && Cut_PoseFresh(m, now)) return 1;
+    }
+    return 0;
+}
+
+static void Cut_StrandCheck(unsigned int now)
+{
+    const int step = g_SysWork.sysStateSteps[0];
+
+    if (s_liveRow < 0 || !Cut_InMyScene() || g_SysWork.sysState != SysState_EventCallback ||
+        !Cut_PeerOnMap(s_liveMap, now) || Cut_PeerStillIn(s_liveMap, s_liveRow, now))
+    {
+        s_strandMs     = 0;
+        s_strandKickMs = 0;
+        return;
+    }
+    if (s_strandKickMs != 0)
+    {
+        if (now - s_strandKickMs > CUT_STRAND_HARD_MS)
+        {
+            SH_DBG("[CUTSCENE] map %d row %d still stuck after its ending; back to gameplay", s_liveMap, s_liveRow);
+            SysWork_StateSetNext(SysState_Gameplay);
+            g_MapOverlayHdr.playerControlUnfreeze(true);
+            s_strandKickMs = 0;
+            s_strandMs     = 0;
+        }
+        return;
+    }
+    if (s_strandMs == 0 || step != s_strandStep)
+    {
+        s_strandMs   = now;
+        s_strandStep = step;
+        return;
+    }
+    if (now - s_strandMs > CUT_STRAND_MS)
+    {
+        SH_DBG("[CUTSCENE] map %d row %d stuck on step %d with everyone else out; ending it", s_liveMap, s_liveRow, step);
+        ShNet_PostLocalEvent("Scene stuck; ending it");
+        g_SysWork.sysStateSteps[0] = 99;
+        g_SysWork.sysStateSteps[1] = 0;
+        g_SysWork.sysStateSteps[2] = 0;
+        s_strandKickMs = now;
+    }
+}
+
 void ShNetCut_Tick(void)
 {
     const unsigned int now = ShNetPlat_Millis();
@@ -1185,6 +1256,7 @@ void ShNetCut_Tick(void)
         }
     }
 
+    Cut_StrandCheck(now);
     Cut_GateTick(now);
 
     /* The alley death, once we are back in plain gameplay. */
