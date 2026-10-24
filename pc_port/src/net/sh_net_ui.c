@@ -455,6 +455,8 @@ unsigned char* ShNetUi_RasterizeText(const char* text, int px, int* outW, int* o
     stbtt_GetFontVMetrics(&s_font, &asc, &desc, &gap);
 
     W = (int)((float)px * 0.66f * (float)strlen(text)) + 8 * pad;
+    /* Past the atlas width the upload is refused; cut the text instead. */
+    if (W > NU_ATLAS_W - 2 * NU_ATLAS_PAD) W = NU_ATLAS_W - 2 * NU_ATLAS_PAD;
     H = (int)ceilf((float)px * 1.4f) + 2 * pad;
     if (W <= 0 || H <= 0 || W > 1024 || H > 128)
     {
@@ -555,6 +557,8 @@ static GLuint Nu_Bake(const char* text, int px, int* outW, int* outH)
     stbtt_GetFontVMetrics(&s_font, &asc, &desc, &gap);
 
     W = (int)((float)px * 0.66f * (float)strlen(text)) + 8 * pad;
+    /* Past the atlas width the upload is refused; cut the text instead. */
+    if (W > NU_ATLAS_W - 2 * NU_ATLAS_PAD) W = NU_ATLAS_W - 2 * NU_ATLAS_PAD;
     H = (int)ceilf((float)px * 1.4f) + 2 * pad;
     if (W <= 0 || H <= 0 || W > 2048 || H > 256)
     {
@@ -1242,7 +1246,9 @@ static void Nu_DrawChat(int px)
     const float lh    = (float)px * 1.32f;
     const float x     = s_vpH * 0.03f;
     const float bot   = s_vpH * (comp ? 0.9f : 0.93f);
-    const float wrapW = s_vpW * 0.60f;
+    /* Never wider than one atlas slot can hold: a wider row is refused by
+     * Nu_Upload and drew as nothing, so a long line vanished as it was typed. */
+    const float wrapW = s_vpW * 0.60f < (float)(NU_ATLAS_W - 32) ? s_vpW * 0.60f : (float)(NU_ATLAS_W - 32);
     char        compose[512];
     int         cs[NU_WRAP_MAX], cl[NU_WRAP_MAX];
     int         rows = 0, compRows = 0;

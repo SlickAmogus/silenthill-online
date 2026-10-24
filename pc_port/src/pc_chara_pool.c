@@ -404,6 +404,26 @@ s_CharaModel* Pc_CharaPool_HarryGhostModel(void)
     return s_pool[Chara_Harry].loaded ? &s_pool[Chara_Harry].model : NULL;
 }
 
+s_CharaModel* Pc_CharaPool_ModelFor(s32 charaId)
+{
+    s_CharaModel* m;
+
+    if (charaId <= Chara_Harry || charaId >= Chara_Count)
+    {
+        return NULL;
+    }
+    m = g_WorldGfxWork.registeredCharaModels[charaId];
+    if (m != NULL && m->charaId == (u8)charaId && m->skeleton.bones_4 != NULL)
+    {
+        return m;
+    }
+    if (s_pool[charaId].loaded && s_pool[charaId].model.skeleton.bones_4 != NULL)
+    {
+        return &s_pool[charaId].model;
+    }
+    return NULL;
+}
+
 /* ---- chara_global.dll: AI update funcs for every portable monster ------- */
 
 static s_MapOverlayHdr* s_globalHdr; /* NULL until the DLL is opened */

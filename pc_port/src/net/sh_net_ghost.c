@@ -618,13 +618,8 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
      * and any id that is not resident -- comes from the pool's CLEAN hero copy,
      * NOT registeredCharaModels[Harry], which is the local player's play-as skin
      * (drawing a remote from it mirrored the local skin onto everyone). */
-    if (charaId > 0 && charaId < Chara_Count && charaId != Chara_Harry &&
-        g_WorldGfxWork.registeredCharaModels[charaId] != NULL &&
-        g_WorldGfxWork.registeredCharaModels[charaId]->skeleton.bones_4 != NULL)
-    {
-        cm = g_WorldGfxWork.registeredCharaModels[charaId];
-    }
-    else
+    cm = (charaId > 0 && charaId < Chara_Count && charaId != Chara_Harry) ? Pc_CharaPool_ModelFor(charaId) : NULL;
+    if (cm == NULL)
     {
         charaId = Chara_Harry;
         cm = Pc_CharaPool_HarryGhostModel();
@@ -802,10 +797,12 @@ static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name
 /* An untextured quad in world space, for the partner health bars. The same
  * placement and ordering as the textured ghost quads; the pointer advances by
  * a POLY_FT4 so the caller's bump allocation never changes stride. */
+/* bucketIo: 0 picks the bucket from the quad's own depth and reports it;
+ * non-zero forces that bucket, so two quads in one plane keep their order. */
 static POLY_FT4* ShNetG_EmitFlat(GsOT* ot, POLY_FT4* poly,
                                  const VECTOR3* centre,
                                  const VECTOR3* axisU, const VECTOR3* axisV,
-                                 u8 cr, u8 cg, u8 cb, int alpha)
+                                 u8 cr, u8 cg, u8 cb, int alpha, int* bucketIo)
 {
     MATRIX   mat;
     SVECTOR  v;
@@ -835,8 +832,10 @@ static POLY_FT4* ShNetG_EmitFlat(GsOT* ot, POLY_FT4* poly,
         bucketSum += otz;
     }
     bucket = ((bucketSum >> 2) >> SHNET_OT_SHIFT) - 1;
+    if (bucketIo && *bucketIo > 0) bucket = *bucketIo;
     if (bucket < 1) bucket = 1;
     if (bucket >= ORDERING_TABLE_SIZE) bucket = ORDERING_TABLE_SIZE - 1;
+    if (bucketIo) *bucketIo = bucket;
 
     setPolyF4(f);
     setSemiTrans(f, true);
@@ -854,6 +853,7 @@ static POLY_FT4* ShNetG_DrawHealthBar(GsOT* ot, POLY_FT4* poly, int gx, int gy, 
     VECTOR3   centre, axisU, axisV;
     const s32 halfW = Q12(0.32f), halfH = Q12(0.028f);
     s32       fillW;
+    int       bucket = 0;
     u8        r, g;
 
     if (pct < 0) pct = 0;
@@ -865,21 +865,73 @@ static POLY_FT4* ShNetG_DrawHealthBar(GsOT* ot, POLY_FT4* poly, int gx, int gy, 
     axisU.vy = (halfW * GsWSMATRIX.m[0][1]) >> 12;
     axisU.vz = (halfW * GsWSMATRIX.m[0][2]) >> 12;
     axisV.vx = 0; axisV.vy = halfH; axisV.vz = 0;
-    poly = ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, 16, 16, 24, 190);
-    if (pct == 0) return poly;
+    /* Track and fill share a plane. Each picking its own bucket let the
+     * track land in front of the fill on some frames (the bar flickering
+     * dark); the fill takes the next nearer bucket, and sits a little
+     * toward the camera for the depth test. */
+    poly = ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, 16, 16, 24, 190, &bucket);
+    if (pct == 0 || bucket == 0) return poly;
+    bucket = bucket > 1 ? bucket - 1 : 1;
 
     fillW = (s32)(((long long)halfW * pct) / 100);
     /* The fill is left-anchored: its centre slides left as it drains. */
-    centre.vx = gx - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][0]) >> 12);
-    centre.vy = gy - Q12(1.86f) + Q12(0.0f);
-    centre.vz = gz - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][2]) >> 12);
+    centre.vx = gx - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][0]) >> 12) - ((Q12(0.03f) * GsWSMATRIX.m[2][0]) >> 12);
+    centre.vy = gy - Q12(1.86f) - ((Q12(0.03f) * GsWSMATRIX.m[2][1]) >> 12);
+    centre.vz = gz - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][2]) >> 12) - ((Q12(0.03f) * GsWSMATRIX.m[2][2]) >> 12);
     axisU.vx = (fillW * GsWSMATRIX.m[0][0]) >> 12;
     axisU.vy = (fillW * GsWSMATRIX.m[0][1]) >> 12;
     axisU.vz = (fillW * GsWSMATRIX.m[0][2]) >> 12;
     axisV.vy = halfH - Q12(0.006f);
     r = (u8)(pct > 50 ? 70 + (100 - pct) * 3 : 220);
     g = (u8)(pct > 50 ? 200 : 60 + pct * 3);
-    return ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, r, g, 50, 235);
+    return ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, r, g, 50, 235, &bucket);
+}
+
+/* Each partner's flashlight, for the renderer's extra cones: once a frame,
+ * right after our own light is pushed (bodyprog_80055028.c), with the same
+ * gate (per-pixel lighting, a dark room, no scripted shot). The beam leaves
+ * the chest and points along the heading, tipped a little down, as the
+ * game's own flashlight does when Harry is not aiming. */
+void ShNet_PartnerLightsUpdate(int allowed)
+{
+    extern int   g_PsyX_PartnerLightCount;
+    extern float g_PsyX_PartnerLightPos[];
+    extern float g_PsyX_PartnerLightDir[];
+    extern int   g_PcCoopGame;
+    const int    lightsMax = 4;
+    int          n = 0, i, mc, myMap;
+
+    if (allowed && g_PcCoopGame && ShSession_Active() && g_GameWork.gameState == GameState_InGame && g_SavegamePtr)
+    {
+        myMap = (int)g_SavegamePtr->mapIdx;
+        mc    = ShSession_MemberCount();
+        for (i = 0; i < mc && n < lightsMax; i++)
+        {
+            const ShSessionMember* m = ShSession_Member(i);
+            ShSessionPoseNow       pn;
+            s32                    lx, ly, lz, fx, fy, fz;
+
+            if (!m || m->poseMs == 0 || m->mapIdx != myMap) continue;
+            if ((m->flags & (SHNET_PF_FLASHLIGHT | SHNET_PF_ALIVE)) != (SHNET_PF_FLASHLIGHT | SHNET_PF_ALIVE)) continue;
+            if (!ShSession_MemberPoseNow(i, &pn)) continue;
+
+            fx = Math_Sin(pn.rotY);
+            fz = Math_Cos(pn.rotY);
+            fy = Q12(0.35f);
+            lx = Q12_TO_Q8(pn.x + ((fx * Q12(0.2f)) >> 12));
+            ly = Q12_TO_Q8(pn.y - Q12(1.1f));
+            lz = Q12_TO_Q8(pn.z + ((fz * Q12(0.2f)) >> 12));
+
+            g_PsyX_PartnerLightPos[n * 3 + 0] = (float)((s32)(((s64)GsWSMATRIX.m[0][0] * lx + (s64)GsWSMATRIX.m[0][1] * ly + (s64)GsWSMATRIX.m[0][2] * lz) >> 12) + GsWSMATRIX.t[0]);
+            g_PsyX_PartnerLightPos[n * 3 + 1] = (float)((s32)(((s64)GsWSMATRIX.m[1][0] * lx + (s64)GsWSMATRIX.m[1][1] * ly + (s64)GsWSMATRIX.m[1][2] * lz) >> 12) + GsWSMATRIX.t[1]);
+            g_PsyX_PartnerLightPos[n * 3 + 2] = (float)((s32)(((s64)GsWSMATRIX.m[2][0] * lx + (s64)GsWSMATRIX.m[2][1] * ly + (s64)GsWSMATRIX.m[2][2] * lz) >> 12) + GsWSMATRIX.t[2]);
+            g_PsyX_PartnerLightDir[n * 3 + 0] = (float)(s32)(((s64)GsWSMATRIX.m[0][0] * fx + (s64)GsWSMATRIX.m[0][1] * fy + (s64)GsWSMATRIX.m[0][2] * fz) >> 12);
+            g_PsyX_PartnerLightDir[n * 3 + 1] = (float)(s32)(((s64)GsWSMATRIX.m[1][0] * fx + (s64)GsWSMATRIX.m[1][1] * fy + (s64)GsWSMATRIX.m[1][2] * fz) >> 12);
+            g_PsyX_PartnerLightDir[n * 3 + 2] = (float)(s32)(((s64)GsWSMATRIX.m[2][0] * fx + (s64)GsWSMATRIX.m[2][1] * fy + (s64)GsWSMATRIX.m[2][2] * fz) >> 12);
+            n++;
+        }
+    }
+    g_PsyX_PartnerLightCount = n;
 }
 
 void ShNet_DrawWorld(GsOT* ot)

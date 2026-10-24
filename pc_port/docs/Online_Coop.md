@@ -131,13 +131,15 @@ selection back.
   another map is not pulled across; they play the scene when they get
   there.
 - **Story doors.** A door with a point of no return behind it (the two
-  gates in the alley, the school's Door of Eclipse) does not pull anyone:
-  whoever uses it stands at it under "Waiting for other players..." until
-  every partner on the map who has not been through it is close by, and
-  partners get a note that someone is waiting at a gate. Cancel turns back.
-  The host can go through at once with Action, and every partner on the map
-  goes through the door with them; a guest only waits, and after a minute
-  and a half turns back on their own.
+  gates in the alley, the school's Door of Eclipse) belongs to the host. A
+  guest who uses one stands at it under "Waiting for other players..." until
+  the host goes through, and partners get a note that someone is waiting at
+  a gate. The host goes through once every partner on the map is close by,
+  and they all go through together in the same moment, so nobody is left a
+  step short on the wrong side. If someone is far away the host waits too;
+  Action takes everyone through at once, and after a minute and a half the
+  host takes everyone through anyway. Cancel turns back. A guest who waits
+  that long turns back on their own.
 - **Level doors.** A guest cannot leave for another map while the host is
   on theirs and not beside them: the door waits under "Waiting for the
   host..." (Cancel turns back). A host who went on ahead is followed
@@ -151,6 +153,9 @@ selection back.
   same map the player is moved at once; across maps the guest's game
   reboots into the host's map with their inventory and progress intact and
   lands beside the host.
+- **Flashlights.** A partner's flashlight lights the world on your screen
+  too, as a second beam from their chest along the way they face (per-pixel
+  flashlight on, in the dark rooms where your own beam shows).
 - **The alley.** Harry's death at the end of the opening is what takes him
   to the cafe, so in the alley one player's death is everyone's: when a
   partner falls there, you fall too, and the cafe scene starts for the whole

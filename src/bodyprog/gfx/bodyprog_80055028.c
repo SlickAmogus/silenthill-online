@@ -674,6 +674,11 @@ void Gfx_2dEffectsDraw(void) // 0x800550D0
         {
             g_PsyX_FlashlightActive = 0;
         }
+
+        {
+            extern void ShNet_PartnerLightsUpdate(int allowed);
+            ShNet_PartnerLightsUpdate(g_PsyX_UsePerPixelFlashlight && !Pc_ScriptOwnsShot() && roomLit);
+        }
     }
 #endif
 

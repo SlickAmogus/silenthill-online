@@ -40,6 +40,10 @@ int Pc_CharaPool_IsPoolModel(int charaId);
  * skin. NULL until loaded (needs global_chara_pool). */
 typedef struct _CharaModel s_CharaModel;
 s_CharaModel* Pc_CharaPool_HarryGhostModel(void);
+/* A model to draw a remote player wearing charaId: the live native one, else
+ * the pool's copy (a map script's own load can drop the registration in the
+ * middle of a map). NULL when neither is resident. */
+s_CharaModel* Pc_CharaPool_ModelFor(s32 charaId);
 
 /* Per-npc-slot "debug spawn" flags: flagged slots skip the savegame
  * enemy-state bookkeeping on kill (their field_40 is an npc slot index, not
