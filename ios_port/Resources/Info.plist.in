@@ -126,5 +126,27 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hosting or joining a multiplayer game by IP address on your local network.</string>
+	<!-- iOS 27 refuses to launch an app built with its SDK unless it adopts the
+	     UIScene lifecycle (UIKit traps in
+	     _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption). SDL 2
+	     has no scene support, so ios_port/src/ios_scene.m provides the
+	     delegate named here and moves SDL's windows onto the scene. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default</string>
+					<key>UISceneDelegateClassName</key>
+					<string>SHSceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
 </dict>
 </plist>
