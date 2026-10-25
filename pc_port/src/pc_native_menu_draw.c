@@ -2,6 +2,7 @@
 #include "game.h"
 
 #include <string.h>
+#include <SDL.h>
 
 #include "bodyprog/bodyprog.h"
 #include "bodyprog/events/map_msg.h"
@@ -58,6 +59,13 @@ void Nm_TextDraw(int x, int y, int size, int color, const char* s)
     {
         Gfx_StringSetPosition(x, y);
     }
+    /* Gfx_StringSetPosition reads x == NO_VALUE as "keep x", and a panning
+     * line passes through -1: it drew where the last string ended. */
+    if (x == NO_VALUE)
+    {
+        g_StringPosition.vx = x - SCREEN_POSITION_X(50.0f);
+        g_StringPositionX1  = g_StringPosition.vx;
+    }
 
     Gfx_Strings2dLayerIdxSet(NM_OT_TEXT);
     Gfx_StringDraw((char*)s, DEFAULT_MAP_MESSAGE_LENGTH);
@@ -86,6 +94,112 @@ void Nm_TextDrawCentered(int cx, int y, int size, int color, const char* s)
 void Nm_TextDrawRight(int rx, int y, int size, int color, const char* s)
 {
     Nm_TextDraw(rx - Nm_TextWidth(s), y, size, color, s);
+}
+
+/* Wall-clock ms: the pan has to read at one speed whatever the frame rate. */
+#define NM_MARQUEE_HOLD_MS 1200
+#define NM_MARQUEE_PX_PER_S 36
+/* Gfx_StringDraw stops at DEFAULT_MAP_MESSAGE_LENGTH characters. */
+#define NM_MARQUEE_CHUNK 96
+
+/* Pans on screen together share one cycle: each runs to its end and holds
+ * there until the longest has arrived, then all start over at once. The
+ * longest is last frame's, so a text drawn early in a frame still knows it. */
+static Uint32 s_marqueeEpoch;
+static Uint32 s_marqueeLast;
+static Uint32 s_marqueeMove;
+static Uint32 s_marqueeMovePrev;
+static s32    s_marqueeTick;
+
+static void nm_marquee_restart(void)
+{
+    s_marqueeEpoch = SDL_GetTicks();
+}
+
+static int nm_marquee_offset(int overflow)
+{
+    const Uint32 now  = SDL_GetTicks();
+    const Uint32 move = ((Uint32)overflow * 1000u) / NM_MARQUEE_PX_PER_S;
+    Uint32       groupMove;
+    Uint32       t;
+
+    if (g_TickCount != s_marqueeTick)
+    {
+        s_marqueeTick     = g_TickCount;
+        s_marqueeMovePrev = s_marqueeMove;
+        s_marqueeMove     = 0;
+    }
+    if (move > s_marqueeMove)
+        s_marqueeMove = move;
+    groupMove = (s_marqueeMovePrev > s_marqueeMove) ? s_marqueeMovePrev : s_marqueeMove;
+
+    /* A screen that was closed starts its pans over when it reopens. */
+    if (now - s_marqueeLast > 250u)
+        s_marqueeEpoch = now;
+    s_marqueeLast = now;
+
+    if (now - s_marqueeEpoch >= (2u * NM_MARQUEE_HOLD_MS) + groupMove)
+        s_marqueeEpoch = now;
+
+    t = now - s_marqueeEpoch;
+    if (t < NM_MARQUEE_HOLD_MS)
+        return 0;
+    t -= NM_MARQUEE_HOLD_MS;
+    if (t < move)
+        return (int)((t * (Uint32)overflow) / move);
+    return overflow;
+}
+
+int Nm_TextDrawMarquee(int x, int y, int size, int color, const char* s, int maxW, int pan)
+{
+    char   chunk[NM_MARQUEE_CHUNK + 1];
+    size_t left = strlen(s);
+    int    w    = Pc_LangMenuTextWidth(s);
+    int    cx;
+
+    if (w > maxW && !pan)
+    {
+        char fit[NM_LINE_MAX];
+
+        Nm_FitEllipsis(s, fit, sizeof(fit), maxW, Pc_LangMenuTextWidth);
+        Nm_TextDrawVerbatim(x, y, size, color, fit);
+        return Pc_LangMenuTextWidth(fit);
+    }
+
+    if (w <= maxW && left <= NM_MARQUEE_CHUNK)
+    {
+        Nm_TextDrawVerbatim(x, y, size, color, s);
+        return w;
+    }
+
+    cx = x;
+    if (w > maxW)
+    {
+        cx -= nm_marquee_offset(w - maxW);
+        Gfx_PcStringSetClipX(x, x + maxW);
+    }
+    while (left > 0)
+    {
+        size_t n = left;
+
+        if (n > NM_MARQUEE_CHUNK)
+        {
+            n = NM_MARQUEE_CHUNK;
+            while (n > NM_MARQUEE_CHUNK / 2 && s[n - 1] != '_')
+                n--;
+            if (s[n - 1] != '_')
+                n = NM_MARQUEE_CHUNK;
+        }
+        memcpy(chunk, s, n);
+        chunk[n] = '\0';
+        if (cx < x + maxW)
+            Nm_TextDrawVerbatim(cx, y, size, color, chunk);
+        cx   += Pc_LangMenuTextWidth(chunk);
+        s    += n;
+        left -= n;
+    }
+    Gfx_PcStringSetClipX(0, 0);
+    return (w > maxW) ? maxW : w;
 }
 
 void Nm_ScrollArrowDraw(int cx, int y, int up, int enabled)
@@ -170,6 +284,7 @@ void Nm_HighlightDraw(int x0, int x1, int yBottom)
         s_glide.timer  = NM_GLIDE_FRAMES;
         s_glide.snap   = 0;
         s_glide.drawn  = 1;
+        nm_marquee_restart();
     }
     else if (x0 != s_glide.toX0 || x1 != s_glide.toX1 || yBottom != s_glide.toY)
     {
@@ -181,6 +296,7 @@ void Nm_HighlightDraw(int x0, int x1, int yBottom)
         s_glide.toX1   = x1;
         s_glide.toY    = yBottom;
         s_glide.timer  = 0;
+        nm_marquee_restart();
     }
 
     if (g_TickCount != s_glide.tick)

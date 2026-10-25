@@ -69,11 +69,12 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_TPSRESTX, QO_X_TPSRESTY, QO_X_TPSAIMX, QO_X_TPSAIMY,
        QO_X_OTSRESTX, QO_X_OTSRESTY, QO_X_OTSAIMX, QO_X_OTSAIMY,
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE, QO_X_CROSSHAIRSTYLE,
-       QO_X_LINEGAP };
+       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
 
+#define QO_X_QUICK_WEAPONS 1000
 #define QO_GARBAGE  48
 #define QO_MAX_ROWS 16
 #define QO_PAGES    10
@@ -131,6 +132,9 @@ static const QoRowDef s_pageGfx2[] = {
     { ROW_EXTRA, NULL, QO_X_SHADOW,         "Shadow Resolution" },
     { ROW_EXTRA, NULL, QO_X_DREAMBLUR,      "Dream Blur" },  /* not in the PC Options table: that page is full */
     { ROW_EXTRA, NULL, QO_X_DREAMSTR,       "Dream Blur Strength" },
+    { ROW_EXTRA, NULL, QO_X_CHARALIGHT,     "Character Lighting" },
+    { ROW_EXTRA, NULL, QO_X_PPLIGHT,        "Per-Pixel Lighting" },
+    { ROW_EXTRA, NULL, QO_X_HEROLIGHT,      "Hero Light" },
     QO_NAV_ROW,
     QO_CLOSE_ROW,
 };
@@ -172,6 +176,7 @@ static const QoRowDef s_pageControls[] = {
     { ROW_OPT,   "invert_mouse_y",         0, NULL },
     { ROW_OPT,   "invert_controller_y",    0, NULL },
     { ROW_OPT,   "aim_assist",             0, NULL },
+    { ROW_EXTRA, NULL, QO_X_QUICK_WEAPONS, "Quick Weapon Switching" },
     { ROW_EXTRA, NULL, QO_X_DPADMOVE,        "Disable D-pad for Movement" },
     { ROW_ACTION, NULL, QO_A_KEYBINDS,       "Edit Keybinds" },
     QO_NAV_ROW,
@@ -1373,7 +1378,11 @@ static void qo_row_value(const QoRowDef* r, char* out, int n)
     }
     else if (r->kind == ROW_EXTRA)
     {
-        snprintf(out, (size_t)n, "%s", PcOpt_QuickExtraLabel(r->extra, buf, (int)sizeof(buf)));
+        if (r->extra == QO_X_QUICK_WEAPONS) {
+            extern int g_PcQuickWeaponsEnabled;
+            snprintf(out, (size_t)n, "%s", g_PcQuickWeaponsEnabled ? "On" : "Off");
+        } else
+            snprintf(out, (size_t)n, "%s", PcOpt_QuickExtraLabel(r->extra, buf, (int)sizeof(buf)));
     }
     else if (r->kind == ROW_CHEAT)
     {
@@ -1555,7 +1564,17 @@ static void qo_activate(const QoRowDef* r, int dir)
             if (h) PcOpt_QuickAdjust(h, dir);
             break;
         }
-        case ROW_EXTRA: PcOpt_QuickExtraAdjust(r->extra, dir); break;
+        case ROW_EXTRA:
+            if (r->extra == QO_X_QUICK_WEAPONS) {
+                extern int g_PcQuickWeaponsEnabled;
+                extern void PcConfig_SaveKeyValues(const char* const*, const char* const*, int);
+                const char* key = "quick_weapon_switch";
+                const char* value;
+                g_PcQuickWeaponsEnabled = !g_PcQuickWeaponsEnabled;
+                value = g_PcQuickWeaponsEnabled ? "1" : "0";
+                PcConfig_SaveKeyValues(&key, &value, 1);
+            } else PcOpt_QuickExtraAdjust(r->extra, dir);
+            break;
         case ROW_CHEAT: Pc_Cheats_Adjust(r->cpage, r->extra, dir); break;
         case ROW_PAGE:  qo_beep(Sfx_MenuMove); qo_set_page(s_page + (dir < 0 ? -1 : +1)); qo_select_nav_row(); break;
         case ROW_CLOSE: qo_beep(Sfx_MenuCancel); Pc_QuickOptions_Close(); break;

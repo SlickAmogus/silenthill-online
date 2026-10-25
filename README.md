@@ -54,6 +54,6 @@ The default Steam App ID is **480** (Spacewar, Valve's public test app), which e
 
 Same as the base port: MSYS2 / MinGW64, CMake + Ninja, and the PsyCross submodule. See the port's own build steps for the full procedure. The only online-specific note is that the Steam and networking layer come up automatically in this build, and `steam_api64.dll` (Steamworks SDK, `redistributable_bin/win64`) must sit next to the game exe for co-op to work. It fails gracefully without it, and the Multiplayer menu simply reports Steam as unavailable.
 
-<br/>
+This is a 100% free project funded from my own pocket. If you'd like to support me, it is greatly appreciated, and you can do so on Ko-fi:<br/> [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F1F3K8V3B)
 
 Silent Hill is © Konami and this does not contain any game assets. You must provide a legally obtained dump of Silent Hill for PSX to use.
