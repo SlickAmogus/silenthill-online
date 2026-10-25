@@ -888,18 +888,30 @@ static POLY_FT4* ShNetG_DrawHealthBar(GsOT* ot, POLY_FT4* poly, int gx, int gy, 
 }
 
 /* Each partner's flashlight, for the renderer's extra cones: once a frame,
- * right after our own light is pushed (bodyprog_80055028.c), with the same
- * gate (per-pixel lighting, a dark room, no scripted shot). The beam leaves
- * the chest and points along the heading, tipped a little down, as the
- * game's own flashlight does when Harry is not aiming. */
-void ShNet_PartnerLightsUpdate(int allowed)
+ * right after our own light is pushed (bodyprog_80055028.c), on every
+ * flashlight mode, since our own mode says nothing about whether we should
+ * see someone else's light. Off in scripted shots, which light themselves.
+ * The beam leaves the chest and points along the heading, tipped a little
+ * down, as the game's own flashlight does when Harry is not aiming. In a
+ * room the game lights itself (the fog town) the local flashlight is only
+ * the PSX glow, so a partner's beam is dimmed to sit beside it. */
+#define SHNET_PL_LIT_ROOM_GAIN 0.35f
+
+void ShNet_PartnerLightsUpdate(int allowed, int roomDark)
 {
     extern int   g_PsyX_PartnerLightCount;
     extern float g_PsyX_PartnerLightPos[];
     extern float g_PsyX_PartnerLightDir[];
+    extern float g_PsyX_PartnerLightColor[];
+    extern float g_PsyX_FlashlightIntensity;
     extern int   g_PcCoopGame;
     const int    lightsMax = 4;
+    const float  gain      = g_PsyX_FlashlightIntensity * (roomDark ? 1.0f : SHNET_PL_LIT_ROOM_GAIN);
     int          n = 0, i, mc, myMap;
+
+    g_PsyX_PartnerLightColor[0] = 1.00f * gain;
+    g_PsyX_PartnerLightColor[1] = 0.95f * gain;
+    g_PsyX_PartnerLightColor[2] = 0.85f * gain;
 
     if (allowed && g_PcCoopGame && ShSession_Active() && g_GameWork.gameState == GameState_InGame && g_SavegamePtr)
     {
