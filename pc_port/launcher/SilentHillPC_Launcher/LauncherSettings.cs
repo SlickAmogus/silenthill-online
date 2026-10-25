@@ -35,6 +35,11 @@ namespace SilentHillPC_Launcher
         // The realtime stream deliberately lives on the SOURCE repo, not the nightly
         // repo: launchers that predate it only read the nightly repo, so they can
         // never pick these untested builds up as an update.
+        // The realtime release above is the SINGLE-PLAYER port's per-push build.
+        // Silent Hill Online has no realtime stream of its own yet, so following
+        // it would replace the online build with the single-player one.
+        public static readonly bool RealtimeAvailable = false;
+
         public const string RealtimeReleaseBase = "https://github.com/SlickAmogus/silent-hill-decomp/releases/download/realtime/";
         public const string RealtimeIndexUrl     = RealtimeReleaseBase + "realtime.json";
         public const string RealtimeChangelogUrl = RealtimeReleaseBase + "CHANGELOG_REALTIME.md";
@@ -61,7 +66,7 @@ namespace SilentHillPC_Launcher
 
         /// <summary>Realtime only applies to the official repo; a third-party repo
         /// keeps its own releases even if the flag is left on.</summary>
-        public bool UsesRealtime => Realtime && IsDefaultRepo;
+        public bool UsesRealtime => RealtimeAvailable && Realtime && IsDefaultRepo;
 
         /// <summary>
         /// True when the configured repo resolves to the same owner/repo as the

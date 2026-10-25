@@ -720,8 +720,8 @@ static void PlayAs_LoadSkinBinds(void)
 }
 
 /* ---- rigs for the other players' skins (sh_net_ghost.c) ---------------- */
-static PcPlayAsRig s_rigCache[PLAYAS_COUNT];
-static u8          s_rigTried[PLAYAS_COUNT];
+static PcPlayAsRig s_rigCache[PLAYAS_BUILTIN + PLAYAS_SWAP_MAX];
+static u8          s_rigTried[PLAYAS_BUILTIN + PLAYAS_SWAP_MAX];
 
 static int PlayAs_RosterIdx(int charaId)
 {

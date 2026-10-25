@@ -116,6 +116,7 @@ public partial class Form1 : Form
     {
         try
         {
+            if (!LauncherSettings.RealtimeAvailable) return;
             if (config.Get("launcher_realtime_offered", "0").Trim() == "1") return;
             var settings = LauncherSettings.Load(config);
             if (!settings.IsDefaultRepo) return;
