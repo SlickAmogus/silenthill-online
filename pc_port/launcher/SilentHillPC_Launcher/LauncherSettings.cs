@@ -20,7 +20,13 @@ namespace SilentHillPC_Launcher
     /// </summary>
     public class LauncherSettings
     {
-        public const string DefaultRepoUrl = "https://github.com/SlickAmogus/silent-hill-pc-nightly";
+        public const string DefaultRepoUrl = "https://github.com/SlickAmogus/silenthill-online-nightly";
+
+        // The single-player port's nightly repo. Silent Hill Online launchers
+        // before the online repo existed tracked it, and a config saved by one
+        // still names it: following it would replace the online build with the
+        // single-player one. Load() moves such a config to DefaultRepoUrl.
+        public const string SinglePlayerRepoUrl = "https://github.com/SlickAmogus/silent-hill-pc-nightly";
 
         public string RepoUrl = DefaultRepoUrl;
         public string Branch  = "";        // "" = alpha (repo default / non-prerelease stream)
@@ -45,17 +51,16 @@ namespace SilentHillPC_Launcher
         /// official default. Used to refuse risky operations (launcher
         /// self-update) when pointed at a third-party repo.
         /// </summary>
-        public bool IsDefaultRepo
+        public bool IsDefaultRepo => IsSameRepo(DefaultRepoUrl);
+
+        public bool IsSameRepo(string url)
         {
-            get
-            {
-                string o, r;
-                if (!TryGetOwnerRepo(out o, out r)) return false;
-                string o2, r2;
-                if (!new LauncherSettings { RepoUrl = DefaultRepoUrl }.TryGetOwnerRepo(out o2, out r2)) return false;
-                return string.Equals(o, o2, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(r, r2, StringComparison.OrdinalIgnoreCase);
-            }
+            string o, r;
+            if (!TryGetOwnerRepo(out o, out r)) return false;
+            string o2, r2;
+            if (!new LauncherSettings { RepoUrl = url }.TryGetOwnerRepo(out o2, out r2)) return false;
+            return string.Equals(o, o2, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(r, r2, StringComparison.OrdinalIgnoreCase);
         }
 
         public static LauncherSettings Load(ConfigManager cfg)
@@ -63,6 +68,13 @@ namespace SilentHillPC_Launcher
             var s = new LauncherSettings();
             var url = cfg.Get("launcher_repo_url", "");
             if (!string.IsNullOrWhiteSpace(url)) s.RepoUrl = url.Trim();
+            if (new LauncherSettings { RepoUrl = s.RepoUrl }.IsSameRepo(SinglePlayerRepoUrl))
+            {
+                s.RepoUrl = DefaultRepoUrl;
+                // A pinned single-player tag means nothing on the online repo.
+                cfg.Set("launcher_build", "latest");
+                cfg.Set("launcher_branch", "");
+            }
             s.Branch = (cfg.Get("launcher_branch", "") ?? "").Trim();
             var build = cfg.Get("launcher_build", "latest");
             s.Build = string.IsNullOrWhiteSpace(build) ? "latest" : build.Trim();
