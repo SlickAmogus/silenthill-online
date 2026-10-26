@@ -195,10 +195,10 @@ static void CoopUdp_OnReject(const shn_u8* p, int len)
 {
     int  off = 0;
     char text[SHNET_REJECT_MAX];
-    if (len < 4 + SHNET_REJECT_MAX) return;
+    /* ROOM_REJECT is a reason byte and the text (SrvSendRoomReject), not the
+     * connection REJECT's layout: reading that one dropped every room refusal. */
+    if (len < 1 + SHNET_REJECT_MAX) return;
     (void)ShnGetU8(p, &off);
-    (void)ShnGetU8(p, &off);
-    (void)ShnGetU16(p, &off);
     ShnGetStr(p, &off, SHNET_REJECT_MAX, text, SHNET_REJECT_MAX);
     ShnSanitizeText(text);
     s_room = 0; s_memberCount = 0;

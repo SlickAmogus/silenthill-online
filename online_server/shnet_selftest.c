@@ -58,6 +58,7 @@ typedef struct
     shn_u32            session;
     shn_u32            playerId;
     char               name[SHNET_NAME_MAX];
+    const char*        build; /* NULL = "selftest" */
 } Peer;
 
 static void PeerOpen(Peer* p, const char* host, unsigned short port, const char* name)
@@ -134,7 +135,7 @@ static void PeerSendHello(Peer* p, shn_u32 reconnect, int withCookie, shn_u32 co
     ShnPutU8(buf, &off, 0);
     ShnPutU32(buf, &off, reconnect);
     ShnPutStr(buf, &off, p->name, SHNET_NAME_MAX);
-    ShnPutStr(buf, &off, "selftest", SHNET_BUILD_MAX);
+    ShnPutStr(buf, &off, p->build ? p->build : "selftest", SHNET_BUILD_MAX);
     ShnPutU32(buf, &off, withCookie ? ShnPasswordProof(g_password, cookie) : 0);
     if (withCookie)
     {
@@ -609,6 +610,27 @@ int main(int argc, char** argv)
             n = PeerWait(&b, SHNET_MSG_ROOM_JOINED, 1500, pay, sizeof(pay));
         }
         CHECK(n > 0, "B joined it by code");
+        {
+            Peer   x;
+            shn_u8 buf[SHNET_HDR_SIZE + 4];
+            int    off = SHNET_HDR_SIZE;
+            PeerOpen(&x, host, port, "TestOtherBuild");
+            x.build = "selftest-other";
+            if (PeerHello(&x))
+            {
+                ShnPutU16(buf, &off, code);
+                ShnPutHeader(buf, SHNET_MSG_ROOM_JOIN, (shn_u16)(off - SHNET_HDR_SIZE), x.session);
+                PeerSend(&x, buf, off);
+                n = PeerWait(&x, SHNET_MSG_ROOM_REJECT, 1500, pay, sizeof(pay));
+                CHECK(n == 1 + SHNET_REJECT_MAX && pay[0] == 5,
+                      "a player on another build is refused the room (reason 5, %d bytes)", n);
+                PeerSimple(&x, SHNET_MSG_BYE);
+            }
+            else
+            {
+                CHECK(0, "the other-build player connects");
+            }
+        }
 
         io = SHNET_HDR_SIZE;
         ShnPutU32(inner, &io, 77u);

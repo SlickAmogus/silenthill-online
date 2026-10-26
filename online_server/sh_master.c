@@ -186,6 +186,11 @@ typedef struct
     int                roomHost;
     int                roomMax;
     int                roomHidden; /* host chose not to list it; join by code only */
+
+    /* The client's build id from HELLO. Co-op peers must run the same build:
+     * one push can change what a packet means without touching the protocol
+     * version, so a room only admits its host's build. */
+    char               build[SHNET_BUILD_MAX];
 } Client;
 
 typedef struct
@@ -1091,6 +1096,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     c->charaId = charaId;
     c->lastRxMs = now;
     memcpy(c->name, name, SHNET_NAME_MAX);
+    memcpy(c->build, build, SHNET_BUILD_MAX);
     c->uid = uid;
 
     /* A client retries HELLO until it hears WELCOME; one answer per gap is
@@ -1882,6 +1888,11 @@ static void SrvRoomJoinFailed(Client* c, unsigned int now)
     }
 }
 
+static int SrvSameBuild(const Client* a, const Client* b)
+{
+    return strncmp(a->build, b->build, SHNET_BUILD_MAX) == 0;
+}
+
 static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
 {
     int     off  = 0;
@@ -1905,15 +1916,21 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
      * one the host chose to list; a hidden room is joined by its code only. */
     if (code == 0)
     {
-        int i;
+        int i, otherBuild = 0;
         for (i = 0; i < SRV_MAX_CLIENTS; i++)
         {
             Client* h = &g_clients[i];
             if (h->used && h->roomHost && !h->roomHidden && SrvRoomCount(h->room) < h->roomMax)
             {
+                if (!SrvSameBuild(h, c)) { otherBuild = 1; continue; }
                 code = h->room;
                 break;
             }
+        }
+        if (code == 0 && otherBuild)
+        {
+            SrvSendRoomReject(c, 5, "The host is on a different game build. Update both games to the newest build.");
+            return;
         }
         if (code == 0) { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 2, "no open room here"); return; }
     }
@@ -1931,6 +1948,13 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
         }
     }
     if (SrvRoomCount(code) >= host->roomMax) { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 3, "room is full"); return; }
+    if (!SrvSameBuild(host, c))
+    {
+        SrvLog("  %s (id %u, build %s) refused room %u: host is on build %s",
+               c->name, c->playerId, c->build, code, host->build);
+        SrvSendRoomReject(c, 5, "The host is on a different game build. Update both games to the newest build.");
+        return;
+    }
     SrvRoomLeave(c, 1);
     c->room = code; c->roomHost = 0; c->roomMax = host->roomMax;
     SrvLog("  %s (id %u) joined room %u", c->name, c->playerId, code);
