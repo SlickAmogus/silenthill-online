@@ -33,6 +33,13 @@ Join by IP, Enter Room Code, or accept a Steam invite (the friends list's
 Join Game works too). A guest who joins a game in progress is placed next to
 the host.
 
+**Everyone needs the same build.** A room or Steam lobby only lets in players
+on its host's build; anyone else is told the host is on a different build.
+New builds come out every time a change lands, so update before you play:
+the launcher checks for the newest build each time you press Play and offers
+it, and installs only the files that changed. The builds are on the
+[Realtime release](https://github.com/SlickAmogus/silenthill-online/releases/tag/realtime).
+
 **In game**, `M` opens the multiplayer menu: leave a message, save, change
 your **Character** (any of the fourteen playable characters; the body swaps
 in place and everyone sees the new one), toggle nameplates and **Health

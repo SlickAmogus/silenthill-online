@@ -42,6 +42,7 @@
 #include <SDL_timer.h>
 
 #include "sh_net_steam.h"
+#include "sh_build_hash.h"
 #include "sh_log.h"
 
 /* ------------------------------------------------------------------ */
@@ -1099,12 +1100,25 @@ static void ShSteam_OnLobbyEnter(const u8_* p, int cb)
     /* k_EChatRoomEnterResponseSuccess == 1. */
     if (response == 1 && lobby)
     {
+        const char* hostBuild;
+
         s_lobbyId    = lobby;
         s_lobbyState = SHSTEAM_LOBBY_IN;
         ShSteam_RefreshMembers();
         SH_DBG("[STEAM] entered lobby %llu, %d member(s), owner %s",
                (unsigned long long)lobby, s_memberCount,
                ShSteam_IsLobbyOwner() ? "me" : "someone else");
+        /* Co-op peers must run the same build (every push is one, and one can
+         * change a packet without a protocol bump). A lobby with no "build"
+         * key is from a build before this check, and is let through. */
+        hostBuild = ShSteam_IsLobbyOwner() ? "" : ShSteam_GetLobbyData("build");
+        if (hostBuild[0] && strcmp(hostBuild, ShBuild_Short()) != 0)
+        {
+            SH_DBG("[STEAM] host build %s, ours %s: leaving", hostBuild, ShBuild_Short());
+            ShSteam_LeaveLobby();
+            s_lobbyState = SHSTEAM_LOBBY_FAILED;
+            ShSteam_Err("the host is on a different game build; update both games to the newest build");
+        }
     }
     else
     {

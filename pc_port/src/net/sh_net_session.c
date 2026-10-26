@@ -30,6 +30,7 @@
 #include "sh_net_steam.h"
 #include "sh_net_coopudp.h"
 #include "sh_net_coop.h"
+#include "sh_build_hash.h"
 #include "pc_config.h"
 #include "sh_log.h"
 
@@ -1611,6 +1612,7 @@ void ShSession_Tick(unsigned int nowMs)
             s_ldState[0] = s_ldDbg[0] = s_ldMap[0] = s_ldName[0] = s_ldMax[0] = '\0';
             ShSteam_SetLobbyData("game", "silenthill-online");
             ShSteam_SetLobbyData("proto", "1");
+            ShSteam_SetLobbyData("build", ShBuild_Short());
         }
         snprintf(v, sizeof(v), "%s", s_worldMapCur >= 0 ? "ingame" : "lobby");
         if (strcmp(v, s_ldState)) { SDL_strlcpy(s_ldState, v, sizeof(s_ldState)); ShSteam_SetLobbyData("state", v); }
