@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using SilentHillPC_Launcher;
@@ -116,7 +117,7 @@ public partial class Form1 : Form
     {
         try
         {
-            if (!LauncherSettings.RealtimeAvailable) return;
+            if (!LauncherSettings.RealtimeAvailable || LauncherSettings.RealtimeOnly) return;
             if (config.Get("launcher_realtime_offered", "0").Trim() == "1") return;
             var settings = LauncherSettings.Load(config);
             if (!settings.IsDefaultRepo) return;
@@ -1761,7 +1762,7 @@ public partial class Form1 : Form
         }
     }
 
-    private void btnPlay_Click(object sender, EventArgs e)
+    private async void btnPlay_Click(object sender, EventArgs e)
     {
         SaveConfig();
         WarnIfResidentTexturesOff();
@@ -1773,6 +1774,7 @@ public partial class Form1 : Form
             MessageBox.Show(Loc.T("SilentHillPC.exe not found."));
             return;
         }
+        if (!await UpdateBeforePlayAsync()) return;
 
         try
         {
@@ -1835,6 +1837,57 @@ public partial class Form1 : Form
     // the highest version ever installed from this branch, so an old build you
     // chose on purpose doesn't nag you. (Switching to a specific build is the
     // Download Build button's job.)
+    // Online players can only play together on the same build, so the newest
+    // one is offered before every launch. No connection: play what is installed.
+    private async Task<bool> UpdateBeforePlayAsync()
+    {
+        var settings = LauncherSettings.Load(config);
+        if (!settings.UsesRealtime || !settings.IsLatestBuild) return true;
+
+        string installDir = AppDomain.CurrentDomain.BaseDirectory;
+        UpdateChecker.UpdatePlan plan;
+        try
+        {
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8)))
+                plan = await UpdateChecker.CheckAsync(installDir, settings, cts.Token);
+        }
+        catch
+        {
+            return true;
+        }
+        if (!plan.HasUpdate) return true;
+
+        var answer = MessageBox.Show(this,
+            Loc.F("A newer build is available: {0}\n\nPlayers on different builds can't play together. Update before playing?", plan.RemoteVersion),
+            Loc.T("Update available"), MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+        if (answer == DialogResult.Cancel) return false;
+        if (answer == DialogResult.No) return true;
+
+        SetUpdateBusy(true);
+        try
+        {
+            if (await RunApplyAsync(installDir, plan, showFileConfirm: false))
+            {
+                settings.RecordInstalled(config, plan.RemoteVersion);
+                SetText(btnUpdate, "Check for Updates");
+                lblUpdateStatus.ForeColor = Color.LightGray;
+                SetText(lblUpdateStatus, "Up to date ({0}).", plan.RemoteVersion);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, Loc.F("Update failed:\n\n{0}", ex.Message), Loc.T("Update error"),
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+        finally
+        {
+            SetUpdateBusy(false);
+            progUpdate.Visible = false;
+        }
+    }
+
     private async void btnUpdate_Click(object sender, EventArgs e)
     {
         string installDir = AppDomain.CurrentDomain.BaseDirectory;
