@@ -13,6 +13,7 @@
 [submodule "pc_port/PsyCross"]
 	path = pc_port/PsyCross
 	url = https://github.com/SlickAmogus/PsyCross.git
+	branch = online
 [submodule "pc_port/third_party/rcheevos"]
 	path = pc_port/third_party/rcheevos
 	url = https://github.com/RetroAchievements/rcheevos.git
