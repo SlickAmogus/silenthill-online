@@ -905,7 +905,8 @@ void Event_DisplayMapMsgWithSfx(s32 mapMsgIdx, e_SfxId sfxId, VECTOR3* sfxPos) /
 
         if (i != ARRAY_SIZE(g_SysWork.npcs))
         {
-            g_DeltaTime = Q12(0.0f);
+            extern int g_PcCoopGame;
+            if (!g_PcCoopGame) g_DeltaTime = Q12(0.0f); /* co-op: the world is everyone's */
         }
     }
 
@@ -1154,7 +1155,8 @@ void Event_ItemTake(e_InvItemId itemId, s32 itemCount, e_EventFlag eventFlagIdx,
 
         if (i != ARRAY_SIZE(g_SysWork.npcs))
         {
-            g_DeltaTime = Q12(0.0f);
+            extern int g_PcCoopGame;
+            if (!g_PcCoopGame) g_DeltaTime = Q12(0.0f); /* co-op: the world is everyone's */
         }
     }
 
@@ -1211,6 +1213,11 @@ void Event_ItemTake(e_InvItemId itemId, s32 itemCount, e_EventFlag eventFlagIdx,
             // "Yes" selected.
             Event_InvItemCmd(InvItemCmd_AddItem, itemId, itemCount, false);
             SysWork_StateStepIncrement(1);
+#ifdef SH_PC_PORT
+            /* Co-op: the item is shared through the inventory; its pickup flag
+             * travels here so nobody else can take it a second time. */
+            { extern void Pc_NetNpc_PickupTaken(int eventFlagIdx); Pc_NetNpc_PickupTaken(eventFlagIdx); }
+#endif
 
         default: // `EventState_DontTakeItem`
             // Flag pickup item as uncollected. Selecting 'No' sets `field_10` to `NO_VALUE`.
@@ -1279,7 +1286,10 @@ void Event_PaperMapTake(s32 paperMapFlagIdx, e_EventFlag eventFlagIdx, s32 mapMs
 
     s32 paperMapFlagIdxCpy;
 
-    g_DeltaTime        = Q12(0.0f);
+    {
+        extern int g_PcCoopGame;
+        if (!g_PcCoopGame) g_DeltaTime = Q12(0.0f);
+    }
     paperMapFlagIdxCpy = paperMapFlagIdx;
 
     switch (g_SysWork.sysStateSteps[1])

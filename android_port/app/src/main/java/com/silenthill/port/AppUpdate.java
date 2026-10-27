@@ -27,11 +27,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Updates from the realtime release: every push to android-port builds an APK
- * signed with the maintainer key and uploads it there as SilentHill-android.apk.
+ * Updates from the realtime release: every push to `android` in
+ * SlickAmogus/silenthill-online builds an APK signed with the maintainer key
+ * and uploads it there as SilentHillOnline-android.apk.
  *
  * Which build it is comes from the asset's label, which CI sets to
- * "SilentHill-android.apk (build <sha>, <commit unix time>)". This app was
+ * "SilentHillOnline-android.apk (build <sha>, <commit unix time>)". This app was
  * built from a commit too (BuildConfig), and the newer COMMIT TIME wins. Not
  * "different sha", because a local build of unpushed work is newer than
  * anything on the release and must not be offered a downgrade.
@@ -44,8 +45,8 @@ final class AppUpdate {
     private static final String TAG = "SilentHill";
 
     private static final String RELEASE_API =
-        "https://api.github.com/repos/SlickAmogus/silent-hill-decomp/releases/tags/realtime";
-    private static final String ASSET = "SilentHill-android.apk";
+        "https://api.github.com/repos/SlickAmogus/silenthill-online/releases/tags/realtime";
+    private static final String ASSET = "SilentHillOnline-android.apk";
     private static final Pattern LABEL = Pattern.compile("\\(build ([0-9a-f]+), (\\d+)\\)");
 
     static final String CONFIG_KEY = "check_updates";

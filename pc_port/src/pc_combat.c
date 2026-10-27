@@ -16,6 +16,8 @@
 #include "dbg_overlay.h" /* DbgOverlay_ToastLine — quick-heal result line */
 #include <stdio.h>
 #include "bodyprog/sound/sound_system.h"
+
+extern int Pc_TextInputActive(void); /* dbg_overlay.c: a text field owns the keyboard */
 extern int Pc_ConsoleIsOpen(void);
 
 extern const unsigned char* g_sdlKeyboardState;
@@ -403,7 +405,7 @@ static void Pc_QuickWeaponInputUpdate(void)
         prev[i] = (unsigned char)(down != 0);
     }
     if (!g_PcQuickWeaponsEnabled || !g_SavegamePtr || !Pc_ActionSafe() ||
-        Pc_ConsoleIsOpen() || g_PcQuickOptionsActive) return;
+        Pc_ConsoleIsOpen() || Pc_TextInputActive() || g_PcQuickOptionsActive) return;
     if (target >= 0) {
         s32 slot = Pc_FindItemSlot(s_quickWeaponOrder[target]);
         if (slot != NO_VALUE && g_SavegamePtr->equippedWeapon != s_quickWeaponOrder[target])
@@ -737,7 +739,7 @@ void Pc_ExtraActionsUpdate(void)
      * mid-command. Pc_ConsoleIsOpen also covers the apply window after Enter,
      * when input is briefly unfrozen but the panel is still up. */
     Pc_QuickWeaponInputUpdate();
-    if (Pc_ConsoleIsOpen())
+    if (Pc_ConsoleIsOpen() || Pc_TextInputActive())
     {
         g_PcQuickTurnRequest = 0;
         g_PcReloadRequest    = 0;
@@ -768,6 +770,7 @@ void Pc_RearLookUpdate(void)
     extern int          g_PcFpsCam;
     extern int          g_PcConsoleInputActive;
     extern int          g_PcQuickOptionsActive;
+    extern int          Pc_CoopMenu_InGame(void);
     const Uint8*        keys;
     int                 sch, held;
 
@@ -793,7 +796,8 @@ void Pc_RearLookUpdate(void)
     g_PcRearLookActive = (held && g_DebugThirdPersonCam && !g_PcFpsCam &&
                           g_GameWork.gameState == GameState_InGame &&
                           g_SysWork.sysState   == SysState_Gameplay &&
-                          !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive) ? 1 : 0;
+                          !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame() &&
+                          !Pc_TextInputActive()) ? 1 : 0;
 }
 
 /* OTS/TPS free-aim aim assist.

@@ -132,6 +132,17 @@ s32 Chara_Spawn(e_CharaId charaId, s32 spawnFlags, q19_12 posX, q19_12 posZ, q3_
         chara                    = &g_SysWork.npcs[i];
         chara->model.anim.flags |= AnimFlag_Visible;
 
+#ifdef SH_PC_PORT
+        /* Co-op host: a scripted monster with a spawn-row identity is shared
+         * like a table spawn. Monster Cybil and the Incubus are driven by
+         * their scripts' direct slot writes and stay local. */
+        if (charaId <= Chara_MonsterCybil && spawnFlags < 64 &&
+            charaId != Chara_MonsterCybil && charaId != Chara_Incubus)
+        {
+            extern void Pc_NetNpc_OnSpawn(int slot);
+            Pc_NetNpc_OnSpawn(i);
+        }
+#endif
         return i;
     }
 

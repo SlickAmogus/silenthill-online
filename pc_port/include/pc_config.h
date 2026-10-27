@@ -558,6 +558,56 @@ typedef struct {
      * reads correctly. (config key: ra_spectator) */
     int  raSpectator;
 
+    /* ---------------- Silent Hill Online ----------------
+     * The whole feature is dormant unless onlineEnabled is set, and every
+     * accessor in sh_net.h reports an empty world in that state, so a build
+     * with these at their defaults behaves exactly like the offline port. */
+    int  onlineEnabled;       /* 1 = connect to a master server (config key: online_enabled) */
+    char onlineServer[128];   /* hostname or IP of the master server (online_server) */
+    int  onlinePort;          /* UDP port; 0 = SHNET_DEFAULT_PORT (online_port) */
+    char onlineName[24];      /* how other players see you (online_name) */
+    char onlinePassword[64];  /* shared word for a private server, "" = none (online_password) */
+    unsigned int onlineUid;   /* persistent per-install id for the living world (online_uid); 0 until first run */
+    int  onlineGhosts;        /* 1 = draw other players in the world (online_ghosts) */
+    int  onlineMemos;         /* 1 = draw and place messages (online_memos) */
+    int  onlineDeaths;        /* 1 = draw and report death markers (online_deaths) */
+    int  onlineGhostStyle;    /* SHNET_GS_*: contour, floor ring, or both (online_ghost_style) */
+    int  onlineGhostRange;    /* metres past which a ghost is not drawn (online_ghost_range) */
+    int  onlineNameplates;    /* 1 = float each other player's name over their head (online_nameplates) */
+    int  onlineGhostModel;    /* EXPERIMENTAL: 1 = draw ghosts as the real character model
+                               * instead of the silhouette, when that chara is resident
+                               * (online_ghost_model); 0 = silhouette (default, proven) */
+    int  onlineEvents;        /* 1 = show the server's join/leave/death feed (online_events) */
+    float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
+    int   onlineFriendlyFire; /* 1 = players can hit each other in co-op (online_friendly_fire). Both
+                               * sides must have it on: you only take damage if YOU enabled it. */
+    int   onlineGuestConsole; /* host: 1 = guests in my game may use the console and debug keys
+                               * (online_guest_console). Off by default. */
+    int   onlineCoopLiving;   /* host: 1 = my co-op game is part of the living world (strangers'
+                               * ghosts and messages show, ours are placed). Off = private
+                               * (online_coop_living_world). */
+    int   onlineHealthBars;   /* co-op: 0 none, 1 mine, 2 partners', 3 both (online_health_bars) */
+    int   splitLayout;        /* split screen: 0 = Player 2 below Player 1, 1 = side by side (split_layout) */
+    int   splitP2Audio;       /* split screen, Player 2's window: 0 = effects only, 1 = everything, 2 = muted (split_p2_audio) */
+    float onlinePvpDamage;    /* scale on weapon damage vs players (online_pvp_damage, default 0.15:
+                               * weapons are tuned for 200-40000 HP monsters, Harry has 100) */
+    float onlineRespawnSeconds; /* co-op: how long a dead player lies there before respawning
+                                 * (online_respawn_seconds, default 7) */
+    /* Steam co-op sessions. Independent of online_enabled: a player can run a
+     * Steam session without a master server, or both at once. */
+    int  onlineSteam;          /* 1 = bring up Steam for lobbies/invites (online_steam) */
+    int  onlineSteamAppId;     /* 480 = Spacewar, the public test app (online_steam_appid) */
+    int  onlineSteamMaxPlayers;/* lobby size cap, 2..8 (online_steam_max_players) */
+    int  onlineSteamPublic;    /* 1 = public lobby, 0 = friends only (online_steam_public) */
+    int  onlineSteamAutoHost;  /* 1 = open a lobby at startup (online_steam_autohost) */
+
+    char keyOnlinePlayers[24]; /* who-is-online panel hotkey (key_online_players); default F11 */
+    char keyOnlineMemo[24];    /* leave-a-message composer hotkey (key_online_memo); default M */
+    char keyChatGame[24];      /* open chat to type (key_chat_game); default Y */
+    char keyChatCycle[24];     /* pick channel global<->game (key_chat_cycle); default U */
+    char keyVocalize[24];      /* hold for the co-op voice-line wheel (key_vocalize); default B */
+    char voicePack[32];        /* gamedata/voices/<pack>/<character>/<n>.wav replaces the disc lines (voice_pack) */
+
     char mapName[64];    /* e.g. "map0_s00" */
 
     /* With minimap_require_map on and this area's paper map not found yet:
@@ -657,6 +707,10 @@ void PcConfig_SaveMapName(const char* mapName);
  * preserving every other line + comment. Used to persist runtime changes
  * (control_style) and to publish game-owned lists (control_styles) so the
  * launcher reflects whatever the installed build supports. */
+/* 1 = this process never writes the config: split screen's Player 2 window
+ * runs on Player 1's config.cfg and must not overwrite it. */
+extern int g_PcConfigReadOnly;
+
 void PcConfig_SaveKeyValue(const char* key, const char* value);
 
 /* Set the FMV/voice (XA) master volume [0,1]: clamps, updates g_PcConfig +

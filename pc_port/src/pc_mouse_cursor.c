@@ -99,6 +99,12 @@ static int Mc_Enabled(void)
 {
     if (!g_PcConfig.mouseCursor)
         return 0;
+    /* Split screen, Player 2's window: no keyboard or mouse at all. */
+    {
+        extern int g_PsyX_NoKeyboardMouse;
+        if (g_PsyX_NoKeyboardMouse)
+            return 0;
+    }
     /* Only when the OS cursor is free. In TPS/OTS/FPS the pointer is captured
      * for camera look, so its absolute position is meaningless. */
     if (SDL_GetRelativeMouseMode() == SDL_TRUE)
@@ -111,6 +117,17 @@ static int Mc_Enabled(void)
             return 0;
     }
     return 1;
+}
+
+/* The last input was a key or a pad: the pointer hides and stops hovering
+ * until the mouse moves again (PsyCross clears the flag on real mouse use),
+ * so a pointer left resting on a row cannot drag the selection back to it
+ * while the keyboard navigates. Clicks stay live: a click is mouse use, and
+ * the pointer is back by the time it is read. */
+static int Mc_PointerHidden(void)
+{
+    extern int g_PsyX_PadInputLast;
+    return g_PsyX_PadInputLast;
 }
 
 void Pc_MouseCursor_NoteCursorDrawn(int curX, int curY)
@@ -128,7 +145,7 @@ int Pc_MouseCursor_Moved(void)
 
 int Pc_MouseCursor_UiPos(int* outX, int* outY)
 {
-    if (!Mc_Enabled() || !s_inView)
+    if (!Mc_Enabled() || !s_inView || Mc_PointerHidden())
         return 0;
     if (outX != NULL)
         *outX = (int)s_gx;
@@ -144,7 +161,7 @@ int Pc_MouseCursor_UiPos(int* outX, int* outY)
  * knowledge this side does not have. */
 int Pc_MouseCursor_ViewportPos(float* outX, float* outY)
 {
-    if (!Mc_Enabled() || !s_inView)
+    if (!Mc_Enabled() || !s_inView || Mc_PointerHidden())
         return 0;
     if (outX != NULL) *outX = s_vx;
     if (outY != NULL) *outY = s_vy;
@@ -516,7 +533,7 @@ int Pc_MouseCursor_MenuRowHover(int baseY, int stepY, int count, unsigned int vi
     if (outClicked != NULL)
         *outClicked = 0;
 
-    if (!Mc_Enabled() || !s_inView || stepY <= 0)
+    if (!Mc_Enabled() || !s_inView || stepY <= 0 || Mc_PointerHidden())
         return -1;
 
     for (i = 0; i < count; i++)
@@ -539,14 +556,6 @@ int Pc_MouseCursor_MenuRowHover(int baseY, int stepY, int count, unsigned int vi
         *outClicked = s_leftEdge;
 
     return hovered;
-}
-
-/* Only the picture hides: hover and clicks stay live, and any real mouse use
- * clears the flag before they could matter. */
-static int Mc_HiddenForPad(void)
-{
-    extern int g_PsyX_PadInputLast;
-    return g_PsyX_PadInputLast;
 }
 
 void Pc_MouseCursor_Show(void)
@@ -690,7 +699,7 @@ void Pc_MouseCursor_GlDraw(void)
 
     show      = s_showReq || Pc_QuickOptions_IsOpen() || Pc_ConfirmDialog_IsOpen() || Pc_BindPanel_IsOpen();
     s_showReq = 0;
-    if (!show || !Mc_Enabled() || !s_inView || Mc_HiddenForPad() || s_glState < 0)
+    if (!show || !Mc_Enabled() || !s_inView || Mc_PointerHidden() || s_glState < 0)
         return;
 
     /* Touch drives menus through this same hover/click path (SDL synthesizes

@@ -25,7 +25,10 @@ android {
     ndkVersion '27.3.13750724'
 
     defaultConfig {
-        applicationId 'com.silenthill.port'
+        // Silent Hill: Online is its own app beside the single-player one
+        // (com.silenthill.port): its own data folder, saves and updates. The
+        // Java package (namespace) is shared and stays as it is.
+        applicationId 'com.silenthill.online'
         minSdk 21
         targetSdk 34
         versionCode 1

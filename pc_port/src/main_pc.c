@@ -61,6 +61,7 @@ void        Ios_EnsureModFolders(void);
 #include "hires_override.h" /* HiresOverride_ClampBudgetToVram */
 #include "pc_audio_config.h"
 #include "pc_discord.h"
+#include "pc_split_screen.h"
 #include "map_registry.h"
 #include "main/fsqueue.h"
 #include "main/fileinfo.h"
@@ -77,6 +78,13 @@ void        Ios_EnsureModFolders(void);
 #include <PsyX/PsyX_public.h>
 #include <PsyX/PsyX_backend.h>
 #include <PsyX/common/glad.h>
+
+#include <unistd.h> /* _exit */
+#ifdef _WIN32
+/* windows.h collides with the PSX headers (RECT, byte); only these two. */
+__declspec(dllimport) void* __stdcall GetCurrentProcess(void);
+__declspec(dllimport) int __stdcall TerminateProcess(void* process, unsigned int code);
+#endif
 
 /* Null device differs by platform: NUL on Windows, /dev/null on POSIX. */
 #ifdef _WIN32
@@ -955,6 +963,67 @@ static void PrintBanner(void)
 
 static int s_SkipToGameArg = 0;
 
+/* The end of every exit. Everything with state is down by now (threads,
+ * Steam, Discord, the window, audio, the log); what is left is the CRT
+ * unloading DLLs, which waits on every thread still alive inside one of
+ * them (a Steam or winsock worker left behind, an audio driver thread). That
+ * wait is the game nobody can close, so the process ends here instead.
+ * Saves and config.cfg are written when they change, never at exit. */
+static void Pc_FinalExit(void)
+{
+    extern FILE* g_ShDebugLog;
+    if (g_ShDebugLog)
+    {
+        fputs("[SH] process ending\n", g_ShDebugLog);
+        fflush(g_ShDebugLog);
+    }
+    fflush(NULL);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), 0);
+#endif
+    _exit(0);
+}
+
+/* Every way out of the process (the window's close box, Exit Game, the
+ * console's quit, a split-screen window following its parent) ends in
+ * exit(). The network worker, the embedded relay, Steam and the
+ * achievements uploader were still running then, and a thread inside SDL
+ * or winsock while the CRT unloads the DLLs is what left a game that had to
+ * be killed from Task Manager. */
+/* Whatever still blocks the way out (a pipe write to Discord, a driver
+ * thread SDL joins), the process ends this long after the exit began. */
+#define PC_EXIT_WATCHDOG_MS 5000u
+static int SDLCALL Pc_ExitWatchdog(void* unused)
+{
+    (void)unused;
+    SDL_Delay(PC_EXIT_WATCHDOG_MS);
+    SH_DBG("[SH] exit stalled for %u ms; ending the process", PC_EXIT_WATCHDOG_MS);
+    Pc_FinalExit();
+    return 0;
+}
+
+static void Pc_ShutdownThreads(void)
+{
+    static int s_done;
+    if (s_done) return;
+    s_done = 1;
+    {
+        SDL_Thread* wd = SDL_CreateThread(Pc_ExitWatchdog, "SH_EXIT", NULL);
+        if (wd) SDL_DetachThread(wd);
+    }
+    SH_DBG("[SH] exit: stopping network");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
+    { extern void ShNet_Shutdown(void); ShNet_Shutdown(); }
+    SH_DBG("[SH] exit: stopping achievements");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
+    { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
+    SH_DBG("[SH] exit: stopping Discord");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
+    Pc_Discord_Shutdown();
+    SH_DBG("[SH] network, achievements and Discord stopped");
+    if (g_ShDebugLog) fflush(g_ShDebugLog);
+}
+
 static void ParseArgs(int argc, char* argv[])
 {
     for (int i = 1; i < argc; i++)
@@ -963,6 +1032,7 @@ static void ParseArgs(int argc, char* argv[])
         {
             strncpy(g_GameDataPath, argv[i + 1], sizeof(g_GameDataPath) - 1);
             g_GameDataPath[sizeof(g_GameDataPath) - 1] = '\0';
+            Pc_Split_NoteDataArg(argv[i + 1]);
             i++;
         }
         else if (strcmp(argv[i], "-skiptogame") == 0)
@@ -971,12 +1041,31 @@ static void ParseArgs(int argc, char* argv[])
              * ever SET it, so the option silently did nothing. */
             s_SkipToGameArg = 1;
         }
+        else if (strcmp(argv[i], "+connect_lobby") == 0 && i + 1 < argc)
+        {
+            /* Steam appends this when a player accepts an invite while the
+             * game is not running: it launches us with the lobby to join.
+             * Recorded here and honoured once the Steam layer is up, which
+             * happens much later (sh_net_session.c). */
+            extern void ShSteam_SetCommandLineLobby(unsigned long long lobbyId);
+            ShSteam_SetCommandLineLobby(strtoull(argv[i + 1], NULL, 10));
+            i++;
+        }
+        else if (Pc_Split_ParseArg(argc, argv, &i))
+        {
+            /* Split screen: Player 2's window is this exe, launched by Player 1's
+             * with its half of the screen, its pad and the room on the command
+             * line (pc_split_screen.c). */
+        }
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
         {
             printf("Usage: SilentHillPC [options]\n");
             printf("Options:\n");
-            printf("  -data <path>    Path to game data directory or CD image\n");
-            printf("  -h, --help      Show this help\n");
+            printf("  -data <path>          Path to game data directory or CD image\n");
+            printf("  +connect_lobby <id>   Join a Steam lobby (Steam passes this itself)\n");
+            printf("  -skiptogame           Skip the intros and start a new game\n");
+            printf("  -split2 ...           Player 2's window of a split-screen game (the game launches it itself)\n");
+            printf("  -h, --help            Show this help\n");
             exit(0);
         }
     }
@@ -1159,6 +1248,8 @@ int main(int argc, char* argv[])
     /* Log file is NOT opened until after config load. SH_DBG calls before
      * that point are silently no-ops (the macro short-circuits on a NULL
      * handle). Avoids creating SilentHill.log when enable_debug_log=0. */
+    /* Registered first, so it runs last, after PsyX_Shutdown. */
+    atexit(Pc_FinalExit);
     atexit(Sh_LogAtExitFlush);
     Sh_InstallCrashFilter();
 
@@ -1213,6 +1304,7 @@ int main(int argc, char* argv[])
 
         snprintf(s_ConfigPathUsed, sizeof(s_ConfigPathUsed), "%s", chosen);
     }
+    Pc_Split_AfterConfigLoad(); /* Player 2's window: its half of the screen, no intros, no Steam, read-only config */
 
     /* After the config load, or the parsed skip_intros would clobber it.
      * map0_s00 is the compiled-in default, so a config still naming it counts as
@@ -1580,6 +1672,7 @@ int main(int argc, char* argv[])
     PsyX_Initialise("Silent Hill", windowWidth, windowHeight, g_PcConfig.fullscreen);
 
     SH_LOG("PsyCross initialized. Window: %dx%d", windowWidth, windowHeight);
+    Pc_Split_AfterWindow();
 
 #if defined(__ANDROID__) || defined(SH_IOS)
     /* On desktop the config IS the window size, so the five per-poly visibility
@@ -1993,6 +2086,7 @@ int main(int argc, char* argv[])
     /* Play-as character (config player_character): retargets Harry's
      * CHARA_FILE_INFOS row before the boot-time WorldGfx_HarryCharaLoad. */
     { extern void Pc_PlayAs_Init(void); Pc_PlayAs_Init(); }
+    Pc_Split_AfterPlayAsInit();
 
     CdInit();
 
@@ -2056,10 +2150,15 @@ int main(int argc, char* argv[])
      *
      * On PC, everything is statically linked, so we call MainLoop() directly.
      */
+    /* Registered after PsyX_Initialise's own atexit(PsyX_Shutdown), so it
+     * runs before SDL is torn down, whichever way the process leaves. */
+    atexit(Pc_ShutdownThreads);
+
     MainLoop();
 
     /* Cleanup */
     SH_DBG("[SH] MainLoop exited normally. Shutting down...");
+    Pc_ShutdownThreads();
     { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
     { extern void Pc_Plugins_Shutdown(void); Pc_Plugins_Shutdown(); }
     Pc_Discord_Shutdown();

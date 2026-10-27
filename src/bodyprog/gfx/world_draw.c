@@ -159,6 +159,9 @@ void Item_HeldItemModelFree(void) // 0x8003C0C0
 
     heldItem = &g_WorldGfxWork.heldItem;
 
+#ifdef SH_PC_PORT
+    SH_DBG("[HELD] model freed (was item %d)", (int)heldItem->itemId);
+#endif
     heldItem->itemId                       = NO_VALUE;
     heldItem->lmHdr                       = HELD_ITEM_LM_BUFFER;
     heldItem->bone.modelInfo.field_0    = 0;
@@ -256,10 +259,13 @@ void Ipd_PlayerChunkInit(s_MapOverlayHdr* mapHdr, s32 playerPosX, s32 playerPosZ
      * still mid-load — floating neighbor rooms, void where the current
      * room should be, popping floor patches, and no collision for
      * visible-but-unloaded neighbors. */
+    /* Doubled again for co-op: the host streams the same window around
+     * each partner (Map_ChunkLoad), and a partner's rooms must not evict
+     * the host's own. Slots are lazily allocated, so an unused one is free. */
     if (flags & MapFlag_Interior) {
+        activeIpdCount = 64; /* 15 cells x (host + 3 partners) */
+    } else if (activeIpdCount < 16) {
         activeIpdCount = 16;
-    } else if (activeIpdCount < 4) {
-        activeIpdCount = 4;
     }
 #endif
 
@@ -512,6 +518,11 @@ void Gfx_InGameDraw(bool arg0) // 0x8003C878
     /* Bullet-hole decals ride the world OT here so GsWSMATRIX matches the
      * chunk geometry they sit on (pc_decals.c). */
     { extern void Pc_DecalsDraw(GsOT* ot); Pc_DecalsDraw(&g_OrderingTable0[g_ActiveBufferIdx]); }
+    /* Online ghosts and markers, same OT and the same reason: GsWSMATRIX is
+     * the chunk geometry's matrix here, so a ghost occludes behind the same
+     * walls and fades into the same fog (sh_net_ghost.c). No-op unless the
+     * client is connected. */
+    { extern void ShNet_DrawWorld(GsOT* ot); ShNet_DrawWorld(&g_OrderingTable0[g_ActiveBufferIdx]); }
 #endif
     Gfx_2dEffectsDraw();
 }
@@ -1064,8 +1075,14 @@ s32 WorldGfx_PlayerHeldItemSet(e_InvItemId itemId) // 0x8003CDA0
         heldItem->lmHdr = Pc_BigLm_Redirect(fileIdx, heldItem->lmHdr);
 #endif
         heldItem->queueIdx = Fs_QueueStartRead(fileIdx, heldItem->lmHdr);
+#ifdef SH_PC_PORT
+        SH_DBG("[HELD] item %d: model file %d queued (entry %d)", (int)itemId, (int)fileIdx, (int)heldItem->queueIdx);
+#endif
         return heldItem->queueIdx;
     }
+#ifdef SH_PC_PORT
+    SH_DBG("[HELD] item %d: no model file for it", (int)itemId);
+#endif
 
     return 0;
 }
@@ -1090,6 +1107,24 @@ void WorldGfx_HeldItemDraw(void) // 0x8003D058
 
     // Check if held item is valid.
     heldItem = &g_WorldGfxWork.heldItem;
+#ifdef SH_PC_PORT
+    {
+        /* Once per change of item, readiness or the hidden bit, so a hand
+         * that stays empty says why. */
+        static int s_lastItem = -2, s_lastReady = -1, s_lastHidden = -1;
+        const int  ready  = (heldItem->itemId != NO_VALUE && Fs_QueueIsEntryLoaded(heldItem->queueIdx)) ? 1 : 0;
+        const int  hidden = (heldItem->bone.modelInfo.field_0 & (1u << 31)) ? 1 : 0;
+        if (heldItem->itemId != s_lastItem || ready != s_lastReady || hidden != s_lastHidden)
+        {
+            s_lastItem   = heldItem->itemId;
+            s_lastReady  = ready;
+            s_lastHidden = hidden;
+            SH_DBG("[HELD] item %d: %s%s (entry %d, lm %p)", (int)heldItem->itemId,
+                   heldItem->itemId == NO_VALUE ? "none" : ready ? "model ready" : "waiting for its model",
+                   hidden ? ", hidden" : "", (int)heldItem->queueIdx, (void*)heldItem->lmHdr);
+        }
+    }
+#endif
     if (heldItem->itemId == NO_VALUE)
     {
         return;
@@ -1777,10 +1812,22 @@ s32 func_8003DD74(e_CharaId charaId, s32 arg1) // 0x8003DD74
 // ITEM ATTACHMENT
 // ========================================
 
+#ifdef SH_PC_PORT
+/* Last grip set on the local Harry; co-op sends it so a partner's body holds
+ * the same hand meshes (sh_net_ghost.c). */
+s32 g_PcHarryHandBone = 0;
+#endif
+
 void WorldGfx_HeldItemAttach(e_CharaId charaId, s32 arg1) // 0x8003DD80
 {
     s_CharaModel* model;
 
+#ifdef SH_PC_PORT
+    if (charaId == Chara_Harry)
+    {
+        g_PcHarryHandBone = arg1;
+    }
+#endif
     model = g_WorldGfxWork.registeredCharaModels[charaId];
 
 #ifdef SH_PC_PORT

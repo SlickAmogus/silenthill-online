@@ -305,6 +305,15 @@ else()
     message(STATUS "Lua scripting: disabled (third_party/lua missing)")
 endif()
 
+# Silent Hill Online co-op listen host: the relay server (online_server/sh_master.c)
+# compiled into the game with SH_MASTER_EMBED so a player can host co-op without
+# running a separate server process. It is outside the src glob, so it carries
+# only its own defines (and drops its main/signals/on-disk store under the macro).
+set(SH_EMBED_SERVER "${DECOMP_DIR}/online_server/sh_master.c")
+set_source_files_properties(${SH_EMBED_SERVER} PROPERTIES
+    COMPILE_DEFINITIONS "SH_MASTER_EMBED;static_assert=_Static_assert"
+)
+
 # Android has no executable entry point available to an APK: SDLActivity's Java
 # shim dlopen()s a shared object and calls SDL_main inside it, so the same
 # sources have to link as libmain.so instead. Everything downstream keeps
@@ -316,6 +325,7 @@ if(ANDROID)
         ${BODYPROG_SOURCES}
         ${SCREEN_SOURCES}
         ${MAP_SOURCES}
+        ${SH_EMBED_SERVER}
     )
     # SDLActivity's default getLibraries() loads "main".
     set_target_properties(SilentHillPC PROPERTIES OUTPUT_NAME "main")
@@ -332,6 +342,7 @@ elseif(IOS)
         ${SCREEN_SOURCES}
         ${MAP_SOURCES}
         ${SH_IOS_SOURCES}
+        ${SH_EMBED_SERVER}
     )
 else()
 add_executable(SilentHillPC
@@ -341,6 +352,7 @@ add_executable(SilentHillPC
     ${SCREEN_SOURCES}
     ${MAP_SOURCES}
     ${SH_APP_RESOURCES}
+    ${SH_EMBED_SERVER}
 )
 endif()
 
@@ -496,6 +508,12 @@ find_path(JPEG_INCLUDE_DIR jpeglib.h)
 target_link_libraries(SilentHillPC PRIVATE
     psycross_static
 )
+
+# Silent Hill Online: the UDP transport in pc_port/src/net. Winsock2 on
+# Windows; POSIX sockets need no extra library on Linux/macOS.
+if(WIN32)
+    target_link_libraries(SilentHillPC PRIVATE ws2_32)
+endif()
 
 # Lua scripting (randomizer): link the vendored interpreter + flag its presence.
 if(SH_HAVE_LUA)

@@ -96,6 +96,9 @@ namespace SilentHillPC_Launcher
             [DataMember(Name = "zip_name")] public string ZipName;
             [DataMember(Name = "zip_url")]  public string ZipUrl;
             [DataMember(Name = "files")]   public List<FileEntry> Files;
+            // Set only by a stream that ships its launcher in the build
+            // (Silent Hill Online): the launcher then updates like any release's.
+            [DataMember(Name = "launcher_version")] public string LauncherVersion;
         }
 
         public class UpdatePlan
@@ -198,6 +201,7 @@ namespace SilentHillPC_Launcher
                     BuildDate = rt.Date,
                     Stream    = "realtime",
                     Files     = rt.Files ?? new List<FileEntry>(),
+                    LauncherVersion = rt.LauncherVersion,
                 };
             }
             else
@@ -243,7 +247,7 @@ namespace SilentHillPC_Launcher
 
             // Launcher self-update gate.
             var launcherEntry = plan.LauncherEntry;
-            if (launcherEntry != null && plan.IsRealtime)
+            if (launcherEntry != null && plan.IsRealtime && string.IsNullOrEmpty(manifest.LauncherVersion))
             {
                 // The launcher is the updater: it only ever comes from a scripted
                 // release, so an automatic build can never strand anyone.

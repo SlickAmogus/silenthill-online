@@ -1,0 +1,185 @@
+name: Silent Hill Online (Android)
+
+# Builds the Silent Hill: Online APK (arm64 + arm32) on every push to `android`
+# (the android-port branch merged with online main) and publishes it to this
+# repo's realtime releases, where the app's own update check finds it
+# (AppUpdate.java). A copy of build-android.yml, which comes with android-port
+# and only runs in SlickAmogus/silent-hill-decomp.
+
+on:
+  push:
+    branches: [android]
+    paths-ignore:
+      - '**.md'
+      - 'pc_port/launcher/**'
+  workflow_dispatch:
+
+# One build per branch: pushes land in bursts and a superseded run is wasted
+# runner time.
+concurrency:
+  group: online-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'SlickAmogus/silenthill-online'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (with SDL + PsyCross submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # AGP 8.5 refuses to run on a newer JDK, the same reason
+      # build_android.sh pins a JDK 17 locally.
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Exactly the versions app/build.gradle pins. The runner image ships an
+      # SDK and some NDK, but not necessarily these, and a mismatch fails late
+      # with a message that does not name the cause.
+      - name: Android SDK components
+        run: |
+          set -eu
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "SDK at $SDK"
+          SDKMGR="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" "ndk;27.3.13750724" "cmake;3.22.1"
+
+      # Not tracked in git (it names a local path), so CI writes its own.
+      - name: Point the build at this runner's SDK
+        run: echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > android_port/local.properties
+
+      # validate-wrappers off: the build runs this Gradle, never a wrapper, and
+      # the only wrapper jars in the tree belong to SDL's vendored sample project
+      # (SDL/android-project). Their checksum is not on Gradle's published list,
+      # which failed every run at this step since 2026-10-11 before any compile.
+      - name: Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          validate-wrappers: false
+
+      - name: Toolchain versions
+        run: |
+          java -version
+          gradle --version | head -8
+          ls "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/ndk"
+
+      # Players update by installing the new APK over the old one, which Android
+      # only allows when both carry the same signature; otherwise they must
+      # uninstall first, and that deletes the app's data folder (saves and disc
+      # image). Published APKs are signed with the maintainer's debug key, so CI
+      # signs with that same key, kept in the ANDROID_DEBUG_KEYSTORE secret
+      # (base64). Without it Gradle generates a throwaway key and the APK is
+      # kept off the realtime release.
+      - name: Maintainer debug key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            # AGP takes the debug keystore from ANDROID_USER_HOME when it is set,
+            # not ~/.android, and the runner's own value won the first time, so
+            # pin it rather than guess which folder the image uses.
+            KDIR="$RUNNER_TEMP/android-user-home"
+            mkdir -p "$KDIR"
+            echo "$KEYSTORE_B64" | base64 -d > "$KDIR/debug.keystore"
+            echo "ANDROID_USER_HOME=$KDIR" >> "$GITHUB_ENV"
+            echo "MAINTAINER_KEYSTORE=$KDIR/debug.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE is not set; this APK has a throwaway signature and will not be published to the realtime release."
+          fi
+
+      - name: Build
+        # The script takes its JDK and gradle from these, which is how it runs
+        # unchanged off a Windows machine.
+        env:
+          JAVA_HOME_ANDROID: ${{ env.JAVA_HOME }}
+          GRADLE_BIN: gradle
+        run: |
+          chmod +x android_port/build_android.sh
+          ./android_port/build_android.sh
+
+      - name: Report what was built
+        run: |
+          set -eu
+          APK=android_port/app/build/outputs/apk/debug/app-debug.apk
+          ls -la "$APK"
+          echo "=== native libraries in the APK ==="
+          unzip -l "$APK" | grep "lib/"
+          # Both ABIs, or the build is not what it claims: Gradle will happily
+          # produce a single-ABI APK when one CMake configure fails, and that
+          # APK still installs -- on the half of devices that match.
+          for abi in arm64-v8a armeabi-v7a; do
+            for so in libmain.so libSDL2.so; do
+              unzip -l "$APK" | grep -q "lib/$abi/$so" || { echo "MISSING lib/$abi/$so"; exit 1; }
+            done
+          done
+          echo "both ABIs present"
+          echo "=== unstripped library sizes per ABI ==="
+          find android_port/app/build/intermediates/cxx -name libmain.so -exec ls -la {} +
+
+      # The upload below is gated on this, so an APK that would force players to
+      # uninstall (and lose their saves) can never reach the realtime release.
+      - name: Check the APK carries the maintainer's signature
+        if: env.MAINTAINER_KEYSTORE != ''
+        run: |
+          set -eu
+          APK=android_port/app/build/outputs/apk/debug/app-debug.apk
+          want=$(keytool -list -v -keystore "$MAINTAINER_KEYSTORE" -storepass android \
+                 | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          got=$(keytool -printcert -jarfile "$APK" \
+                | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          echo "keystore $want"
+          echo "apk      $got"
+          if [ -n "$want" ] && [ "$want" = "$got" ]; then
+            echo "MAINTAINER_SIGNED=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::APK signature does not match the maintainer key; not publishing it."
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SilentHillOnline-android
+          path: android_port/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      # Newest build on the `realtime` pre-release (one fixed name, replaced every
+      # push) plus a dated copy on `realtime-history`, which keeps this platform's
+      # newest 15. pc-port's tools/realtime_publish.py leaves both alone.
+      - name: Publish to the realtime releases
+        if: github.event_name == 'push' && github.ref == 'refs/heads/android' && env.MAINTAINER_SIGNED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC: android_port/app/build/outputs/apk/debug/app-debug.apk
+          FIXED: SilentHillOnline-android.apk
+          STEM: SilentHillOnline-android
+          EXT: .apk
+          KEEP: 15
+        run: |
+          set -euo pipefail
+          R="$GITHUB_REPOSITORY"
+          cp "$SRC" "$RUNNER_TEMP/$FIXED"
+          # The label names the build: the app's update check (AppUpdate.java)
+          # reads "(build <sha>, <commit unix time>)" from it and offers this APK
+          # only when that commit is newer than its own.
+          LABEL="$FIXED (build $GITHUB_SHA, $(git log -1 --format=%ct "$GITHUB_SHA"))"
+          gh release upload realtime "$RUNNER_TEMP/$FIXED#$LABEL" --clobber --repo "$R"
+          gh release view realtime-history --repo "$R" >/dev/null 2>&1 ||
+            gh release create realtime-history --repo "$R" --prerelease --latest=false \
+              --title "Realtime history (older builds)" --notes "Older automatic builds." || true
+          DATED="${STEM}_$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:9}${EXT}"
+          cp "$SRC" "$RUNNER_TEMP/$DATED"
+          gh release upload realtime-history "$RUNNER_TEMP/$DATED" --clobber --repo "$R"
+          gh api "repos/$R/releases/tags/realtime-history" --jq \
+            "[.assets[] | select(.name | startswith(\"${STEM}_\"))] | sort_by(.created_at) | reverse | .[${KEEP}:] | .[].name" |
+            while read -r n; do gh release delete-asset realtime-history "$n" --repo "$R" --yes; done
