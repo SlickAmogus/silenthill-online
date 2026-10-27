@@ -130,6 +130,13 @@ static struct
     int          wantRoster;
     int          wantMemos;
     int          wantReconnect;
+    /* ShNet_ApplySettings: new server/name/living-world switch, taken by the
+     * worker with the reconnect so it alone ever writes s_host and friends. */
+    int            applyPending;
+    int            applyMasterOn;
+    char           applyHost[128];
+    unsigned short applyPort;
+    char           applyName[SHNET_NAME_MAX];
 } s_sh;
 
 /* Game-thread-private mirror. Never touched by the worker. */
@@ -987,7 +994,7 @@ static void ShNetW_Step(ShNetWorker* w)
 
         if (w->napping)
         {
-            if ((int)(now - w->napUntil) < 0)
+            if ((int)(now - w->napUntil) < 0 && !s_sh.wantReconnect)
             {
                 return;
             }
@@ -997,7 +1004,28 @@ static void ShNetW_Step(ShNetWorker* w)
         SDL_LockMutex(s_lock);
         reconnect = s_sh.wantReconnect;
         s_sh.wantReconnect = 0;
-        if (reconnect)
+        if (reconnect && s_sh.applyPending)
+        {
+            s_sh.applyPending = 0;
+            SDL_strlcpy(s_host, s_sh.applyHost, sizeof(s_host));
+            s_port = s_sh.applyPort;
+            SDL_strlcpy(s_name, s_sh.applyName, sizeof(s_name));
+            if (w->session && w->sock && (!s_sh.applyMasterOn || s_masterOn))
+            {
+                /* Leaving this server (or switching off): say so now rather
+                 * than leave our ghost standing for the timeout. */
+                ShNetW_SendSimple(w, SHNET_MSG_BYE);
+            }
+            s_masterOn = s_sh.applyMasterOn;
+            if (!s_masterOn)
+            {
+                s_sh.ghostCount = 0;
+                s_sh.peerCount  = 0;
+                s_sh.selfId     = 0;
+                ShNet_SetStatus(SHNET_ST_OFF, "Living world off");
+            }
+        }
+        if (reconnect && s_masterOn)
         {
             ShNet_SetStatus(SHNET_ST_RESOLVING, "Looking up server...");
         }
@@ -1009,6 +1037,20 @@ static void ShNetW_Step(ShNetWorker* w)
             w->resolved     = 0;
             w->session    = 0;
             w->helloTries = 0;
+            w->napping    = 0;
+        }
+
+        if (s_masterOn && !w->sock)
+        {
+            w->sock = ShNetPlat_Open();
+            if (!w->sock)
+            {
+                SDL_LockMutex(s_lock);
+                ShNet_SetStatus(SHNET_ST_REJECTED, "Could not open a UDP socket");
+                SDL_UnlockMutex(s_lock);
+                ShNetW_Nap(w, 5000);
+                return;
+            }
         }
 
         if (!s_masterOn)
@@ -1378,6 +1420,28 @@ void ShNet_Shutdown(void)
         s_lock = NULL;
     }
     s_enabled = 0;
+}
+
+void ShNet_ApplySettings(void)
+{
+    if (!s_enabled || !s_lock)
+    {
+        return;
+    }
+    SDL_LockMutex(s_lock);
+    s_sh.applyMasterOn = g_PcConfig.onlineEnabled;
+    SDL_strlcpy(s_sh.applyHost, g_PcConfig.onlineServer[0] ? g_PcConfig.onlineServer : "127.0.0.1",
+                sizeof(s_sh.applyHost));
+    s_sh.applyPort = (unsigned short)(g_PcConfig.onlinePort > 0 ? g_PcConfig.onlinePort
+                                                                : SHNET_DEFAULT_PORT);
+    SDL_strlcpy(s_sh.applyName, g_PcConfig.onlineName[0] ? g_PcConfig.onlineName : "Wanderer",
+                sizeof(s_sh.applyName));
+    ShNet_SanitizeName(s_sh.applyName);
+    s_sh.applyPending  = 1;
+    s_sh.wantReconnect = 1;
+    SDL_UnlockMutex(s_lock);
+    SH_DBG("[NET] settings changed: server %s, living world %s, name \"%s\"",
+           s_sh.applyHost, s_sh.applyMasterOn ? "on" : "off", s_sh.applyName);
 }
 
 void ShNet_Reconnect(void)
