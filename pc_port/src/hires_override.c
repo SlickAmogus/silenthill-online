@@ -1856,6 +1856,17 @@ int HiresOverride_RegisterLoosePngAllRows(const char* label,
     return (ok > 0) ? 0 : -1;
 }
 
+/* Whether a pool slot row still has its GL texture. A slot registered once
+ * and kept for the session has no other way to learn it was freed. */
+int HiresOverride_PoolSlotRowLive(int slotId, int row)
+{
+    if (slotId < 0 || slotId >= HIRES_POOL_SLOT_MAX || row < 0 || row >= HIRES_POOL_MAX_ROWS)
+    {
+        return 0;
+    }
+    return g_poolSlots[slotId].glTexture[row] != 0;
+}
+
 void HiresOverride_PoolSlotsReset(void)
 {
     int i, r, live = 0;

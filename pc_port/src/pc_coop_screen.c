@@ -130,6 +130,15 @@ static int cs_fit_count(const char* s, int maxW)
     return 0;
 }
 
+/* The field being typed into: its end, where the cursor is, always shows.
+ * Scrolling it like any other long line moved the text under the typist. */
+static void cs_text_tail(int x, int y, int maxW, int size, int color, const char* s)
+{
+    int off = 0, n = (int)strlen(s);
+    while (off < n && cs_w(s + off) > maxW) off++;
+    Nm_TextDrawVerbatim(x, y, size, color, s + off);
+}
+
 /* Text in a box: drawn whole when it fits, else a window of it that scrolls
  * through, pausing a moment at each end. Stable across frames because it is
  * keyed on the frame counter, not on who asked. */
@@ -388,8 +397,12 @@ void Pc_CoopScreen_Draw(void)
     if (text[0])
     {
         cs_clean(text, clean, sizeof(clean));
-        cs_text_box(CS_X0 + 8, CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0), CS_X1 - CS_X0 - 16, small,
-                    editing ? StringColorId_Gold : StringColorId_LightGrey, clean);
+        if (editing)
+            cs_text_tail(CS_X0 + 8, CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0), CS_X1 - CS_X0 - 16, small,
+                         StringColorId_Gold, clean);
+        else
+            cs_text_box(CS_X0 + 8, CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0), CS_X1 - CS_X0 - 16, small,
+                        StringColorId_LightGrey, clean);
     }
 
     Pc_MouseCursor_Show();
