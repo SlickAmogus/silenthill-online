@@ -755,3 +755,42 @@ void PcSoftwareXa_StopFile(void)
         PcSoftwareXa_Stop();
     }
 }
+
+#if defined(SH_NO_OPENAL)
+/* xa_player.c (and its XaPlayer_DecodeLine) is left out of the builds with no
+ * OpenAL, so the co-op voice wheel decodes its disc lines here: the whole line
+ * to PCM, without touching the stream a cutscene may be playing. The caller
+ * frees *outPcm. Returns 1 with *outSamples int16 samples (interleaved when
+ * stereo). */
+int XaPlayer_DecodeLine(uint16_t xaIdx, int16_t** outPcm, uint32_t* outSamples, int* outRate, int* outStereo) {
+    if (xaIdx >= 727 || !outPcm || !outSamples || !outRate || !outStereo) return 0;
+    s_XaItemData* item = &g_XaItemData[xaIdx];
+    uint32_t baseSector = BeginXaStream(item->xaFileIdx_0);
+    if (!baseSector) return 0;
+
+    uint8_t first[XA_SECTOR_SIZE];
+    if (!ReadXaSectorFromBin(baseSector, item->sector_4_bits, first)) return 0;
+    int isStereo, srCode;
+    ParseXaSubheader(first[3], &isStereo, &srCode);
+    int      rate       = (srCode == 0) ? 37800 : 18900;
+    uint8_t  fFile      = first[0], fChan = first[1];
+    uint32_t numSectors = CalculateSectorsFromDuration(item->audioLength_8_bits, rate, isStereo);
+    if (numSectors == 0 || numSectors > 4000) return 0;
+
+    int16_t* pcm = (int16_t*)malloc((size_t)(numSectors + 1) * XA_SAMPLES_PER_SECTOR * sizeof(int16_t));
+    if (!pcm) return 0;
+    uint32_t total = 0, matched = 0, cur = item->sector_4_bits;
+    int      scanCap = (int)numSectors * 32;
+    while (matched < numSectors && scanCap-- > 0) {
+        uint8_t sec[XA_SECTOR_SIZE];
+        if (!ReadXaSectorFromBin(baseSector, cur, sec)) break;
+        cur++;
+        if (sec[0] != fFile || sec[1] != fChan) continue;
+        total += (uint32_t)DecodeXaSector(sec, pcm + total);
+        matched++;
+    }
+    if (total == 0) { free(pcm); return 0; }
+    *outPcm = pcm; *outSamples = total; *outRate = rate; *outStereo = isStereo;
+    return 1;
+}
+#endif
