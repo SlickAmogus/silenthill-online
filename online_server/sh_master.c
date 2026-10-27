@@ -54,7 +54,9 @@ typedef int       ShSockLen;
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
-#if defined(__linux__) && defined(__has_include)
+/* Android ships the header from API 21 but getrandom() only from API 28; the
+ * embedded relay in the app targets 21, so it reads /dev/urandom there. */
+#if defined(__linux__) && defined(__has_include) && (!defined(__ANDROID__) || __ANDROID_API__ >= 28)
 #if __has_include(<sys/random.h>)
 #include <sys/random.h>
 #define SH_HAVE_GETRANDOM 1
