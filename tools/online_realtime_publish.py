@@ -46,7 +46,10 @@ CHANGELOG_NAME = "CHANGELOG_REALTIME.md"
 LAUNCHER_NAME = "SilentHillPC_Launcher.exe"
 # Newest-only builds other workflows replace in place (build-linux/-macos on
 # pc-port, build-ios on ios-port, build-android on android-port). Never pruned.
-FIXED_ASSETS = {INDEX_NAME, CHANGELOG_NAME}
+# Newest-only builds the mobile workflows replace in place (online-ios.yml on
+# `ios`, online-android.yml on `android`). Never pruned here.
+FIXED_ASSETS = {INDEX_NAME, CHANGELOG_NAME, "SilentHillOnline-ios-unsigned.ipa",
+                "SilentHillOnline-android.apk", "altstore-source.json"}
 HISTORY_TAG = "realtime-history"
 WIN_ZIP_PREFIX = "SHOnline_rt-"
 RUNTIME_TAG = "runtime"
@@ -63,12 +66,15 @@ RELEASE_NOTES = """Silent Hill Online, built automatically from every push. Olde
 
 **Newest build: {version}** (`{commit}`, {date} UTC)
 - Windows: [{zip_name}]({zip_url}): unzip into a folder and run `SilentHillPC_Launcher.exe`. Put your `Silent Hill (USA).bin` in `gamedata/`.
+- Android: `SilentHillOnline-android.apk` (newest `android` build). The app offers each new build itself.
+- iOS: `SilentHillOnline-ios-unsigned.ipa` (newest `ios` build). Sideload it with Sideloadly, or add `altstore-source.json` from this release to AltStore or SideStore to be offered every new build.
+- Browser: https://sh1pc.com/playonline/
 
 The launcher follows these builds on its own and offers the newest one before you play, because everyone in a session needs the same build. It installs only the files that changed. **Build Settings** can roll back to any of the last {keep} builds, but an older build can only play with others on that same build. `CHANGELOG_REALTIME.md` lists what changed."""
 
 HISTORY_NOTES = """Older Silent Hill Online builds. The newest is on [Realtime builds]({realtime_url}).
 
-The last {keep} builds are kept, as `SHOnline_rt-<version>.zip`. The launcher's **Build Settings** can roll back to any of them. Back up `gamedata/save` and `gamedata/coopsaves` before going back to an older one."""
+Windows: the last {keep} builds, as `SHOnline_rt-<version>.zip`. Android and iOS: the last 15 of each, as `<platform>_<date>-<commit>`. The launcher's **Build Settings** can roll back to any of them. Back up `gamedata/save` and `gamedata/coopsaves` before going back to an older one."""
 
 
 def log(msg):
