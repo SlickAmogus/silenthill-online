@@ -41,7 +41,7 @@ enum { TR_NONE = 0, TR_MOVE, TR_LOOK, TR_BUTTON, TR_ADVANCE,
 enum { TB_AIM = 0, TB_ITEM, TB_MAP, TB_START, TB_RUN, TB_BACK, TB_FIRE, TB_MENU,
        TB_SKIP,
        TB_LIGHT, TB_VIEW, TB_CAM, TB_QSAVE, TB_QLOAD, TB_BONUS, TB_CLICK,
-       TB_NO, TB_MAPUP, TB_MAPDN,
+       TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP,
        TB_COUNT };
 
 typedef struct
@@ -136,6 +136,9 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
      * of Menu, Pause and View -- a shade larger, so the letter clears the ring. */
     [TB_QSAVE] = { 0.245f, 0.068f, 0.060f, 0 },
     [TB_QLOAD] = { 0.745f, 0.068f, 0.060f, 0 },
+    /* The multiplayer menu, in a co-op game only: what M opens on a keyboard.
+     * Top centre, between the quick save pair, clear of both thumbs. */
+    [TB_COOP] = { 0.500f, 0.068f, 0.055f, 0 },
 };
 
 typedef struct
@@ -334,6 +337,12 @@ static int Tc_MenuAllowed(void)
     return !(g_SysWork.sysFlags & SysFlag_DemoActive);
 }
 
+static int Tc_CoopButtonOn(void)
+{
+    extern int g_PcCoopGame;
+    return g_PcCoopGame && Tc_MenuAllowed();
+}
+
 /* Stamped with g_TickCount by a puzzle that reads taps itself rather than
  * through the free-cursor servo (the map5_s01 combination lock). */
 int g_PcTapPuzzleFrame = -100;
@@ -351,6 +360,15 @@ static int Tc_Mode(void)
      * would also count as a look-drag. */
     if (Pc_QuickOptions_IsOpen())
         return TC_MODE_OFF;
+
+    /* The in-game multiplayer menu, likewise: it takes taps through the
+     * pointer, and a tap on a row must not also steer or press a button. */
+    {
+        extern int Pc_CoopMenu_IsOpen(void);
+        extern int Pc_CoopMenu_InGame(void);
+        if (Pc_CoopMenu_IsOpen() && Pc_CoopMenu_InGame())
+            return TC_MODE_OFF;
+    }
 
     /* The PAPER map -- the fullscreen one from a wall map or a map-zoom event,
      * not the Map button's screen. It is not a sys state at all: it runs as a
@@ -1054,6 +1072,8 @@ static int Tc_HitButton(float x, float y, float aspect)
         if (Tc_CornerOnly(i) || Tc_ScreenOnly(i))
             continue;
         if ((i == TB_QSAVE || i == TB_QLOAD) && !Tc_QuickButtonsOn())
+            continue;
+        if (i == TB_COOP && !Tc_CoopButtonOn())
             continue;
 
         float dx = (x - s_Buttons[i].cx) * aspect;
@@ -2000,6 +2020,20 @@ void Pc_Touch_Update(void)
             s_menuWas = menuNow;
         }
 
+        /* Multiplayer menu: opened here, closed from its own Resume row (the
+         * thumb controls are off while it is up). Edge-triggered like Menu. */
+        {
+            static int s_coopWas;
+            const int  coopNow = (s_Buttons[TB_COOP].holdFrames > 0);
+
+            if (coopNow && !s_coopWas && Tc_CoopButtonOn())
+            {
+                extern void Pc_CoopMenu_OpenInGame(void);
+                Pc_CoopMenu_OpenInGame();
+            }
+            s_coopWas = coopNow;
+        }
+
         /* Quick Save / Quick Load, edge-triggered on the latch for the same
          * reason as Menu. Gamepad style handles its own pair above. */
         {
@@ -2631,6 +2665,9 @@ void Pc_Touch_Draw(void)
         if ((i == TB_MENU || i == TB_CAM) && !Tc_MenuAllowed())
             continue;
 
+        if (i == TB_COOP && (mode != TC_MODE_GAMEPLAY || !Tc_CoopButtonOn()))
+            continue;
+
         /* Quick Save / Quick Load: only with the option on, and only in play. */
         if ((i == TB_QSAVE || i == TB_QLOAD) &&
             (mode != TC_MODE_GAMEPLAY || !Tc_QuickButtonsOn()))
@@ -2781,6 +2818,15 @@ void Pc_Touch_Draw(void)
                                 cx + d - t, cy + d + t, cx + d + t, cy + d - t, lum);
                 Tc_Quad(&batch, cx + d - t, cy - d - t, cx + d + t, cy - d + t,
                                 cx - d - t, cy + d - t, cx - d + t, cy + d + t, lum);
+                break;
+            }
+            case TB_COOP:
+            {
+                /* Two heads side by side: other players. */
+                int hr = (r * 20) / 100, g = (r * 22) / 100;
+
+                Tc_Ring(&batch, cx - g, cy, hr, (hr * 55) / 100, lum);
+                Tc_Ring(&batch, cx + g, cy, hr, (hr * 55) / 100, lum);
                 break;
             }
             case TB_MENU:

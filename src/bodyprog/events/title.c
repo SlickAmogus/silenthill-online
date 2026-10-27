@@ -10,6 +10,7 @@
 #include "pc_title_style.h"
 #include "pc_ach_screen.h"
 #include "pc_coop_menu.h" /* co-op front end (Multiplayer row) */
+extern int Pc_QolMods_IsOpen(void);
 #include "pc_coop_screen.h"
 #include "pc_coop_save.h" /* co-op save load for the host "Start Game" boot */
 #include "pc_mouse_cursor.h"
@@ -458,7 +459,9 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
              * to scroll. Rows are hit-tested where MainMenu_MainTextDraw puts them
              * after scrolling, so slot -> compact index -> entry id. */
             MainMenu_LayoutSync();
-            if (!coopMenuOpen)
+            /* Not under the QoL mods window either: it takes the pointer, and a
+             * tap on one of its buttons landed on the title row behind it. */
+            if (!coopMenuOpen && !Pc_QolMods_IsOpen())
             {
                 s32 mx, my;
                 s32 rowY  = MainMenu_RowY();
