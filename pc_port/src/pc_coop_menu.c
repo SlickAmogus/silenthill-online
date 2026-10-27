@@ -88,7 +88,8 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #define COOP_WEB 0
 #endif
 #if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
-/* A phone has one screen and no second pad to give Player 2. */
+/* A phone has one screen and no second pad to give Player 2; the browser
+ * build has no second window to open for Player 2 either. */
 #define COOP_MOBILE 1
 #else
 #define COOP_MOBILE 0
@@ -106,7 +107,7 @@ static int Coop_RootRows(int* rows)
     int n = 0;
     rows[n++] = COOP_ROOT_HOST;
     rows[n++] = COOP_ROOT_JOIN;
-    if (!COOP_MOBILE)      rows[n++] = COOP_ROOT_SPLIT;
+    if (!COOP_MOBILE && !COOP_WEB) rows[n++] = COOP_ROOT_SPLIT;
     if (COOP_HAS_SETTINGS) rows[n++] = COOP_ROOT_SETTINGS;
     rows[n++] = COOP_ROOT_BACK;
     return n;
@@ -247,6 +248,10 @@ static void Coop_BeginEdit(int kind)
 
 static void Coop_EndEdit(void)
 {
+    /* Typing is not keyboard navigation: bring the pointer straight back
+     * rather than leave it hidden until the mouse moves. */
+    extern int g_PsyX_PadInputLast;
+    g_PsyX_PadInputLast = 0;
     s_editKind = COOP_EDIT_NONE;
     if (s_editStartedText)
     {
@@ -887,22 +892,22 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
     out[0] = '\0';
     if (s_editKind == COOP_EDIT_IP)
     {
-        snprintf(out, cap, "Server IP (host or host:port):  %s_   [Enter join, Esc cancel]", s_editBuf);
+        snprintf(out, cap, "Server IP (Enter joins, Esc cancels):  %s_", s_editBuf);
         return;
     }
     if (s_editKind == COOP_EDIT_CODE)
     {
-        snprintf(out, cap, "Room code:  %s_   [Enter join, Esc cancel]", s_editBuf);
+        snprintf(out, cap, "Room code (Enter joins, Esc cancels):  %s_", s_editBuf);
         return;
     }
     if (s_editKind == COOP_EDIT_SERVER)
     {
-        snprintf(out, cap, "Living World IP:  %s_   [Enter or tap to save]", s_editBuf);
+        snprintf(out, cap, "Living World IP (Enter saves):  %s_", s_editBuf);
         return;
     }
     if (s_editKind == COOP_EDIT_NAME)
     {
-        snprintf(out, cap, "Name:  %s_   [Enter or tap to save]", s_editBuf);
+        snprintf(out, cap, "Name (Enter saves):  %s_", s_editBuf);
         return;
     }
     switch (s_page)
