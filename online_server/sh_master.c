@@ -27,6 +27,11 @@
  * The listening port must be reachable: forward UDP 27888 to this machine, or
  * keep every player on the same LAN.
  *
+ * ADMIN
+ *   sh_master --console          (on the same machine, while it runs)
+ *   sh_master --cmd "kick Bob"
+ * players, kick, ban, prune old markers and more; `help` lists them.
+ *
  * BROWSER PLAYERS
  *   sh_master --ws 27890
  * also takes WebSocket clients on TCP 27890. The browser build needs wss://,
@@ -983,6 +988,10 @@ static void SrvLoadDb(void)
 /* Message handlers                                                    */
 /* ------------------------------------------------------------------ */
 
+#ifndef SH_MASTER_EMBED
+static int AdmIsBanned(shn_u32 ipNet, shn_u32 uid);
+#endif
+
 static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int len)
 {
     int      off = 0;
@@ -1035,6 +1044,15 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     }
 
     SrvAddrStr(from, addr, (int)sizeof(addr));
+
+#ifndef SH_MASTER_EMBED
+    if (AdmIsBanned(from->sin_addr.s_addr, uid))
+    {
+        SrvSendReject(from, SHNET_REJ_BANNED, "You are banned from this server");
+        if (g_verbose) SrvLog("rejected %s: banned", addr);
+        return;
+    }
+#endif
 
     if (g_password[0] && proof != ShnPasswordProof(g_password, cookie))
     {
@@ -2745,6 +2763,574 @@ static void WsService(fd_set* rd, fd_set* wr, unsigned int now)
 }
 #endif /* !SH_MASTER_EMBED */
 
+#ifndef SH_MASTER_EMBED
+/* ------------------------------------------------------------------ */
+/* Admin console                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Commands come in as text datagrams on 127.0.0.1:g_adminPort and the answer
+ * goes back the same way. Loopback only, so whoever can send one is already
+ * logged in to this machine. `sh_master --console` (or `--cmd "..."`) is the
+ * client end, so a server running under systemd with no terminal can still
+ * be told to kick someone or tidy the marker store.
+ *
+ * Bans are kept in bans.txt beside the marker store, one per line:
+ *   ip|uid <value> <until unix, 0 = forever> <name or note>  */
+
+#define ADM_REPLY_MAX 60000
+#define ADM_BAN_MAX   512
+
+typedef struct
+{
+    int     isIp;
+    shn_u32 value;     /* IPv4 in network order, or a persistent player id */
+    long    until;     /* unix seconds; 0 = never lifts */
+    char    note[SHNET_NAME_MAX];
+} AdmBan;
+
+static ShSock          g_adminSock = SH_INVALID_SOCK;
+static unsigned short  g_adminPort = SHNET_DEFAULT_PORT + 3;
+static AdmBan          g_bans[ADM_BAN_MAX];
+static int             g_banCount;
+static char            g_banPath[600];
+
+static int AdmStrCaseCmp(const char* a, const char* b)
+{
+    for (;; a++, b++)
+    {
+        int ca = (*a >= 'A' && *a <= 'Z') ? *a - 'A' + 'a' : (unsigned char)*a;
+        int cb = (*b >= 'A' && *b <= 'Z') ? *b - 'A' + 'a' : (unsigned char)*b;
+        if (ca != cb || !ca) return ca - cb;
+    }
+}
+
+static char g_admOut[ADM_REPLY_MAX];
+static int  g_admLen;
+
+static void AdmPrintf(const char* fmt, ...)
+{
+    va_list ap;
+    int     n;
+    if (g_admLen >= ADM_REPLY_MAX - 1) return;
+    va_start(ap, fmt);
+    n = vsnprintf(g_admOut + g_admLen, (size_t)(ADM_REPLY_MAX - g_admLen), fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    g_admLen += n;
+    if (g_admLen > ADM_REPLY_MAX - 1) g_admLen = ADM_REPLY_MAX - 1;
+}
+
+static void AdmIpStr(shn_u32 ipNet, char* out, int cap)
+{
+    unsigned int ip = ntohl(ipNet);
+    snprintf(out, (size_t)cap, "%u.%u.%u.%u", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+}
+
+/* Beside the marker store, so one -d moves both. */
+static void AdmBanPathInit(void)
+{
+    const char* slash = strrchr(g_dbPath, '/');
+#if defined(_WIN32)
+    const char* bs = strrchr(g_dbPath, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    if (slash && g_dbPath[0])
+        snprintf(g_banPath, sizeof(g_banPath), "%.*sbans.txt", (int)(slash - g_dbPath + 1), g_dbPath);
+    else
+        snprintf(g_banPath, sizeof(g_banPath), "bans.txt");
+}
+
+static void AdmSaveBans(void)
+{
+    FILE* f = fopen(g_banPath, "w");
+    int   i;
+    if (!f)
+    {
+        SrvLog("could not write %s", g_banPath);
+        return;
+    }
+    fprintf(f, "# sh_master bans: ip|uid value until(unix, 0 = forever) note\n");
+    for (i = 0; i < g_banCount; i++)
+    {
+        char v[32];
+        if (g_bans[i].isIp) AdmIpStr(g_bans[i].value, v, (int)sizeof(v));
+        else                snprintf(v, sizeof(v), "%u", g_bans[i].value);
+        fprintf(f, "%s %s %ld %s\n", g_bans[i].isIp ? "ip" : "uid", v, g_bans[i].until,
+                g_bans[i].note[0] ? g_bans[i].note : "-");
+    }
+    fclose(f);
+}
+
+static void AdmLoadBans(void)
+{
+    FILE* f;
+    char  line[256];
+    AdmBanPathInit();
+    f = fopen(g_banPath, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f) && g_banCount < ADM_BAN_MAX)
+    {
+        char  kind[8], val[64], note[64];
+        long  until = 0;
+        AdmBan b;
+        note[0] = '\0';
+        if (line[0] == '#' || sscanf(line, "%7s %63s %ld %63[^\r\n]", kind, val, &until, note) < 3) continue;
+        memset(&b, 0, sizeof(b));
+        b.isIp  = !strcmp(kind, "ip");
+        b.value = b.isIp ? (shn_u32)inet_addr(val) : (shn_u32)strtoul(val, NULL, 10);
+        b.until = until;
+        snprintf(b.note, sizeof(b.note), "%s", strcmp(note, "-") ? note : "");
+        g_bans[g_banCount++] = b;
+    }
+    fclose(f);
+    if (g_banCount) SrvLog("loaded %d bans from %s", g_banCount, g_banPath);
+}
+
+/* 1 when an address or persistent id is banned now; expired bans are dropped. */
+static int AdmIsBanned(shn_u32 ipNet, shn_u32 uid)
+{
+    long t = (long)time(NULL);
+    int  i, hit = 0, dropped = 0;
+    for (i = 0; i < g_banCount; i++)
+    {
+        if (g_bans[i].until && g_bans[i].until <= t)
+        {
+            g_bans[i--] = g_bans[--g_banCount];
+            dropped = 1;
+            continue;
+        }
+        if (g_bans[i].isIp ? (g_bans[i].value == ipNet) : (uid && g_bans[i].value == uid)) hit = 1;
+    }
+    if (dropped) AdmSaveBans();
+    return hit;
+}
+
+static void AdmAddBan(int isIp, shn_u32 value, long minutes, const char* note)
+{
+    int i;
+    for (i = 0; i < g_banCount; i++)
+    {
+        if (g_bans[i].isIp == isIp && g_bans[i].value == value) break;
+    }
+    if (i == g_banCount)
+    {
+        if (g_banCount >= ADM_BAN_MAX) return;
+        g_banCount++;
+    }
+    g_bans[i].isIp  = isIp;
+    g_bans[i].value = value;
+    g_bans[i].until = minutes > 0 ? (long)time(NULL) + minutes * 60 : 0;
+    snprintf(g_bans[i].note, sizeof(g_bans[i].note), "%s", note ? note : "");
+}
+
+/* A player by id number or by name (case-insensitive). NULL with a reason in
+ * the reply when there is none, or the name is not unique. */
+static Client* AdmFindPlayer(const char* who)
+{
+    char*   end;
+    unsigned long id = strtoul(who, &end, 10);
+    Client* hit = NULL;
+    int     i, n = 0;
+    if (*who && !*end)
+    {
+        for (i = 0; i < SRV_MAX_CLIENTS; i++)
+            if (g_clients[i].used && g_clients[i].playerId == (shn_u32)id) return &g_clients[i];
+    }
+    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    {
+        if (g_clients[i].used && !AdmStrCaseCmp(g_clients[i].name, who))
+        {
+            hit = &g_clients[i];
+            n++;
+        }
+    }
+    if (n == 1) return hit;
+    if (n > 1) AdmPrintf("more than one player is called \"%s\"; use their id (see players)\n", who);
+    else       AdmPrintf("no player \"%s\" (see players)\n", who);
+    return NULL;
+}
+
+/* Tells the player why, then frees the slot as a goodbye would. The client
+ * stays off this server until its player chooses to reconnect. */
+static void AdmRemove(Client* c, const char* why, const char* verb)
+{
+    char text[SHNET_EVENT_MAX];
+    SrvSendReject(&c->addr, SHNET_REJ_BANNED, why);
+    snprintf(text, sizeof(text), "%s was %s", c->name, verb);
+    SrvLog("- %s %s by the admin (id %u)", c->name, verb, c->playerId);
+    SrvRoomLeave(c, 1);
+    c->used = 0;
+    SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
+}
+
+static void AdmCmdPlayers(void)
+{
+    unsigned int now = SrvMillis();
+    int          i, n = 0;
+    AdmPrintf("%-6s %-24s %-24s %4s %6s %5s %-10s %s\n", "id", "name", "address", "map", "room", "ping", "uid", "build");
+    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    {
+        const Client* c = &g_clients[i];
+        char          a[64];
+        if (!c->used) continue;
+        SrvAddrStr(&c->addr, a, (int)sizeof(a));
+        AdmPrintf("%-6u %-24s %-24s %4d %6u %5d %-10u %s  (online %us)\n", c->playerId, c->name, a, c->mapIdx,
+                  (unsigned)c->room, c->pingMs, c->uid, c->build, (now - c->joinMs) / 1000u);
+        n++;
+    }
+    AdmPrintf("%d player(s)\n", n);
+}
+
+/* Marker owners match by persistent id (a number) or by the name they placed
+ * it under (case-insensitive). */
+static int AdmMemoOwnedBy(const Memo* m, const char* who)
+{
+    char*         end;
+    unsigned long id = strtoul(who, &end, 10);
+    if (*who && !*end && m->ownerId == (shn_u32)id) return 1;
+    return !AdmStrCaseCmp(m->ownerName, who);
+}
+
+static void AdmCmdMemos(const char* who)
+{
+    int  i, shown = 0, total = 0;
+    long t = (long)time(NULL);
+    if (!who || !*who)
+    {
+        /* Who has placed the most, so a spammer stands out. */
+        typedef struct { shn_u32 id; char name[SHNET_NAME_MAX]; int n; } Tally;
+        static Tally tally[SRV_MAX_MEMOS > 4096 ? 4096 : SRV_MAX_MEMOS];
+        int nt = 0, k;
+        for (i = 0; i < g_memoCount; i++)
+        {
+            for (k = 0; k < nt && tally[k].id != g_memos[i].ownerId; k++) {}
+            if (k == nt)
+            {
+                if (nt >= (int)(sizeof(tally) / sizeof(tally[0]))) continue;
+                tally[nt].id = g_memos[i].ownerId;
+                snprintf(tally[nt].name, sizeof(tally[nt].name), "%s", g_memos[i].ownerName);
+                tally[nt].n = 0;
+                nt++;
+            }
+            tally[k].n++;
+        }
+        for (k = 0; k < nt && k < 400; k++)
+        {
+            AdmPrintf("%6d  %-24s uid %u\n", tally[k].n, tally[k].name, tally[k].id);
+        }
+        AdmPrintf("%d markers from %d players\n", g_memoCount, nt);
+        return;
+    }
+    AdmPrintf("%-8s %4s %-6s %7s %s\n", "id", "map", "kind", "rating", "age");
+    for (i = 0; i < g_memoCount; i++)
+    {
+        const Memo* m = &g_memos[i];
+        if (!AdmMemoOwnedBy(m, who)) continue;
+        total++;
+        if (shown < 200)
+        {
+            long days = m->placedUnix ? (t - m->placedUnix) / 86400 : -1;
+            AdmPrintf("%-8u %4d %-6s %7d %ld days\n", m->memoId, m->mapIdx,
+                      (m->kind & 0x0F) == SHNET_MARK_DEATH ? "death" : "memo", (int)m->rating, days);
+            shown++;
+        }
+    }
+    AdmPrintf("%d marker(s) by \"%s\"%s\n", total, who, total > shown ? " (first 200 shown)" : "");
+}
+
+/* kind: 0 older than `days`, 1 by owner, 2 by marker id, 3 death markers. */
+static void AdmPrune(int kind, const char* arg, long days)
+{
+    long    cutoff = (long)time(NULL) - days * 86400;
+    shn_u32 id     = (shn_u32)strtoul(arg ? arg : "0", NULL, 10);
+    int     i, removed = 0;
+    for (i = 0; i < g_memoCount; i++)
+    {
+        const Memo* m = &g_memos[i];
+        int gone = (kind == 0) ? (m->placedUnix && m->placedUnix < cutoff)
+                 : (kind == 1) ? AdmMemoOwnedBy(m, arg)
+                 : (kind == 2) ? (m->memoId == id)
+                 : ((m->kind & 0x0F) == SHNET_MARK_DEATH && (days <= 0 || (m->placedUnix && m->placedUnix < cutoff)));
+        if (gone)
+        {
+            g_memos[i--] = g_memos[--g_memoCount];
+            removed++;
+        }
+    }
+    if (removed)
+    {
+        g_dbDirty = 1;
+        SrvSaveDb();
+    }
+    SrvLog("admin pruned %d marker(s)", removed);
+    AdmPrintf("removed %d marker(s); %d left. Players see the change on their next map change.\n",
+              removed, g_memoCount);
+}
+
+static void AdmHelp(void)
+{
+    AdmPrintf(
+        "players                      who is on, with ids, addresses and rooms\n"
+        "kick <id|name> [reason]      remove a player (they can reconnect)\n"
+        "ban <id|name|ip> [minutes] [reason]\n"
+        "                             ban by address and player id; no minutes = forever\n"
+        "unban <ip|uid>               lift a ban\n"
+        "bans                         list bans\n"
+        "memos [name|uid]             marker counts by player, or one player's markers\n"
+        "prune old <days>             delete markers older than <days>\n"
+        "prune user <name|uid>        delete every marker by a player\n"
+        "prune id <marker id>         delete one marker\n"
+        "prune deaths [days]          delete death markers (all, or older than <days>)\n"
+        "say <text>                   message to everyone online\n"
+        "save                         write the marker store now\n");
+}
+
+static void AdmRun(char* line)
+{
+    char* cmd;
+    char* rest;
+    char* p = line;
+
+    g_admLen    = 0;
+    g_admOut[0] = '\0';
+    while (*p == ' ' || *p == '\t') p++;
+    {
+        size_t n = strlen(p);
+        while (n && (p[n - 1] == '\n' || p[n - 1] == '\r' || p[n - 1] == ' ')) p[--n] = '\0';
+    }
+    cmd  = p;
+    rest = strchr(p, ' ');
+    if (rest)
+    {
+        *rest++ = '\0';
+        while (*rest == ' ') rest++;
+    }
+    else
+    {
+        rest = p + strlen(p);
+    }
+    if (!*cmd) { AdmHelp(); return; }
+    SrvLog("admin: %s %s", cmd, rest);
+
+    if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) AdmHelp();
+    else if (!strcmp(cmd, "players") || !strcmp(cmd, "list") || !strcmp(cmd, "who")) AdmCmdPlayers();
+    else if (!strcmp(cmd, "kick"))
+    {
+        char*   why = strchr(rest, ' ');
+        Client* c;
+        char    text[SHNET_REJECT_MAX];
+        if (why) { *why++ = '\0'; while (*why == ' ') why++; }
+        if (!*rest) { AdmPrintf("kick <id|name> [reason]\n"); return; }
+        c = AdmFindPlayer(rest);
+        if (!c) return;
+        snprintf(text, sizeof(text), "Removed by the server admin%s%s", (why && *why) ? ": " : "", why ? why : "");
+        AdmPrintf("kicked %s (id %u)\n", c->name, c->playerId);
+        AdmRemove(c, text, "removed");
+    }
+    else if (!strcmp(cmd, "ban"))
+    {
+        char*   tok = rest;
+        char*   more = strchr(tok, ' ');
+        long    minutes = 0;
+        char*   why = NULL;
+        Client* c = NULL;
+        char    text[SHNET_REJECT_MAX];
+        if (more) { *more++ = '\0'; while (*more == ' ') more++; }
+        if (!*tok) { AdmPrintf("ban <id|name|ip> [minutes] [reason]\n"); return; }
+        if (more && *more >= '0' && *more <= '9')
+        {
+            minutes = strtol(more, &why, 10);
+            while (why && *why == ' ') why++;
+        }
+        else
+        {
+            why = more;
+        }
+        snprintf(text, sizeof(text), "Banned from this server%s%s", (why && *why) ? ": " : "", why ? why : "");
+        if (strchr(tok, '.') && inet_addr(tok) != INADDR_NONE)
+        {
+            shn_u32 ip = (shn_u32)inet_addr(tok);
+            int     i;
+            AdmAddBan(1, ip, minutes, why);
+            for (i = 0; i < SRV_MAX_CLIENTS; i++)
+            {
+                if (g_clients[i].used && g_clients[i].addr.sin_addr.s_addr == ip)
+                {
+                    if (g_clients[i].uid) AdmAddBan(0, g_clients[i].uid, minutes, g_clients[i].name);
+                    AdmRemove(&g_clients[i], text, "banned");
+                }
+            }
+            AdmPrintf("banned %s%s\n", tok, minutes ? "" : " for good");
+        }
+        else
+        {
+            c = AdmFindPlayer(tok);
+            if (!c) return;
+            AdmAddBan(1, c->addr.sin_addr.s_addr, minutes, c->name);
+            if (c->uid) AdmAddBan(0, c->uid, minutes, c->name);
+            AdmPrintf("banned %s (id %u)%s\n", c->name, c->playerId, minutes ? "" : " for good");
+            AdmRemove(c, text, "banned");
+        }
+        if (minutes) AdmPrintf("lifts in %ld minute(s)\n", minutes);
+        AdmSaveBans();
+    }
+    else if (!strcmp(cmd, "unban"))
+    {
+        int     i, n = 0, isIp = strchr(rest, '.') != NULL;
+        shn_u32 v = isIp ? (shn_u32)inet_addr(rest) : (shn_u32)strtoul(rest, NULL, 10);
+        for (i = 0; i < g_banCount; i++)
+        {
+            if (g_bans[i].isIp == isIp && g_bans[i].value == v)
+            {
+                g_bans[i--] = g_bans[--g_banCount];
+                n++;
+            }
+        }
+        AdmSaveBans();
+        AdmPrintf(n ? "unbanned %s\n" : "no ban on %s (see bans)\n", rest);
+    }
+    else if (!strcmp(cmd, "bans"))
+    {
+        int  i;
+        long t = (long)time(NULL);
+        AdmIsBanned(0, 0); /* drops expired ones */
+        for (i = 0; i < g_banCount; i++)
+        {
+            char v[32];
+            if (g_bans[i].isIp) AdmIpStr(g_bans[i].value, v, (int)sizeof(v));
+            else                snprintf(v, sizeof(v), "%u", g_bans[i].value);
+            if (g_bans[i].until)
+                AdmPrintf("%-3s %-16s %ld min left  %s\n", g_bans[i].isIp ? "ip" : "uid", v,
+                          (g_bans[i].until - t + 59) / 60, g_bans[i].note);
+            else
+                AdmPrintf("%-3s %-16s forever       %s\n", g_bans[i].isIp ? "ip" : "uid", v, g_bans[i].note);
+        }
+        AdmPrintf("%d ban(s)\n", g_banCount);
+    }
+    else if (!strcmp(cmd, "memos")) AdmCmdMemos(rest);
+    else if (!strcmp(cmd, "prune"))
+    {
+        char* arg = strchr(rest, ' ');
+        if (arg) { *arg++ = '\0'; while (*arg == ' ') arg++; }
+        if (!strcmp(rest, "old") && arg && atol(arg) > 0)        AdmPrune(0, NULL, atol(arg));
+        else if (!strcmp(rest, "user") && arg && *arg)          AdmPrune(1, arg, 0);
+        else if (!strcmp(rest, "id") && arg && *arg)            AdmPrune(2, arg, 0);
+        else if (!strcmp(rest, "deaths"))                       AdmPrune(3, NULL, arg ? atol(arg) : 0);
+        else AdmPrintf("prune old <days> | prune user <name|uid> | prune id <marker id> | prune deaths [days]\n");
+    }
+    else if (!strcmp(cmd, "say"))
+    {
+        if (!*rest) { AdmPrintf("say <text>\n"); return; }
+        SrvBroadcastEvent(SHNET_EV_SERVER, 0, rest, NULL);
+        AdmPrintf("sent\n");
+    }
+    else if (!strcmp(cmd, "save"))
+    {
+        SrvSaveDb();
+        AdmSaveBans();
+        AdmPrintf("saved %d markers to %s\n", g_memoCount, g_dbPath);
+    }
+    else AdmPrintf("unknown command \"%s\" (try help)\n", cmd);
+}
+
+static int AdmListen(void)
+{
+    struct sockaddr_in a;
+    g_adminSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (g_adminSock == SH_INVALID_SOCK) return 0;
+    memset(&a, 0, sizeof(a));
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port        = htons(g_adminPort);
+    if (bind(g_adminSock, (struct sockaddr*)&a, sizeof(a)) != 0)
+    {
+        SH_CLOSESOCK(g_adminSock);
+        g_adminSock = SH_INVALID_SOCK;
+        return 0;
+    }
+    WsSetNonBlocking(g_adminSock);
+    return 1;
+}
+
+static void AdmService(void)
+{
+    for (;;)
+    {
+        char               line[1024];
+        struct sockaddr_in from;
+        ShSockLen          flen = (ShSockLen)sizeof(from);
+        int n = (int)recvfrom(g_adminSock, line, sizeof(line) - 1, 0, (struct sockaddr*)&from, &flen);
+        if (n <= 0) return;
+        if (from.sin_addr.s_addr != htonl(INADDR_LOOPBACK)) continue;
+        line[n] = '\0';
+        AdmRun(line);
+        if (g_admLen == 0) AdmPrintf("ok\n");
+        sendto(g_adminSock, g_admOut, (size_t)g_admLen, 0, (struct sockaddr*)&from, flen);
+    }
+}
+
+/* The client end: send one command, print the answer. 0 when the server did
+ * not answer. */
+static int AdmSendOne(ShSock s, const struct sockaddr_in* to, const char* cmd)
+{
+    static char    buf[ADM_REPLY_MAX + 1];
+    fd_set         rd;
+    struct timeval tv;
+    int            n;
+    sendto(s, cmd, strlen(cmd), 0, (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
+    FD_ZERO(&rd);
+    FD_SET(s, &rd);
+    tv.tv_sec  = 3;
+    tv.tv_usec = 0;
+    if (select((int)s + 1, &rd, NULL, NULL, &tv) <= 0)
+    {
+        printf("no answer from the server on 127.0.0.1:%u (is it running? --admin PORT if it uses another)\n",
+               (unsigned)g_adminPort);
+        return 0;
+    }
+    n = (int)recv(s, buf, ADM_REPLY_MAX, 0);
+    if (n > 0)
+    {
+        buf[n] = '\0';
+        fputs(buf, stdout);
+        fflush(stdout);
+    }
+    return 1;
+}
+
+static int AdmClient(const char* oneCmd)
+{
+    struct sockaddr_in to;
+    ShSock             s;
+    char               line[1024];
+#if defined(_WIN32)
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    memset(&to, 0, sizeof(to));
+    to.sin_family      = AF_INET;
+    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    to.sin_port        = htons(g_adminPort);
+    if (oneCmd)
+    {
+        return AdmSendOne(s, &to, oneCmd) ? 0 : 1;
+    }
+    printf("Silent Hill Online server console. Type help for commands, quit to leave.\n");
+    for (;;)
+    {
+        printf("> ");
+        fflush(stdout);
+        if (!fgets(line, sizeof(line), stdin)) break;
+        line[strcspn(line, "\r\n")] = '\0';
+        if (!strcmp(line, "quit") || !strcmp(line, "exit")) break;
+        if (!line[0]) continue;
+        AdmSendOne(s, &to, line);
+    }
+    return 0;
+}
+#endif /* !SH_MASTER_EMBED */
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -2758,6 +3344,9 @@ static void SrvUsage(const char* argv0)
     printf("  %s [options]\n\n", argv0);
     printf("  -p PORT      UDP port to listen on (default %d)\n", SHNET_DEFAULT_PORT);
     printf("  --ws PORT    also take browser players over WebSocket on TCP PORT\n");
+    printf("  --admin PORT admin console port on 127.0.0.1 (default %d, 0 = off)\n", SHNET_DEFAULT_PORT + 3);
+    printf("  --console    talk to the running server's admin console\n");
+    printf("  --cmd TEXT   run one admin command on the running server (try help)\n");
     printf("               (behind a TLS proxy: browsers need wss://)\n");
     printf("  -n NAME      server name shown to players\n");
     printf("  -m TEXT      message of the day\n");
@@ -2777,7 +3366,9 @@ static void SrvUsage(const char* argv0)
 
 int main(int argc, char** argv)
 {
-    int i;
+    int         i;
+    int         console = 0;
+    const char* oneCmd  = NULL;
 
     for (i = 1; i < argc; i++)
     {
@@ -2785,6 +3376,18 @@ int main(int argc, char** argv)
         if (!strcmp(a, "-p") && i + 1 < argc)
         {
             g_port = (unsigned short)atoi(argv[++i]);
+        }
+        else if (!strcmp(a, "--admin") && i + 1 < argc)
+        {
+            g_adminPort = (unsigned short)atoi(argv[++i]);
+        }
+        else if (!strcmp(a, "--console"))
+        {
+            console = 1;
+        }
+        else if (!strcmp(a, "--cmd") && i + 1 < argc)
+        {
+            oneCmd = argv[++i];
         }
         else if (!strcmp(a, "--ws") && i + 1 < argc)
         {
@@ -2837,6 +3440,10 @@ int main(int argc, char** argv)
         }
     }
 
+    if (console || oneCmd)
+    {
+        return AdmClient(oneCmd);
+    }
     SrvSanitize(g_serverName, SHNET_SERVER_MAX);
     return ShMaster_Serve();
 }
@@ -2938,6 +3545,13 @@ int ShMaster_Serve(void)
 
     SrvLoadDb();
     g_lastSaveMs = SrvMillis();
+#ifndef SH_MASTER_EMBED
+    AdmLoadBans();
+    if (g_adminPort && !AdmListen())
+    {
+        SrvLog("admin console unavailable: 127.0.0.1:%u is in use", (unsigned)g_adminPort);
+    }
+#endif
 
     SrvLog("\"%s\" listening on UDP %u  (max %d players, %d per address%s%s%s%s)",
            g_serverName, (unsigned)g_port, g_maxClients, g_maxPerIp,
@@ -2965,6 +3579,11 @@ int ShMaster_Serve(void)
         FD_SET(g_sock, &rd);
 #ifndef SH_MASTER_EMBED
         WsFdSets(&rd, &wr, &maxFd);
+        if (g_adminSock != SH_INVALID_SOCK)
+        {
+            FD_SET(g_adminSock, &rd);
+            if (g_adminSock > maxFd) maxFd = g_adminSock;
+        }
 #endif
         tv.tv_sec  = 0;
         tv.tv_usec = 20000;
@@ -2974,6 +3593,10 @@ int ShMaster_Serve(void)
         if (ready)
         {
             WsService(&rd, &wr, SrvMillis());
+            if (g_adminSock != SH_INVALID_SOCK && FD_ISSET(g_adminSock, &rd))
+            {
+                AdmService();
+            }
         }
 #endif
         if (ready && FD_ISSET(g_sock, &rd))

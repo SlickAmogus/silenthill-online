@@ -151,6 +151,18 @@ static unsigned char* ShNetG_LoadOverride(const char* path, int* outW, int* outH
  * HiresOverride_PoolSlotsReset never frees them on a map load. */
 static void ShNetG_EnsureTextures(void)
 {
+    /* Registered once, but something can still free them (the texture budget's
+     * eviction, a slot reset): markers then drew with no texture at all, which
+     * is nothing on screen. Put them back when that happens. */
+    if (s_texTried &&
+        ((s_ghostTexOk && !HiresOverride_PoolSlotRowLive(GHOST_SLOT, 0)) ||
+         (s_memoTexOk && !HiresOverride_PoolSlotRowLive(MEMO_SLOT, 0))))
+    {
+        SH_DBG("[NET] ghost/marker texture was freed; registering again");
+        s_texTried   = 0;
+        s_ghostTexOk = 0;
+        s_memoTexOk  = 0;
+    }
     if (s_texTried)
     {
         return;
