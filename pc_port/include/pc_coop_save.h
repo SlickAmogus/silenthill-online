@@ -1,13 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
- * pc_coop_save.h - multiplayer save files.
+ * pc_coop_save.h - starting a multiplayer game from a single-player save.
  *
- * Co-op has its own save namespace that mirrors single-player but with its own
- * files and custom names, so a co-op run never touches the normal memory-card
- * saves. A save is the ordinary s_Savegame blob written to
- * gamedata/coopsaves/<name>.sav behind a small header (the custom name + the
- * map, for the host's load list). Every player runs the same build, so the raw
- * blob is portable between them.
+ * Multiplayer has no saves of its own. Every player keeps their normal
+ * memory-card saves (gamedata/save/N.MCD), starts a game from any of them,
+ * and saves at save points into them like a single-player game. These read
+ * the card images directly so the multiplayer menu can list and boot a save
+ * without going through the load screen.
  */
 #ifndef PC_COOP_SAVE_H
 #define PC_COOP_SAVE_H
@@ -16,33 +15,39 @@
 extern "C" {
 #endif
 
-#define COOP_SAVE_NAME_MAX 32
+#define COOP_SAVE_NAME_MAX 48
+#define COOP_SAVE_KEY_MAX  16
 
 typedef struct
 {
-    char name[COOP_SAVE_NAME_MAX]; /* the custom name shown in the host list */
-    char file[64];                 /* basename on disk, for load */
+    char name[COOP_SAVE_NAME_MAX]; /* "Cafe  1:23  (save 4)", for the menu */
+    char key[COOP_SAVE_KEY_MAX];   /* card.file.slot, for Pc_CoopSave_Load */
     int  mapIdx;
-    int  saveCount;
+    int  order;                    /* the game's running save counter; newest is highest */
 } CoopSaveEntry;
 
-/* Refresh the savegame from live player state and write it to <name>.sav.
- * Returns 1 on success. Refuses nothing itself -- the boss-fight gate is the
- * caller's (Pc_Save_BossActive). */
-int Pc_CoopSave_Write(const char* name);
-
-/* Read <name>.sav into g_GameWork.savegame (through g_SavegamePtr). The caller
- * then boots the map (GameBoot_PlayerInit + GameBoot_MapLoad). Returns 1 on a
- * valid file. */
-int Pc_CoopSave_Load(const char* name);
-
-/* Fill `out` with up to `max` saves found in the co-op save dir. Returns the
+/* Fill `out` with up to `max` single-player saves, newest first. Returns the
  * count. */
 int Pc_CoopSave_List(CoopSaveEntry* out, int max);
 
+/* Read the save named by `key` into g_SavegamePtr. Returns 1 on a valid save. */
+int Pc_CoopSave_Load(const char* key);
+
+/* A guest boots into the host's map through the New Game path. Stage reads
+ * the guest's own save; Apply, run right after that path builds the fresh
+ * savegame, puts the save's inventory and progress over it while keeping the
+ * fresh map and spawn point. Apply does nothing when nothing is staged. */
+int  Pc_CoopSave_StageGuest(const char* key);
+void Pc_CoopSave_ApplyGuest(void);
+
+/* Open the game's own save screen, as a save point does. Returns 0 (and
+ * opens nothing) during a boss fight or outside normal play. Defined in
+ * pc_quicksave.c. */
+int Pc_Save_OpenSaveScreen(void);
+
 /* 1 while a boss is alive on the map: saving is refused there, same as the
- * quick save and the original game's lack of a save point in a boss chamber.
- * Defined in pc_quicksave.c. */
+ * original game's lack of a save point in a boss chamber. Defined in
+ * pc_quicksave.c. */
 int Pc_Save_BossActive(void);
 
 #ifdef __cplusplus

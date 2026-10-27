@@ -355,7 +355,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
              * (the save is read into g_GameWork.savegame, copied to autosave so
              * Continue's health>0 branch boots that map). */
             {
-                char coopSave[COOP_SAVE_NAME_MAX];
+                char coopSave[COOP_SAVE_KEY_MAX];
                 int  coopReq = Pc_CoopMenu_TakeStartRequest(coopSave, sizeof(coopSave));
                 extern int ShSession_TakeWorldRequest(void);
                 int  guestMap = ShSession_TakeWorldRequest();
@@ -398,11 +398,15 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                      * we should be placed next to the host once his position is
                      * known, so a mid-game joiner does not land at the New Game
                      * spawn across the map from everyone. */
-                    extern int g_PcCoopGuestSpawn;
+                    extern int         g_PcCoopGuestSpawn;
+                    extern const char* Pc_CoopMenu_GuestSaveKey(void);
                     g_PcCoopGame     = 1;
                     coopGuestMap     = guestMap;
                     skipToGameStep   = 1;
                     g_PcCoopGuestSpawn = 1;
+                    /* Bringing their own save: applied over the fresh savegame
+                     * once the New Game path below has built it. */
+                    Pc_CoopSave_StageGuest(Pc_CoopMenu_GuestSaveKey());
                     Pc_CoopMenu_Close(); /* the Join page is likely still up */
                 }
             }
@@ -742,6 +746,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                     /* A co-op guest starts in the host's map, not the config map. */
                     if (coopGuestMap >= 0) { mapId = coopGuestMap; coopGuestMap = -1; }
                     GameBoot_SavegameInitialize(mapId, newGameSelectedDifficultyIdx - 1);
+                    Pc_CoopSave_ApplyGuest();
 
                     /* Randomizer: start the run here, after the savegame wipe and
                      * before GameBoot_MapLoad, so its per-map hook sees a live run

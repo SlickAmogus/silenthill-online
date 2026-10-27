@@ -24,14 +24,23 @@ Then **Max Players**, whether the room is **Listed** or hidden (code only),
 **Living World** (Private by default: just you and your friends, no
 strangers' ghosts or messages; Shown makes the game part of the living
 world), the **FPS Lock** (60 is the default, and what the sync is tuned for),
-and whether to start a **New Game** or load a co-op save. **Open Room** opens
-it; **Start Game** boots everyone into the host's map.
+and **Start From**: a New Game or any of your single-player saves. **Open
+Room** opens it; **Start Game** boots everyone into the host's map.
 
 **Join a game.** Browse Server Rooms lists every open game ("Name's Game",
 where it is, how many are in it), server rooms and Steam lobbies alike; or
 Join by IP, Enter Room Code, or accept a Steam invite (the friends list's
 Join Game works too). A guest who joins a game in progress is placed next to
-the host.
+the host. The Join page and the lobby have a **Start From** row too: a guest
+can bring one of their own saves (their inventory, health and progress) into
+the host's map instead of starting with nothing.
+
+**Saves.** Multiplayer uses your normal single-player saves; there are no
+separate multiplayer saves. Everyone saves on their own machine: a save point,
+the quick save key or **Save** in the `M` menu opens the usual save screen and
+writes to your memory card like any other save, host and guests alike. That
+save loads in single player, or starts the next multiplayer game. Saving is
+refused while a boss is alive, the same as the quick save.
 
 **Everyone needs the same build.** A room or Steam lobby only lets in players
 on its host's build; anyone else is told the host is on a different build.
@@ -67,7 +76,8 @@ Pick which controller is **2P Pad** (Player 1 keeps the keyboard, the mouse
 and every other controller), **2P Character**, the **Layout** (Player 2
 below, or side by side), what Player 2's half plays (**2P Sound**: Effects
 Only by default, so the music, the voices and the movies are not heard
-twice; or Everything, or Muted), New Game or a co-op save, and **Online**:
+twice; or Everything, or Muted), **Start From** (a New Game or one of your
+saves), and **Online**:
 
 | Online | What happens |
 |---|---|
