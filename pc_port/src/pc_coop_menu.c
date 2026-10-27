@@ -76,7 +76,14 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #define COOP_HOST_THISPC 0
 #define COOP_HOST_SERVER 1
 #define COOP_HOST_STEAM  2
-static int s_hostMode = COOP_HOST_THISPC;
+#if defined(__EMSCRIPTEN__)
+/* A browser reaches a server over WebSocket and nothing else: it cannot run
+ * a relay, take a direct connection or talk to Steam. */
+#define COOP_WEB 1
+#else
+#define COOP_WEB 0
+#endif
+static int s_hostMode = COOP_WEB ? COOP_HOST_SERVER : COOP_HOST_THISPC;
 
 /* Split screen (pc_split_screen.c): Player 2's controller (index among the
  * attached ones) and character. The layout and what their window plays are
@@ -902,7 +909,7 @@ static void Coop_Confirm(void)
 
     case COOP_PAGE_HOST_SETUP:
         /* Setting rows cycle on confirm; no left/right needed. */
-        if (s_sel == 0)      { s_hostMode = (s_hostMode + 1) % 3; }
+        if (s_sel == 0)      { if (!COOP_WEB) s_hostMode = (s_hostMode + 1) % 3; }
         else if (s_sel == 1) { s_setMaxPlayers = (s_setMaxPlayers >= 4) ? 2 : s_setMaxPlayers + 1; }
         else if (s_sel == 2) { s_setPublic = !s_setPublic; }
         else if (s_sel == 3) { s_setLiving = !s_setLiving; }
@@ -1084,7 +1091,11 @@ static void Coop_Confirm(void)
             s_page = COOP_PAGE_ROOMS;
             s_sel  = 0;
         }
-        else if (s_sel == 1) { Coop_BeginEdit(COOP_EDIT_IP); }   /* type host[:port] */
+        else if (s_sel == 1) /* type host[:port] */
+        {
+            if (COOP_WEB) snprintf(s_msg, sizeof(s_msg), "In the browser, join a room on the server.");
+            else          Coop_BeginEdit(COOP_EDIT_IP);
+        }
         else if (s_sel == 2) { Coop_BeginEdit(COOP_EDIT_CODE); } /* type a room code */
         else if (s_sel == 3)
         {
