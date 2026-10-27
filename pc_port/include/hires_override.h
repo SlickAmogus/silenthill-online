@@ -163,6 +163,7 @@ int  HiresOverride_PoolSlotRegister(int slotId,
                                     const unsigned char* data, unsigned int size,
                                     int nativePixelW, int nativePixelH);
 void HiresOverride_PoolSlotsReset(void);
+int  HiresOverride_PoolSlotRowLive(int slotId, int row);
 void HiresOverride_CharaPoolSlotReset(int slotId);
 
 /* Pre-decoded RGBA variants (DuckStation texture-pack composites). The rect

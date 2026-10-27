@@ -1270,13 +1270,29 @@ static int SDLCALL ShNet_Worker(void* unused)
     return 0;
 }
 
-/* The browser build's worker: one step a frame, from ShNet_GameTick. */
+/* The browser build's worker: stepped from ShNet_GameTick and from every
+ * yield to the browser (g_PsyX_FrameYieldHook), since movies and loads run
+ * for seconds without a game frame and the server drops a silent client.
+ * The yield can come thousands of times a second inside a CD wait, hence the
+ * floor; and a yield inside a step must not start another. */
 void ShNet_Service(void)
 {
-    if (s_inline && !s_quit)
+    static unsigned int s_lastMs;
+    static int          s_inStep;
+    unsigned int        now;
+    if (!s_inline || s_quit || s_inStep)
     {
-        ShNetW_Step(&s_w);
+        return;
     }
+    now = ShNetPlat_Millis();
+    if (now - s_lastMs < 4u)
+    {
+        return;
+    }
+    s_lastMs = now;
+    s_inStep = 1;
+    ShNetW_Step(&s_w);
+    s_inStep = 0;
 }
 
 
@@ -1352,6 +1368,10 @@ void ShNet_Init(void)
     }
 
 #if SHNET_INLINE_WORKER
+    {
+        extern void (*g_PsyX_FrameYieldHook)(void); /* PsyCross, browser build */
+        g_PsyX_FrameYieldHook = ShNet_Service;
+    }
     s_inline = ShNetW_Begin(&s_w);
     if (!s_inline)
     {
@@ -1381,6 +1401,12 @@ void ShNet_Shutdown(void)
     if (s_inline)
     {
         s_quit = 1;
+#if SHNET_INLINE_WORKER
+        {
+            extern void (*g_PsyX_FrameYieldHook)(void);
+            g_PsyX_FrameYieldHook = NULL;
+        }
+#endif
         ShNetW_End(&s_w);
         s_inline  = 0;
         SDL_DestroyMutex(s_lock);
