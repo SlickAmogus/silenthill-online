@@ -28,6 +28,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include <stdlib.h>
 #include <SDL.h>
 
@@ -42,7 +45,8 @@ typedef enum
     COOP_PAGE_ROOMS,        /* server room browser */
     COOP_PAGE_INGAME,       /* in-game M menu: Resume / prefs / players / leave */
     COOP_PAGE_PLAYERS,      /* member list (in-game) */
-    COOP_PAGE_PLAYER        /* one member: allow cheats / remove (host) */
+    COOP_PAGE_PLAYER,       /* one member: allow cheats / remove (host) */
+    COOP_PAGE_SETTINGS      /* phones and the browser: server, living world, name */
 } CoopPage;
 
 static unsigned long long s_playerId; /* the member COOP_PAGE_PLAYER is about */
@@ -76,7 +80,45 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #define COOP_HOST_THISPC 0
 #define COOP_HOST_SERVER 1
 #define COOP_HOST_STEAM  2
-static int s_hostMode = COOP_HOST_THISPC;
+#if defined(__EMSCRIPTEN__)
+/* A browser reaches a server over WebSocket and nothing else: it cannot run
+ * a relay, take a direct connection or talk to Steam. */
+#define COOP_WEB 1
+#else
+#define COOP_WEB 0
+#endif
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+/* A phone has one screen and no second pad to give Player 2. */
+#define COOP_MOBILE 1
+#else
+#define COOP_MOBILE 0
+#endif
+/* No launcher on these to set the server and name, so the menu has a page. */
+#define COOP_HAS_SETTINGS (COOP_MOBILE || COOP_WEB)
+
+#define COOP_DEFAULT_SERVER "server.sh1pc.com"
+
+enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_BACK };
+
+/* The title-menu rows this platform shows, in order. */
+static int Coop_RootRows(int* rows)
+{
+    int n = 0;
+    rows[n++] = COOP_ROOT_HOST;
+    rows[n++] = COOP_ROOT_JOIN;
+    if (!COOP_MOBILE)      rows[n++] = COOP_ROOT_SPLIT;
+    if (COOP_HAS_SETTINGS) rows[n++] = COOP_ROOT_SETTINGS;
+    rows[n++] = COOP_ROOT_BACK;
+    return n;
+}
+
+static int Coop_RootRow(int i)
+{
+    int rows[5];
+    int n = Coop_RootRows(rows);
+    return (i >= 0 && i < n) ? rows[i] : COOP_ROOT_BACK;
+}
+static int s_hostMode = COOP_WEB ? COOP_HOST_SERVER : COOP_HOST_THISPC;
 
 /* Split screen (pc_split_screen.c): Player 2's controller (index among the
  * attached ones) and character. The layout and what their window plays are
@@ -120,20 +162,59 @@ static void Coop_RefreshServerList(void)
 /* ------------------------------------------------------------------ */
 /* Text entry (Join by IP / room code)                                 */
 /* ------------------------------------------------------------------ */
-/* A single editable field, driven straight off the SDL keyboard state the
- * overlay already reads each frame -- the same approach the chat composer uses
- * (sh_net_chat.c), so no SDL text-input events are needed. While a field is
- * active Pc_CoopMenu_Update ignores navigation so typed keys never move the
- * selection, and the overlay feeds us the keyboard until Enter or Esc. */
-#define COOP_EDIT_NONE 0
-#define COOP_EDIT_IP   1   /* host[:port] */
-#define COOP_EDIT_CODE 2   /* 4-digit room code on the configured server */
+/* A single editable field fed by SDL text-input events, which is what a
+ * phone's on-screen keyboard sends (polling the key state misses its key
+ * presses, which come and go between two frames). SDL_StartTextInput is what
+ * brings that keyboard up. While a field is active Pc_CoopMenu_Update ignores
+ * navigation so typed keys never move the selection; Enter (or a tap on the
+ * menu) commits, Esc or Back cancels.
+ *
+ * On Android SDL delivers those events from the Java thread, so the watch
+ * hands them over through a spinlocked buffer that the menu drains. */
+#define COOP_EDIT_NONE   0
+#define COOP_EDIT_IP     1   /* host[:port] */
+#define COOP_EDIT_CODE   2   /* 4-digit room code on the configured server */
+#define COOP_EDIT_SERVER 3   /* the living world's server (settings page) */
+#define COOP_EDIT_NAME   4   /* multiplayer name (settings page) */
 
 static int           s_editKind;
 static char          s_editBuf[80];
 static int           s_editLen;
-static unsigned char s_editPrev[SDL_NUM_SCANCODES];
 static int           s_editHaveKeys;
+static int           s_editStartedText; /* we turned text input on, so we turn it off */
+
+static SDL_SpinLock  s_typedLock;
+static char          s_typed[64];
+static int           s_typedLen;
+static int           s_typedBack, s_typedEnter, s_typedEsc;
+static int           s_watching;
+
+static int SDLCALL Coop_TextWatch(void* user, SDL_Event* e)
+{
+    (void)user;
+    if (s_editKind == COOP_EDIT_NONE)
+    {
+        return 0;
+    }
+    SDL_AtomicLock(&s_typedLock);
+    if (e->type == SDL_TEXTINPUT)
+    {
+        const char* t = e->text.text;
+        for (; *t && s_typedLen < (int)sizeof(s_typed); t++)
+        {
+            s_typed[s_typedLen++] = *t;
+        }
+    }
+    else if (e->type == SDL_KEYDOWN)
+    {
+        SDL_Scancode sc = e->key.keysym.scancode;
+        if (sc == SDL_SCANCODE_BACKSPACE) s_typedBack++;
+        else if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) s_typedEnter = 1;
+        else if (sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_AC_BACK) s_typedEsc = 1;
+    }
+    SDL_AtomicUnlock(&s_typedLock);
+    return 0;
+}
 
 int Pc_CoopMenu_Editing(void)
 {
@@ -142,27 +223,50 @@ int Pc_CoopMenu_Editing(void)
 
 static void Coop_BeginEdit(int kind)
 {
+    const char* start = "";
+    if (kind == COOP_EDIT_SERVER) start = g_PcConfig.onlineServer;
+    if (kind == COOP_EDIT_NAME)   start = g_PcConfig.onlineName;
+    if (!s_watching)
+    {
+        SDL_AddEventWatch(Coop_TextWatch, NULL);
+        s_watching = 1;
+    }
+    SDL_AtomicLock(&s_typedLock);
+    s_typedLen = s_typedBack = s_typedEnter = s_typedEsc = 0;
+    SDL_AtomicUnlock(&s_typedLock);
+    SDL_strlcpy(s_editBuf, start, sizeof(s_editBuf));
+    s_editLen      = (int)strlen(s_editBuf);
     s_editKind     = kind;
-    s_editBuf[0]   = '\0';
-    s_editLen      = 0;
-    s_editHaveKeys = 0; /* swallow the key that opened the field */
+    s_editHaveKeys = 0; /* swallow the press that opened the field */
+    s_editStartedText = !SDL_IsTextInputActive();
+    if (s_editStartedText)
+    {
+        SDL_StartTextInput();
+    }
 }
 
-static char Coop_Glyph(int sc, int shift)
+static void Coop_EndEdit(void)
 {
-    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) return (char)('1' + (sc - SDL_SCANCODE_1));
-    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
+    s_editKind = COOP_EDIT_NONE;
+    if (s_editStartedText)
     {
-        char base = (char)('a' + (sc - SDL_SCANCODE_A));
-        return shift ? (char)(base - 32) : base;
+        SDL_StopTextInput();
+        s_editStartedText = 0;
     }
-    switch (sc)
+}
+
+/* Whether `c` may be typed into the current field. */
+static int Coop_EditAccepts(char c)
+{
+    if ((unsigned char)c < 32 || (unsigned char)c > 126) return 0;
+    switch (s_editKind)
     {
-    case SDL_SCANCODE_0:      return '0';
-    case SDL_SCANCODE_PERIOD: return '.';
-    case SDL_SCANCODE_SEMICOLON: return shift ? ':' : ';'; /* ':' for host:port */
-    case SDL_SCANCODE_MINUS:  return '-';
-    default:                  return '\0';
+    case COOP_EDIT_CODE:   return c >= '0' && c <= '9';
+    case COOP_EDIT_IP:
+    case COOP_EDIT_SERVER: return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                  c == '.' || c == ':' || c == '-' || c == '/' || c == '_';
+    case COOP_EDIT_NAME:   return s_editLen < SHNET_NAME_MAX - 1;
+    default:               return 0;
     }
 }
 
@@ -198,59 +302,73 @@ static void Coop_CommitEdit(void)
             s_sel  = 0;
         }
     }
-    s_editKind = COOP_EDIT_NONE;
+    else if (s_editKind == COOP_EDIT_SERVER)
+    {
+        SDL_strlcpy(g_PcConfig.onlineServer, s_editLen > 0 ? s_editBuf : COOP_DEFAULT_SERVER,
+                    sizeof(g_PcConfig.onlineServer));
+        PcConfig_SaveKeyValue("online_server", g_PcConfig.onlineServer);
+        ShNet_ApplySettings();
+    }
+    else if (s_editKind == COOP_EDIT_NAME && s_editLen > 0)
+    {
+        SDL_strlcpy(g_PcConfig.onlineName, s_editBuf, sizeof(g_PcConfig.onlineName));
+        PcConfig_SaveKeyValue("online_name", g_PcConfig.onlineName);
+        ShNet_ApplySettings();
+    }
+    Coop_EndEdit();
 }
 
 void Pc_CoopMenu_FeedKeys(const unsigned char* ks)
 {
-    int sc;
-    int shift;
+    char typed[64];
+    int  n, back, enter, esc, i;
 
-    if (s_editKind == COOP_EDIT_NONE || !ks)
+    (void)ks;
+    if (s_editKind == COOP_EDIT_NONE)
     {
         return;
     }
-    if (!s_editHaveKeys) /* seed from live so the opening key is not typed */
+    if (!s_editHaveKeys) /* the press that opened the field is not typed */
     {
-        memcpy(s_editPrev, ks, SDL_NUM_SCANCODES);
+        SDL_AtomicLock(&s_typedLock);
+        s_typedLen = s_typedBack = s_typedEnter = s_typedEsc = 0;
+        SDL_AtomicUnlock(&s_typedLock);
         s_editHaveKeys = 1;
         return;
     }
 
-    if (ks[SDL_SCANCODE_ESCAPE] && !s_editPrev[SDL_SCANCODE_ESCAPE])
+    SDL_AtomicLock(&s_typedLock);
+    n = s_typedLen;
+    memcpy(typed, s_typed, (size_t)n);
+    back  = s_typedBack;
+    enter = s_typedEnter;
+    esc   = s_typedEsc;
+    s_typedLen = s_typedBack = s_typedEnter = s_typedEsc = 0;
+    SDL_AtomicUnlock(&s_typedLock);
+
+    if (esc)
     {
-        s_editKind = COOP_EDIT_NONE;
-        goto done;
+        Coop_EndEdit();
+        return;
     }
-    if ((ks[SDL_SCANCODE_RETURN]    && !s_editPrev[SDL_SCANCODE_RETURN]) ||
-        (ks[SDL_SCANCODE_KP_ENTER]  && !s_editPrev[SDL_SCANCODE_KP_ENTER]))
-    {
-        Coop_CommitEdit();
-        goto done;
-    }
-    if (ks[SDL_SCANCODE_BACKSPACE] && !s_editPrev[SDL_SCANCODE_BACKSPACE] && s_editLen > 0)
+    while (back-- > 0 && s_editLen > 0)
     {
         s_editBuf[--s_editLen] = '\0';
     }
-
-    shift = ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT];
-    for (sc = 0; sc < SDL_NUM_SCANCODES; sc++)
+    for (i = 0; i < n; i++)
     {
-        if (ks[sc] && !s_editPrev[sc])
+        if (Coop_EditAccepts(typed[i]) && s_editLen < (int)sizeof(s_editBuf) - 1)
         {
-            char c = Coop_Glyph(sc, shift);
-            /* The code field is digits only. */
-            if (s_editKind == COOP_EDIT_CODE && (c < '0' || c > '9')) c = '\0';
-            if (c && s_editLen < (int)sizeof(s_editBuf) - 1)
-            {
-                s_editBuf[s_editLen++] = c;
-                s_editBuf[s_editLen]   = '\0';
-            }
+            s_editBuf[s_editLen++] = typed[i];
+            s_editBuf[s_editLen]   = '\0';
         }
     }
-
-done:
-    memcpy(s_editPrev, ks, SDL_NUM_SCANCODES);
+    /* A tap commits too: a phone keyboard's Done key does not always send
+     * Enter, and there is no other way to say "finished". */
+    if (enter || Pc_MouseCursor_LeftClicked())
+    {
+        Coop_CommitEdit();
+    }
 }
 
 /* Host-setup save picker: the co-op saves on disk and which one to start from
@@ -511,7 +629,8 @@ int Pc_CoopMenu_RowCount(void)
 {
     switch (s_page)
     {
-    case COOP_PAGE_ROOT:       return 4; /* Host, Join, Split Screen, Back */
+    case COOP_PAGE_ROOT:       { int r[5]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Back */
+    case COOP_PAGE_SETTINGS:   return 5; /* Living World IP, Living World, Name, Restart Connection, Back */
     case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
@@ -533,6 +652,7 @@ int Pc_CoopMenu_View(void)
     case COOP_PAGE_SPLIT:      return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_SPLIT_ONLINE: return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_SETTINGS:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
     default:                   return PC_COOP_VIEW_MENU;
@@ -562,6 +682,7 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_INGAME:     return "MULTIPLAYER";
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
     case COOP_PAGE_PLAYER:     return s_playerName;
+    case COOP_PAGE_SETTINGS:   return "MULTIPLAYER SETTINGS";
     default:                   return "MULTIPLAYER";
     }
 }
@@ -576,10 +697,22 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
     switch (s_page)
     {
     case COOP_PAGE_ROOT:
-        if (i == 0) snprintf(out, cap, "Host Game");
-        else if (i == 1) snprintf(out, cap, "Join Game");
-        else if (i == 2) snprintf(out, cap, "Split Screen");
-        else snprintf(out, cap, "Back");
+        switch (Coop_RootRow(i))
+        {
+        case COOP_ROOT_HOST:     snprintf(out, cap, "Host Game"); break;
+        case COOP_ROOT_JOIN:     snprintf(out, cap, "Join Game"); break;
+        case COOP_ROOT_SPLIT:    snprintf(out, cap, "Split Screen"); break;
+        case COOP_ROOT_SETTINGS: snprintf(out, cap, "Multiplayer Settings"); break;
+        default:                 snprintf(out, cap, "Back"); break;
+        }
+        break;
+
+    case COOP_PAGE_SETTINGS:
+        if (i == 0)      snprintf(out, cap, "Living World IP:  %s", g_PcConfig.onlineServer[0] ? g_PcConfig.onlineServer : COOP_DEFAULT_SERVER);
+        else if (i == 1) snprintf(out, cap, "Living World:  %s", g_PcConfig.onlineEnabled ? "On" : "Off");
+        else if (i == 2) snprintf(out, cap, "Name:  %s", ShNet_LocalName());
+        else if (i == 3) snprintf(out, cap, "Restart Connection");
+        else             snprintf(out, cap, "Back");
         break;
 
     case COOP_PAGE_HOST_SETUP:
@@ -762,13 +895,28 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         snprintf(out, cap, "Room code:  %s_   [Enter join, Esc cancel]", s_editBuf);
         return;
     }
+    if (s_editKind == COOP_EDIT_SERVER)
+    {
+        snprintf(out, cap, "Living World IP:  %s_   [Enter or tap to save]", s_editBuf);
+        return;
+    }
+    if (s_editKind == COOP_EDIT_NAME)
+    {
+        snprintf(out, cap, "Name:  %s_   [Enter or tap to save]", s_editBuf);
+        return;
+    }
     switch (s_page)
     {
     case COOP_PAGE_ROOT:
-        if (!ShSteam_Available())
+        if (!ShSteam_Available() && !COOP_HAS_SETTINGS)
         {
             snprintf(out, cap, "Steam not running - start Steam and relaunch.");
         }
+        break;
+
+    case COOP_PAGE_SETTINGS:
+        if (s_msg[0]) snprintf(out, cap, "%s", s_msg);
+        else          snprintf(out, cap, "%s", g_PcConfig.onlineEnabled ? ShNet_StatusText() : "Living world off.");
         break;
 
 
@@ -894,15 +1042,33 @@ static void Coop_Confirm(void)
     switch (s_page)
     {
     case COOP_PAGE_ROOT:
-        if (s_sel == 0)      { Coop_EnterHostSetup(); }
-        else if (s_sel == 1) { s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); }
-        else if (s_sel == 2) { Coop_EnterSplit(); }
-        else                 { Pc_CoopMenu_Close(); }
+        switch (Coop_RootRow(s_sel))
+        {
+        case COOP_ROOT_HOST:     Coop_EnterHostSetup(); break;
+        case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); break;
+        case COOP_ROOT_SPLIT:    Coop_EnterSplit(); break;
+        case COOP_ROOT_SETTINGS: s_page = COOP_PAGE_SETTINGS; s_sel = 0; s_msg[0] = '\0'; break;
+        default:                 Pc_CoopMenu_Close(); break;
+        }
+        break;
+
+    case COOP_PAGE_SETTINGS:
+        s_msg[0] = '\0';
+        if (s_sel == 0)      { Coop_BeginEdit(COOP_EDIT_SERVER); }
+        else if (s_sel == 1)
+        {
+            g_PcConfig.onlineEnabled = !g_PcConfig.onlineEnabled;
+            PcConfig_SaveKeyValue("online_enabled", g_PcConfig.onlineEnabled ? "1" : "0");
+            ShNet_ApplySettings();
+        }
+        else if (s_sel == 2) { Coop_BeginEdit(COOP_EDIT_NAME); }
+        else if (s_sel == 3) { ShNet_ApplySettings(); snprintf(s_msg, sizeof(s_msg), "Reconnecting..."); }
+        else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
     case COOP_PAGE_HOST_SETUP:
         /* Setting rows cycle on confirm; no left/right needed. */
-        if (s_sel == 0)      { s_hostMode = (s_hostMode + 1) % 3; }
+        if (s_sel == 0)      { if (!COOP_WEB) s_hostMode = (s_hostMode + 1) % 3; }
         else if (s_sel == 1) { s_setMaxPlayers = (s_setMaxPlayers >= 4) ? 2 : s_setMaxPlayers + 1; }
         else if (s_sel == 2) { s_setPublic = !s_setPublic; }
         else if (s_sel == 3) { s_setLiving = !s_setLiving; }
@@ -1084,7 +1250,11 @@ static void Coop_Confirm(void)
             s_page = COOP_PAGE_ROOMS;
             s_sel  = 0;
         }
-        else if (s_sel == 1) { Coop_BeginEdit(COOP_EDIT_IP); }   /* type host[:port] */
+        else if (s_sel == 1) /* type host[:port] */
+        {
+            if (COOP_WEB) snprintf(s_msg, sizeof(s_msg), "In the browser, join a room on the server.");
+            else          Coop_BeginEdit(COOP_EDIT_IP);
+        }
         else if (s_sel == 2) { Coop_BeginEdit(COOP_EDIT_CODE); } /* type a room code */
         else if (s_sel == 3)
         {

@@ -38,6 +38,7 @@ to the machine running it; on a LAN nothing needs forwarding.
 | flag | meaning |
 |---|---|
 | `-p PORT` | listen port (default 27888) |
+| `--ws PORT` | also take browser players over WebSocket on TCP `PORT` (see below) |
 | `-n NAME` | server name players see |
 | `-m TEXT` | message of the day |
 | `-w WORD` | require a password |
@@ -63,6 +64,34 @@ online_name    = Harry
 ```
 
 `net` in the in-game console reports the connection at any time.
+
+### Browser players
+
+A browser cannot send UDP, so the web build sends the same packets over a
+WebSocket instead, and the server needs to be listening for them:
+
+```
+sh_master -n "Fog" --ws 27890
+```
+
+A page served over https can only open secure WebSockets (`wss://`), so put a
+TLS reverse proxy in front of that port. With Caddy, which fetches the
+certificate by itself, the whole Caddyfile is:
+
+```
+server.example.com {
+    reverse_proxy 127.0.0.1:27890
+}
+```
+
+The web build turns the server name into `wss://<server>/`. If your proxy
+sits somewhere else, type the full address as the server instead, for example
+`wss://example.com:8443/sh`. Behind the proxy the server reads each player's
+real address from `X-Forwarded-For`, so the per-address limit still works. It
+only trusts that header when the connection comes from the same machine.
+
+Browser players get the living world and rooms on the server. They can't host
+on their own machine, join by IP, or use Steam.
 
 ---
 
@@ -174,6 +203,13 @@ The self-test drives the server with two synthetic players and checks the
 handshake, the ping, position fan-out with map isolation, roster paging,
 marker placement and read-back, death de-duplication, and that a `STATE`
 carrying somebody else's session from the wrong address is ignored.
+
+To run every check over WebSocket, the way the browser build connects:
+
+```
+sh_master.exe -p 27899 --ws 27900 -d selftest.db -i 100 --max 128
+shnet_selftest.exe --ws 27900 127.0.0.1 27899
+```
 
 To see the generated art without launching anything:
 

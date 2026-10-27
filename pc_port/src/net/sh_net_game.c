@@ -1122,6 +1122,7 @@ void ShNet_GameTick(void)
         s_initDone = 1;
         ShNet_Init();
     }
+    ShNet_Service();
 
     /* Co-op respawn state machine. Before the living-world gate: it belongs to
      * the co-op game, not to the server connection. */
