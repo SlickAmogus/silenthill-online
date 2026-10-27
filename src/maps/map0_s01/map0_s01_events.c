@@ -570,6 +570,27 @@ void MapEvent_AirScreamerIntroCutscene(void) // 0x800DBAA0
     switch (g_SysWork.sysStateSteps[0])
     {
         case 0:
+#ifdef SH_PC_PORT
+            /* MapEvent_MapItemTake spawns the bird into npcs[0] and loads
+             * CAFE2.DMS. In co-op a partner may have taken the map, which
+             * leaves us only its flag: steps 19 and 21 then animate an empty
+             * slot and "BIRD" is looked up in the wrong DMS. */
+            if (airScreamerChara.model.charaId != Chara_AirScreamer)
+            {
+                if ((s8)g_CharaAnimDataIdxs[Chara_AirScreamer] == (s8)0xFF)
+                {
+                    Chara_Load(0, Chara_AirScreamer, &g_SysWork.npcBoneCoordBuffer[0], CHARA_FORCE_FREE_ALL, NULL, NULL);
+                }
+                Fs_QueueStartRead(FILE_ANIM_CAFE2_DMS, FS_BUFFER_11);
+                Chara_ProcessLoads();
+                Dms_HeaderFixOffsets((s_DmsHeader*)FS_BUFFER_11);
+                Chara_Spawn(Chara_AirScreamer, 0, Q12(0.0f), Q12(0.0f), Q12_ANGLE(0.0f), 12);
+                Dms_CharacterTransformGet(&airScreamerChara.position, &airScreamerChara.rotation, "BIRD", 0, FS_BUFFER_11);
+                SysWork_NpcFlagSet(0);
+                g_SysWork.field_228C[0] |= 1 << 0;
+                SH_DBG("[CUTSCENE] Air Screamer intro: spawned our own bird (a partner took the map)");
+            }
+#endif
             Player_ControlFreeze();
             func_8003A16C();
 

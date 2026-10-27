@@ -85,8 +85,8 @@ namespace SilentHillPC_Launcher
             {
                 Text = Loc.T("Realtime updates"),
                 Left = 12, Top = 122, AutoSize = true,
-                Checked = _settings.Realtime && _settings.IsDefaultRepo,
-                Enabled = _settings.IsDefaultRepo,
+                Checked = _settings.UsesRealtime,
+                Enabled = LauncherSettings.RealtimeAvailable && !LauncherSettings.RealtimeOnly && _settings.IsDefaultRepo,
             };
             _chkRealtime.CheckedChanged += async (s, e) => await RealtimeToggledAsync();
             _tips.SetToolTip(_chkRealtime, Loc.T(
@@ -387,7 +387,7 @@ namespace SilentHillPC_Launcher
         {
             string newBranch = SelectedValue(_cmbBranch);
             string newBuild  = string.IsNullOrEmpty(SelectedValue(_cmbBuild)) ? "latest" : SelectedValue(_cmbBuild);
-            bool   realtime  = _chkRealtime.Checked && _settings.IsDefaultRepo;
+            bool   realtime  = (_chkRealtime.Checked || LauncherSettings.RealtimeOnly) && LauncherSettings.RealtimeAvailable && _settings.IsDefaultRepo;
 
             if (realtime || _settings.Realtime)
             {

@@ -68,6 +68,44 @@ void Pc_PlayAs_ApplySkinVisibility(void);
  * warm reset's SysWork_Clear. */
 void Pc_PlayAs_PlayerAnimTick(void);
 
+/* ---- a skin's rig, for drawing OTHER players wearing it (sh_net_ghost.c).
+ *
+ * Everything the local play-as applies to Harry's skeleton when the player
+ * wears a skin, in one record: the skin's own bind translations for the
+ * static bones (posed on Harry's they stretch the neck and limbs), its root
+ * height, its extra bones past Harry's 18 (hair, parasite, sleeves) with
+ * their rest rotation, and the embedded parts to hide (guns, bag, the spare
+ * faces). Loaded off the disc once per skin and kept. */
+#define PC_PLAYAS_RIG_BONES 18
+#define PC_PLAYAS_RIG_EXTRA 5
+typedef struct
+{
+    int                valid;
+    int                charaId;
+    int                bindT[PC_PLAYAS_RIG_BONES][3];
+    unsigned char      bindHas[PC_PLAYAS_RIG_BONES];
+    unsigned char      rootY;        /* rootYOffset for Harry's keyframes on this rig */
+    int                extraCount;
+    int                extraT[PC_PLAYAS_RIG_EXTRA][3];
+    int                extraR[PC_PLAYAS_RIG_EXTRA][9];
+    unsigned char      extraParent[PC_PLAYAS_RIG_EXTRA];
+    const char* const* hideParts;    /* NULL-terminated 8-char part names, or NULL */
+} PcPlayAsRig;
+
+/* Load a roster skin's rig if it is not loaded yet (a synchronous disc read,
+ * like the pool's); call from the game tick, not from a draw. No-op for
+ * Harry and for ids outside the roster. */
+void Pc_PlayAs_RigPrefetch(int charaId);
+/* The loaded rig for a roster skin, NULL for Harry / not a skin / not loaded. */
+const PcPlayAsRig* Pc_PlayAs_RigFor(int charaId);
+/* Harry's own rootYOffset, whatever the LOCAL skin patched into HB_BASE. */
+int Pc_PlayAs_HarryRootY(void);
+/* Hide the rig's embedded parts on a chara model before drawing it as this
+ * skin, and put the model's own visibility back after: the model is the
+ * pool's shared copy and an NPC may be wearing it too. saved[] holds 64 bits. */
+void Pc_PlayAs_RigHideParts(const PcPlayAsRig* rig, void* charaModel /* s_CharaModel* */, unsigned int saved[2]);
+void Pc_PlayAs_RigRestoreParts(void* charaModel /* s_CharaModel* */, const unsigned int saved[2]);
+
 #ifdef __cplusplus
 }
 #endif

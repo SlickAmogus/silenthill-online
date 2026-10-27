@@ -442,7 +442,9 @@ const char* Pc_Cheats_Label(int page, int idx, char* buf, int bufsz)
 void Pc_Cheats_Adjust(int page, int idx, int dir)
 {
     const CheatRow* r = row_at(page, idx, NULL);
+    extern int ShNet_CoopCheatsAllowed(void);
     if (!r) return;
+    if (!ShNet_CoopCheatsAllowed()) { Sd_PlaySfx(Sfx_MenuError, 0, 64); return; }
     switch (r->kind)
     {
         case CH_TOGGLE:
@@ -504,7 +506,9 @@ void Pc_Cheats_Adjust(int page, int idx, int dir)
 void Pc_Cheats_Confirm(int page, int idx)
 {
     const CheatRow* r = row_at(page, idx, NULL);
+    extern int ShNet_CoopCheatsAllowed(void);
     if (!r) return;
+    if (!ShNet_CoopCheatsAllowed()) { Sd_PlaySfx(Sfx_MenuError, 0, 64); return; }
     if (r->kind == CH_SPAWN)
     {
         if (!Pc_SpawnList_Ready(s_spawnIdx))

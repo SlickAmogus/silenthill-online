@@ -87,16 +87,19 @@ typedef enum _MainMenuEntry
     MainMenuEntry_Load     = 0,
     MainMenuEntry_Continue = 1,
     MainMenuEntry_Start    = 2,
-    MainMenuEntry_Option   = 3,
-#ifdef SH_PC_PORT
-    /* PC port: the unused Extra slot becomes Achievements, then the port's Exit
-     * row. Draw order is entry order, so both sit under Option. */
-    MainMenuEntry_Achievements = 4,
-    MainMenuEntry_Exit         = 5,
-    MainMenuEntry_Count        = 6
-#else
-    MainMenuEntry_Extra    = 4, /** @unused The extra options menu may have been accessible via the main menu. */
 
+#ifdef SH_PC_PORT
+    /* PC port: a Multiplayer row (co-op) sits above Option; the unused Extra
+     * slot becomes Achievements, then the port's Exit row. Draw order is entry
+     * order, so this is the order on screen. */
+    MainMenuEntry_Multiplayer  = 3,
+    MainMenuEntry_Option       = 4,
+    MainMenuEntry_Achievements = 5,
+    MainMenuEntry_Exit         = 6,
+    MainMenuEntry_Count        = 7
+#else
+    MainMenuEntry_Option   = 3,
+    MainMenuEntry_Extra    = 4, /** @unused The extra options menu may have been accessible via the main menu. */
     MainMenuEntry_Count    = 5
 #endif
 } e_MainMenuEntry;

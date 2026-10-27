@@ -1,0 +1,1318 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/*
+ * sh_net_ghost.c - other players, and the markers they leave, rendered into
+ * the world.
+ *
+ * Render path is pc_decals.c's, for the same reasons: world-space corners as
+ * Q8 offsets from a Vw_WorldScreenMatrixAtPositionGet matrix, RotTransPers per
+ * corner, prims taken from the GsOUT_PACKET_P arena (the OT0 sanitizer in
+ * game_main.c only accepts prims that live inside that buffer), addPrim into
+ * the world OT at the same SZ>>1 bucket scale the world geometry uses. Going
+ * through the game's own ordering table rather than a GL overlay is what makes
+ * a ghost occlude behind walls and fade into the fog for free.
+ *
+ * THE ART IS GENERATED, not shipped (sh_net_art.c): a ghost is a hollow
+ * humanoid contour and a marker is a ring sigil, both rasterized from a
+ * signed-distance field into a hires-override pool slot. Two reasons: a
+ * texture the port draws itself cannot be missing at runtime the way
+ * gamedata/decal.png can, and a contour IS a distance threshold, which is
+ * what an SDF is already computing. gamedata/ghost.png and gamedata/memo.png
+ * override them when present.
+ *
+ * The billboard is CYLINDRICAL: its horizontal axis is the camera's right
+ * vector read out of the world->screen matrix, its vertical axis is world up.
+ * A fully camera-facing quad would lean with the camera pitch and a standing
+ * figure that leans reads as a bug.
+ */
+
+#include "game.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "bodyprog/collision/collision.h"
+#include "bodyprog/math/math.h"
+#include "bodyprog/bodyprog.h"
+#include "bodyprog/gfx/world.h"
+#include "bodyprog/screen/screen_data.h"
+#include "bodyprog/view/vw_calc.h"
+#include "bodyprog/game_boot/fs_chara_anim.h"
+#include "main/fsqueue.h"
+#include "main/fileinfo.h"
+#include "bodyprog/player.h"
+#include "lang_text.h" /* Pc_LangReadDiscFile: a partner's weapon ANM */
+
+#include "hires_override.h"
+#include "pc_config.h"
+#include "pc_chara_pool.h" /* Pc_CharaPool_HarryGhostModel: clean Harry for remotes */
+#include "pc_item_pool.h"  /* a partner's weapon model */
+#include "pc_playas.h"     /* a partner's skin rig */
+#include "sh_net.h"
+#include "sh_net_art.h"
+#include "sh_net_ui.h"
+#include "sh_net_session.h" /* co-op peers drawn alongside living-world ghosts */
+#include "sh_net_steam.h"   /* ShSteam_SelfId */
+#include "sh_log.h"
+#include "stb_image.h"
+
+/* Pool slots. Above HIRES_POOL_CHARA_SLOT_BASE so HiresOverride_PoolSlotsReset
+ * (which only frees below it) leaves them alone across map loads; below the
+ * minimap's 510/511. Prim clut encoding is the canonical one in
+ * hires_override.h. */
+#define GHOST_SLOT (HIRES_POOL_SLOT_MAX - 3)
+#define MEMO_SLOT  (HIRES_POOL_SLOT_MAX - 4)
+
+#define SHNET_CLUT(slot)                                                        \
+    (u16)((((HIRES_POOL_CLUT_ROW_BASE + ((slot) / 64) * HIRES_POOL_MAX_ROWS)) << 6) | \
+          ((slot) % 64))
+
+#define GHOST_TEX_W SHNET_ART_GHOST_W
+#define GHOST_TEX_H SHNET_ART_GHOST_H
+#define MEMO_TEX_W  SHNET_ART_MEMO_W
+#define MEMO_TEX_H  SHNET_ART_MEMO_H
+
+/* World units. SH1 is metric: pc_decals.c's Q12(0.05f) is documented as ~5cm,
+ * so a 1.80-tall, 0.72-wide quad is a person-sized billboard. */
+#define GHOST_HALF_W Q12(0.36f)
+#define GHOST_HALF_H Q12(0.90f)
+
+/* Floor markers sit a hair above the ground for the same z-fighting reason
+ * decals do, and PSX -Y is up, so "above" is a SUBTRACTION. */
+#define MEMO_HALF    Q12(0.30f)
+#define MEMO_LIFT    Q12(0.03f)
+
+/* Same bucket scale as everything else in OT0. Getting this wrong is the
+ * OT-bucket-scale class in pc_decals.c: a semi-transparent prim in a nearer
+ * bucket still paints last, however transparent it is. */
+#define SHNET_OT_SHIFT 1
+
+/* Hard cap on prims per frame, whatever the server sends. The frame packet
+ * arena is shared with the world and has nothing stopping emission past its
+ * end (see PC_WM_PACKET_BUDGET in bodyprog_80040B74.c), and the counts here
+ * are driven by a REMOTE party: a server bug, or a hostile one, could put
+ * hundreds of markers on one map. Range culling already keeps the normal case
+ * far below this; the cap is what makes the abnormal case a few missing
+ * markers instead of a corrupted arena. */
+#define SHNET_MAX_PRIMS 192
+
+/* A ghost further than this is not drawn. Not an optimization — the point is
+ * that a silhouette visible across the whole map would give away rooms the
+ * player has not reached. Config: online_ghost_range (metres). */
+#define GHOST_RANGE_DEFAULT 40
+
+extern s_WorldEnvWork g_WorldEnvWork;
+extern int            Pc_BloodFogKeep(s32 z);
+extern float          g_PsyX_FogStrength;
+extern void           PsyX_SetNextPrimAlpha(int a);
+
+static int s_ghostTexOk;
+static int s_memoTexOk;
+static int s_texTried;
+
+/* ------------------------------------------------------------------ */
+/* Texture registration                                                */
+/* ------------------------------------------------------------------ */
+
+/* An override PNG replaces the generated art entirely. Returns a malloc'd RGBA
+ * buffer plus its dimensions, or NULL when the file is absent. */
+static unsigned char* ShNetG_LoadOverride(const char* path, int* outW, int* outH)
+{
+    FILE*          f = fopen(path, "rb");
+    long           size;
+    unsigned char* file;
+    unsigned char* rgba;
+    int            comp = 0;
+
+    if (!f)
+    {
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    file = (size > 0) ? (unsigned char*)malloc((size_t)size) : NULL;
+    if (!file || fread(file, 1, (size_t)size, f) != (size_t)size)
+    {
+        fclose(f);
+        free(file);
+        return NULL;
+    }
+    fclose(f);
+
+    rgba = stbi_load_from_memory(file, (int)size, outW, outH, &comp, 4);
+    free(file);
+    return rgba;
+}
+
+/* Deferred to the first draw so a GL context exists, exactly as the decal
+ * texture is. Runs once per session: these slots sit above the chara base, so
+ * HiresOverride_PoolSlotsReset never frees them on a map load. */
+static void ShNetG_EnsureTextures(void)
+{
+    if (s_texTried)
+    {
+        return;
+    }
+    s_texTried = 1;
+
+    {
+        int            w = GHOST_TEX_W, h = GHOST_TEX_H;
+        unsigned char* rgba = ShNetG_LoadOverride("gamedata/ghost.png", &w, &h);
+        int            generated = 0;
+        if (!rgba)
+        {
+            w = GHOST_TEX_W;
+            h = GHOST_TEX_H;
+            rgba = ShNetArt_MakeGhost();
+            generated = 1;
+        }
+        if (rgba)
+        {
+            s_ghostTexOk = (HiresOverride_PoolSlotRegisterRGBA(
+                                GHOST_SLOT, 0, rgba, w, h,
+                                GHOST_TEX_W, GHOST_TEX_H) == 0);
+            if (generated) free(rgba); else stbi_image_free(rgba);
+        }
+        SH_DBG("[NET] ghost texture %s (%dx%d, slot %d, clut 0x%04X)",
+               s_ghostTexOk ? (generated ? "generated" : "from gamedata/ghost.png") : "FAILED",
+               w, h, GHOST_SLOT, (unsigned)SHNET_CLUT(GHOST_SLOT));
+    }
+
+    {
+        int            w = MEMO_TEX_W, h = MEMO_TEX_H;
+        unsigned char* rgba = ShNetG_LoadOverride("gamedata/memo.png", &w, &h);
+        int            generated = 0;
+        if (!rgba)
+        {
+            w = MEMO_TEX_W;
+            h = MEMO_TEX_H;
+            rgba = ShNetArt_MakeMarker();
+            generated = 1;
+        }
+        if (rgba)
+        {
+            s_memoTexOk = (HiresOverride_PoolSlotRegisterRGBA(
+                               MEMO_SLOT, 0, rgba, w, h,
+                               MEMO_TEX_W, MEMO_TEX_H) == 0);
+            if (generated) free(rgba); else stbi_image_free(rgba);
+        }
+        SH_DBG("[NET] marker texture %s (slot %d, clut 0x%04X)",
+               s_memoTexOk ? "ready" : "FAILED", MEMO_SLOT,
+               (unsigned)SHNET_CLUT(MEMO_SLOT));
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Colour                                                              */
+/* ------------------------------------------------------------------ */
+
+/* Desaturated and dim on purpose: a saturated ghost in a Silent Hill corridor
+ * looks like a debug marker. Every entry stays under 160 so the fog still
+ * swallows it at range. */
+static const u8 s_ghostPalette[8][3] = {
+    { 150, 158, 160 }, /* pale grey-cyan */
+    { 160, 142, 116 }, /* amber */
+    { 132, 150, 158 }, /* steel */
+    { 158, 130, 134 }, /* rose */
+    { 136, 156, 132 }, /* moss */
+    { 148, 136, 158 }, /* violet */
+    { 158, 152, 124 }, /* bone */
+    { 124, 146, 156 }  /* slate */
+};
+
+static void ShNetG_GhostColor(unsigned int playerId, u8* r, u8* g, u8* b)
+{
+    unsigned int h = playerId * 2654435761u;
+    const u8*    c = s_ghostPalette[(h >> 28) & 7];
+    *r = c[0];
+    *g = c[1];
+    *b = c[2];
+}
+
+static void ShNetG_MarkerColor(int kind, u8* r, u8* g, u8* b)
+{
+    switch (kind)
+    {
+    case SHNET_MARK_DEATH: *r = 150; *g = 40;  *b = 44;  break;
+    case SHNET_MARK_SAVE:  *r = 96;  *g = 148; *b = 108; break;
+    default:               *r = 158; *g = 142; *b = 96;  break;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Quad emission                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Project one world-space quad and add it to the OT. `centre` is Q19.12 world;
+ * axisU/axisV are Q19.12 HALF extents. Returns the next free packet slot, or
+ * `poly` unchanged when the quad was rejected (behind the camera, off screen,
+ * or fully fogged). */
+static POLY_FT4* ShNetG_EmitQuad(GsOT* ot, POLY_FT4* poly,
+                                 const VECTOR3* centre,
+                                 const VECTOR3* axisU, const VECTOR3* axisV,
+                                 u16 clut, int uMax, int vMax,
+                                 u8 cr, u8 cg, u8 cb, int alphaScale)
+{
+    MATRIX  mat;
+    SVECTOR v;
+    s16     sx[4];
+    s16     sy[4];
+    s32     bucketSum = 0;
+    s32     bucket;
+    int     k;
+    int     keep;
+
+    Vw_WorldScreenMatrixAtPositionGet(&mat, centre->vx, centre->vy, centre->vz);
+    SetRotMatrix(&mat);
+    SetTransMatrix(&mat);
+
+    for (k = 0; k < 4; k++)
+    {
+        /* PSX quad Z-order: 0=TL 1=TR 2=BL 3=BR. */
+        s32  st = (k & 1) ? 1 : -1;
+        s32  sb = (k & 2) ? 1 : -1;
+        s32  otz;
+        s32  sxy;
+        long p;
+        long flag;
+
+        v.vx  = (s16)Q12_TO_Q8(st * axisU->vx + sb * axisV->vx);
+        v.vy  = (s16)Q12_TO_Q8(st * axisU->vy + sb * axisV->vy);
+        v.vz  = (s16)Q12_TO_Q8(st * axisU->vz + sb * axisV->vz);
+        v.pad = 0;
+
+        otz = RotTransPers(&v, (int*)&sxy, &p, &flag);
+        if (otz <= 8)
+        {
+            return poly;
+        }
+        sx[k] = (s16)(sxy & 0xFFFF);
+        sy[k] = (s16)((u32)sxy >> 16);
+        if (ABS(sx[k]) > 2048 || ABS(sy[k]) > 2048)
+        {
+            return poly;
+        }
+        bucketSum += otz;
+    }
+
+    /* Fog. bucketSum is the sum of four quartered corner OTZs, which IS the
+     * average SZ — the same quantity the blood prims hand to Pc_BloodFogKeep,
+     * and the correction pc_decals.c had to make twice. The keep is scaled by
+     * the shader's fog strength because that is what the scene actually looks
+     * like, not what the unscaled ramp says. */
+    {
+        int fade = 256 - Pc_BloodFogKeep(bucketSum);
+        fade = (int)(fade * (g_PsyX_FogStrength > 0.0f ? g_PsyX_FogStrength : 1.0f));
+        if (fade > 256) fade = 256;
+        keep = 256 - fade;
+        keep = (keep * alphaScale) >> 8;
+        if (keep < 24)
+        {
+            return poly;
+        }
+        if (keep > 255) keep = 255;
+    }
+
+    bucket = (bucketSum >> 2) >> SHNET_OT_SHIFT;
+    bucket -= 1; /* one bucket nearer than the surface, as the decals do */
+    if (bucket < 1)
+    {
+        bucket = 1;
+    }
+    if (bucket >= ORDERING_TABLE_SIZE)
+    {
+        bucket = ORDERING_TABLE_SIZE - 1;
+    }
+
+    setPolyFT4(poly);
+    setSemiTrans(poly, true);
+    PsyX_SetNextPrimAlpha(keep);
+    setRGB0(poly, cr, cg, cb);
+
+    /* tpage is irrelevant: the bit-15 clut alone keys the GL override's
+     * pool-slot fast path, and page bits never sample VRAM. */
+    poly->tpage = 0;
+    poly->clut  = clut;
+    poly->u0 = 0;            poly->v0 = 0;
+    poly->u1 = (u8)uMax;     poly->v1 = 0;
+    poly->u2 = 0;            poly->v2 = (u8)vMax;
+    poly->u3 = (u8)uMax;     poly->v3 = (u8)vMax;
+    setXY4(poly, sx[0], sy[0], sx[1], sy[1], sx[2], sy[2], sx[3], sy[3]);
+
+    addPrim(&ot->org[bucket], poly);
+    return poly + 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Draw                                                                */
+/* ------------------------------------------------------------------ */
+
+static s32 ShNetG_RangeQ12(void)
+{
+    int m = g_PcConfig.onlineGhostRange > 0 ? g_PcConfig.onlineGhostRange
+                                            : GHOST_RANGE_DEFAULT;
+    if (m > 400) m = 400;
+    return (s32)m << 12;
+}
+
+/* Players (not markers) when the fog is thinned outdoors: the street stays
+ * visible far past online_ghost_range, and a partner vanishing mid-street in
+ * plain view reads as a bug, not as fog. 240 stays inside the far band's
+ * depth-tested range (past 256 every far poly shares one GL depth), so a
+ * distant body still hides behind the buildings in front of it. */
+#define GHOST_RANGE_LONG_VIEW 240
+
+static s32 ShNetG_PlayerRangeQ12(void)
+{
+    s32 r = ShNetG_RangeQ12();
+    if (Pc_LongViewActive() && r < ((s32)GHOST_RANGE_LONG_VIEW << 12))
+    {
+        r = (s32)GHOST_RANGE_LONG_VIEW << 12;
+    }
+    return r;
+}
+
+/* Floor ring under a ghost, in the marker texture. Drawn for the FOOTPRINT and
+ * BOTH styles: the contour alone disappears behind a doorframe, and knowing
+ * exactly where another player is standing is most of the appeal. */
+static POLY_FT4* ShNetG_EmitFootprint(GsOT* ot, POLY_FT4* poly,
+                                      int gx, int gy, int gz,
+                                      u8 cr, u8 cg, u8 cb)
+{
+    VECTOR3            centre;
+    VECTOR3            axisU;
+    VECTOR3            axisV;
+    s_CollisionSurface surf;
+
+    Collision_SurfaceGet(&surf, gx, gz);
+    centre.vx = gx;
+    centre.vy = surf.groundHeight - MEMO_LIFT;
+    centre.vz = gz;
+    if (ABS(centre.vy - gy) > Q12(2.5f))
+    {
+        centre.vy = gy - MEMO_LIFT;
+    }
+
+    axisU.vx = MEMO_HALF;
+    axisU.vy = 0;
+    axisU.vz = 0;
+    axisV.vx = 0;
+    axisV.vy = 0;
+    axisV.vz = MEMO_HALF;
+
+    return ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
+                           SHNET_CLUT(MEMO_SLOT),
+                           MEMO_TEX_W - 1, MEMO_TEX_H - 1, cr, cg, cb, 190);
+}
+
+#define GHOST_BONE_MAX 64
+#define SHNET_MAX_MODELS 16
+
+/* Set only while drawing a LIVING-WORLD ghost's body: the character prim builder
+ * (bodyprog_80055028.c) ORs in the semi-transparent bit, and PsyCross blends the
+ * whole body -> a translucent presence. Co-op partners leave it 0 (solid). */
+int g_PcCharaTranslucent = 0;
+
+/* How to pose one remote body. Living-world ghosts carry a single keyframe
+ * (both halves equal); co-op partners carry both halves and their weapon. */
+typedef struct
+{
+    int lowKf0, lowKf1, lowAlpha;
+    int upKf0, upKf1, upAlpha;
+    int weaponAnm;  /* EquippedWeaponId whose HB_WEP*.ANM fills kf 5xx+, 0xFF unknown */
+    int heldItem;   /* InvItemId in the right hand, 0xFF none */
+    int handBone;   /* MODEL_BONE grip, 0 = leave the meshes alone */
+} ShNetGPose;
+
+static int ShNetG_WeaponAnmFile(int weapon)
+{
+    switch (weapon)
+    {
+        case EquippedWeaponId_KitchenKnife: return FILE_ANIM_HB_WEP3_ANM;
+        case EquippedWeaponId_Axe:          return FILE_ANIM_HB_WEP1_ANM;
+        case EquippedWeaponId_SteelPipe:
+        case EquippedWeaponId_Hammer:       return FILE_ANIM_HB_WEP2_ANM;
+        case EquippedWeaponId_Chainsaw:     return FILE_ANIM_HB_WEP6_ANM;
+        case EquippedWeaponId_RockDrill:    return FILE_ANIM_HB_WEP8_ANM;
+        case EquippedWeaponId_Katana:       return FILE_ANIM_HB_WEP9_ANM;
+        case EquippedWeaponId_Handgun:      return FILE_ANIM_HB_WEP4_ANM;
+        case EquippedWeaponId_HuntingRifle: return FILE_ANIM_HB_WEP51_ANM;
+        case EquippedWeaponId_Shotgun:      return FILE_ANIM_HB_WEP52_ANM;
+        case EquippedWeaponId_HyperBlaster: return FILE_ANIM_HB_WEP53_ANM;
+        default:                            return -1;
+    }
+}
+
+/* Harry's weapon keyframes are not in HB_BASE: GameFs_PlayerWeaponAnimLoad
+ * reads the equipped weapon's ANM to FS_BUFFER_12, straight after the base
+ * keyframes, so kf 568+ index into whatever weapon the LOCAL player holds.
+ * A partner holding something else needs their own file, kept here. */
+static struct { int tried; const u8* data; int size; } s_wepAnm[64];
+
+static const u8* ShNetG_WeaponAnm(int weapon, int* size)
+{
+    int file;
+    if (weapon < 0 || weapon >= 64)
+    {
+        return NULL;
+    }
+    file = ShNetG_WeaponAnmFile(weapon);
+    if (file < 0)
+    {
+        return NULL;
+    }
+    if (weapon == g_Player_LastWeaponSelected)
+    {
+        *size = (int)g_FileTable[file].blockCount << 8;
+        return (const u8*)FS_BUFFER_12;
+    }
+    if (!s_wepAnm[weapon].tried)
+    {
+        s_wepAnm[weapon].tried = 1;
+        s_wepAnm[weapon].size  = (int)g_FileTable[file].blockCount << 8;
+        s_wepAnm[weapon].data  = Pc_LangReadDiscFile(g_FileTable[file].startSector,
+                                                     (unsigned int)s_wepAnm[weapon].size);
+        SH_DBG("[NET] partner weapon anims %d: %s (%d bytes)", weapon,
+               s_wepAnm[weapon].data ? "loaded" : "unavailable", s_wepAnm[weapon].size);
+    }
+    *size = s_wepAnm[weapon].size;
+    return s_wepAnm[weapon].data;
+}
+
+/* One keyframe's bytes. Past the weapon file come the map's own clips
+ * (FS_BUFFER_4), which a partner on this map shares with us. */
+static const u8* ShNetG_HarryKeyframe(const s_AnmHeader* anm, int kf, int weapon)
+{
+    const u8* data = (const u8*)anm + anm->dataOffset;
+    int       kfSize = anm->keyframeDataSize;
+    int       wepSize = 0;
+    const u8* wep;
+
+    if (kf < 0)
+    {
+        kf = 0;
+    }
+    wep = ShNetG_WeaponAnm(weapon, &wepSize);
+    if (wep != NULL)
+    {
+        long off = (long)kf * kfSize - (long)((const u8*)FS_BUFFER_12 - data);
+        if (off >= 0 && off + kfSize <= wepSize)
+        {
+            return wep + off;
+        }
+    }
+    if (data + (long)(kf + 1) * kfSize > (const u8*)FS_BUFFER_11)
+    {
+        kf = (anm->keyframeCount > 0) ? (int)anm->keyframeCount - 1 : 0;
+    }
+    return data + (long)kf * kfSize;
+}
+
+/* Poses `bones` (a bone mask) from a keyframe pair through a private copy of
+ * the header with exactly those two keyframes after it, so the two can come
+ * from different files and the shared header's activeBones is never touched. */
+static int ShNetG_PoseBones(const s_AnmHeader* anm, GsCOORDINATE2* coords, u32 bones,
+                            int kf0, int kf1, int alpha, int weapon, int rootY)
+{
+    static union { u32 align; u8 b[8192]; } s_hdr;
+    int          hdrSize = anm->dataOffset;
+    int          kfSize  = anm->keyframeDataSize;
+    s_AnmHeader* h       = (s_AnmHeader*)s_hdr.b;
+
+    if (kfSize <= 0 || hdrSize < (int)sizeof(s_AnmHeader) || hdrSize + 2 * kfSize > (int)sizeof(s_hdr.b))
+    {
+        return 0;
+    }
+    memcpy(s_hdr.b, anm, (size_t)hdrSize);
+    memcpy(s_hdr.b + hdrSize, ShNetG_HarryKeyframe(anm, kf0, weapon), (size_t)kfSize);
+    memcpy(s_hdr.b + hdrSize + kfSize, ShNetG_HarryKeyframe(anm, kf1, weapon), (size_t)kfSize);
+    h->activeBones   = bones;
+    h->keyframeCount = 2;
+    /* The shared header carries whatever the LOCAL skin patched in; the
+     * partner's body stands on its own rig's root height. */
+    h->rootYOffset   = (u8)rootY;
+    Anim_BoneUpdate(h, coords, 0, 1, alpha);
+    return 1;
+}
+
+/* A partner wearing a skin: the skin's own joint spacing on the bones Harry's
+ * keyframes leave static, and its extra bones seated as rigid children, the
+ * way pc_playas.c does for the local player. */
+static void ShNetG_ApplyRig(const PcPlayAsRig* rig, GsCOORDINATE2* coords)
+{
+    int i, r, c;
+
+    for (i = 1; i < PC_PLAYAS_RIG_BONES; i++)
+    {
+        if (rig->bindHas[i])
+        {
+            coords[i].coord.t[0] = rig->bindT[i][0];
+            coords[i].coord.t[1] = rig->bindT[i][1];
+            coords[i].coord.t[2] = rig->bindT[i][2];
+        }
+    }
+    for (i = 0; i < rig->extraCount && PC_PLAYAS_RIG_BONES + i < GHOST_BONE_MAX; i++)
+    {
+        GsCOORDINATE2* co     = &coords[PC_PLAYAS_RIG_BONES + i];
+        int            parent = rig->extraParent[i];
+
+        memset(co, 0, sizeof(*co));
+        for (r = 0; r < 3; r++)
+        {
+            for (c = 0; c < 3; c++)
+            {
+                co->coord.m[r][c] = (s16)rig->extraR[i][r * 3 + c];
+            }
+        }
+        co->coord.t[0] = rig->extraT[i][0];
+        co->coord.t[1] = rig->extraT[i][1];
+        co->coord.t[2] = rig->extraT[i][2];
+        co->super      = (parent >= 0 && parent < GHOST_BONE_MAX) ? &coords[parent] : &coords[0];
+        co->flg        = 0;
+    }
+}
+
+/* Draws the local player's loaded held-item model in a partner's right hand
+ * when they hold the same item: only one item model is ever resident. */
+static void ShNetG_DrawHeldItem(GsCOORDINATE2* hand, int itemId)
+{
+    s_HeldItem* heldItem = &g_WorldGfxWork.heldItem;
+    MATRIX      viewMat;
+    MATRIX      worldMat;
+
+    if (itemId == 0xFF || itemId == InvItemId_CutscenePhone)
+    {
+        return;
+    }
+    /* Our own loaded model when we hold the same thing; otherwise the
+     * partner-weapon pool's copy (pc_item_pool.c), which the game tick
+     * loads the moment a partner is seen holding it. */
+    if (!(heldItem->itemId == itemId && heldItem->lmHdr != NULL &&
+          Fs_QueueIsEntryLoaded(heldItem->queueIdx) && heldItem->lmHdr->isLoaded))
+    {
+        heldItem = Pc_ItemPool_Get(itemId);
+        if (heldItem == NULL)
+        {
+            return;
+        }
+    }
+    Vw_CoordToWorldAndViewMatrices(hand, &worldMat, &viewMat);
+    func_80057090(&heldItem->bone.modelInfo, &g_OrderingTable0[g_ActiveBufferIdx], 1, &viewMat, &worldMat, 0);
+}
+
+static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, const ShNetGPose* pose)
+{
+    static GsCOORDINATE2 s_coords[GHOST_BONE_MAX];
+    s_CharaModel*      cm;
+    s_AnmHeader*       anm;
+    SVECTOR            rot;
+    s16                ret;
+    const PcPlayAsRig* rig = NULL;
+    unsigned int       savedVis[2];
+    int                rootY;
+
+    /* Resolve the MODEL. A non-Harry skin comes from the global chara pool
+     * (registeredCharaModels[id], independent of the LOCAL play-as). Harry --
+     * and any id that is not resident -- comes from the pool's CLEAN hero copy,
+     * NOT registeredCharaModels[Harry], which is the local player's play-as skin
+     * (drawing a remote from it mirrored the local skin onto everyone). */
+    cm = (charaId > 0 && charaId < Chara_Count && charaId != Chara_Harry) ? Pc_CharaPool_ModelFor(charaId) : NULL;
+    if (cm == NULL)
+    {
+        charaId = Chara_Harry;
+        cm = Pc_CharaPool_HarryGhostModel();
+        if (cm == NULL || cm->skeleton.bones_4 == NULL)
+        {
+            /* Pool not up (global_chara_pool off, or load pending): last resort
+             * is the local Harry slot, even if play-as has dirtied it. */
+            cm = g_WorldGfxWork.registeredCharaModels[Chara_Harry];
+        }
+    }
+    if (cm == NULL || cm->skeleton.bones_4 == NULL)
+    {
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost body->outline: chara %d model not resident", charaId); } }
+        return 0;
+    }
+
+    /* Pose EVERY remote from Harry's base anim (FS_BUFFER_0). Play-as never
+     * changes animFileIdx -- all skins animate on Harry's bank -- so the
+     * keyframe index the remote sends is always a Harry-bank index. Posing a
+     * skin's OWN (cutscene) anim with it produced the garbled "crazy" motion. */
+    anm = (s_AnmHeader*)FS_BUFFER_0;
+    if (anm == NULL || anm->boneCount <= 0 || anm->boneCount > GHOST_BONE_MAX)
+    {
+        { static int once = 0; if (!once) { once = 1;
+            SH_DBG("[NET] ghost body->outline: HB_BASE anm invalid (boneCount=%d)",
+                   anm ? (int)anm->boneCount : -1); } }
+        return 0;
+    }
+
+    /* Pose the skeleton to its resting keyframe, then plant the root at the
+     * ghost's world position and heading. Both operations mirror the spawned-
+     * actor path exactly. */
+    /* Two halves, as Player_AnimUpdate poses the local Harry. The old single
+     * pass clamped to HB_BASE's keyframeCount, which froze every weapon clip
+     * (kf 568+) on the last base keyframe. */
+    if (charaId != Chara_Harry)
+    {
+        rig = Pc_PlayAs_RigFor(charaId);
+    }
+    rootY = rig ? rig->rootY : Pc_PlayAs_HarryRootY();
+    Anim_BoneInit(anm, s_coords);
+    if (!ShNetG_PoseBones(anm, s_coords, ~(u32)HARRY_UPPER_BODY_BONE_MASK,
+                          pose->lowKf0, pose->lowKf1, pose->lowAlpha, pose->weaponAnm, rootY) ||
+        !ShNetG_PoseBones(anm, s_coords, ~(u32)HARRY_LOWER_BODY_BONE_MASK,
+                          pose->upKf0, pose->upKf1, pose->upAlpha, pose->weaponAnm, rootY))
+    {
+        return 0;
+    }
+    if (rig != NULL)
+    {
+        ShNetG_ApplyRig(rig, s_coords);
+    }
+
+    rot.vx = 0;
+    rot.vy = grot;
+    rot.vz = 0;
+    rot.pad = 0;
+    Math_RotMatrixZxyNegGte(&rot, &s_coords[0].coord);
+    s_coords[0].coord.t[0] = Q12_TO_Q8(gx);
+    s_coords[0].coord.t[1] = Q12_TO_Q8(gy);
+    s_coords[0].coord.t[2] = Q12_TO_Q8(gz);
+    s_coords[0].flg = 0;
+
+    /* One-shot per session: confirms the experimental model path took effect
+     * for whoever is testing it. */
+    { static int s_once = 0; if (!s_once) { s_once = 1;
+        SH_DBG("[NET] modeled ghosts active (chara %d, %d bones)", charaId, (int)anm->boneCount); } }
+    /* The grip meshes are hero part indices: only the hero copy takes them,
+     * and every partner sets its own since they share that one skeleton. */
+    if (charaId == Chara_Harry && pose->handBone != 0)
+    {
+        func_8003DE60(&cm->skeleton, pose->handBone);
+    }
+    /* A skin's embedded props and spare faces, off for the draw and back
+     * after: the model is the pool's, and an NPC may be wearing it too. */
+    if (charaId != Chara_Harry)
+    {
+        Pc_PlayAs_RigHideParts(rig, cm, savedVis);
+    }
+    ret = (s16)func_8003DD74((e_CharaId)charaId, 0);
+    func_80045534(&cm->skeleton, &g_OrderingTable0[g_ActiveBufferIdx], 1,
+                  s_coords, Q8_TO_Q12(CHARA_FILE_INFOS[charaId].field_6),
+                  (u16)ret, CHARA_FILE_INFOS[charaId].field_8);
+    if (charaId != Chara_Harry)
+    {
+        Pc_PlayAs_RigRestoreParts(cm, savedVis);
+    }
+    ShNetG_DrawHeldItem(&s_coords[HarryBone_RightHand], pose->heldItem);
+    return 1;
+}
+
+/* Pool slots for baked name textures. Above the chara base so a map load's
+ * PoolSlotsReset leaves them alone; below the minimap's 510/511 and the ghost/
+ * marker 509/508. */
+#define NAMEPLATE_SLOT0 496
+#define NAMEPLATE_SLOTS 8
+#define NAMEPLATE_PX    26
+
+static struct { char name[SHNET_NAME_MAX]; int w, h; int used; } s_np[NAMEPLATE_SLOTS];
+static int s_npNext;
+
+/* Slot index (0..NAMEPLATE_SLOTS-1) holding `name`, baking + registering it if
+ * new. Round-robin eviction: with <= 8 names on screen nothing is evicted. */
+static int ShNetG_NameplateSlot(const char* name)
+{
+    int i;
+    if (!name || !name[0])
+    {
+        return -1;
+    }
+    for (i = 0; i < NAMEPLATE_SLOTS; i++)
+    {
+        if (s_np[i].used && strcmp(s_np[i].name, name) == 0)
+        {
+            return i;
+        }
+    }
+    {
+        int            idx = s_npNext;
+        int            w = 0, h = 0;
+        unsigned char* rgba = ShNetUi_RasterizeText(name, NAMEPLATE_PX, &w, &h);
+        if (!rgba)
+        {
+            return -1;
+        }
+        if (HiresOverride_PoolSlotRegisterRGBA(NAMEPLATE_SLOT0 + idx, 0, rgba, w, h, w, h) != 0)
+        {
+            free(rgba);
+            return -1;
+        }
+        free(rgba);
+        strncpy(s_np[idx].name, name, SHNET_NAME_MAX - 1);
+        s_np[idx].name[SHNET_NAME_MAX - 1] = '\0';
+        s_np[idx].w    = w;
+        s_np[idx].h    = h;
+        s_np[idx].used = 1;
+        s_npNext = (s_npNext + 1) % NAMEPLATE_SLOTS;
+        return idx;
+    }
+}
+
+static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name,
+                                      int gx, int gy, int gz)
+{
+    int     idx = ShNetG_NameplateSlot(name);
+    VECTOR3 centre;
+    VECTOR3 axisU;
+    VECTOR3 axisV;
+    s32     halfH = Q12(0.16f);
+    s32     halfW;
+
+    if (idx < 0)
+    {
+        return poly;
+    }
+    halfW = (s32)(((long long)halfH * s_np[idx].w) / (s_np[idx].h ? s_np[idx].h : 1));
+
+    /* Just above the head. Feet are at gy, PSX -Y is up, the body is ~1.8m. */
+    centre.vx = gx;
+    centre.vy = gy - Q12(2.05f);
+    centre.vz = gz;
+    axisU.vx = (halfW * GsWSMATRIX.m[0][0]) >> 12;
+    axisU.vy = (halfW * GsWSMATRIX.m[0][1]) >> 12;
+    axisU.vz = (halfW * GsWSMATRIX.m[0][2]) >> 12;
+    axisV.vx = 0;
+    axisV.vy = halfH; /* quad's top corner uses -axisV, so +Y (world down) = upright */
+    axisV.vz = 0;
+
+    return ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
+                           SHNET_CLUT(NAMEPLATE_SLOT0 + idx),
+                           s_np[idx].w - 1, s_np[idx].h - 1, 235, 230, 205, 255);
+}
+
+/* An untextured quad in world space, for the partner health bars. The same
+ * placement and ordering as the textured ghost quads; the pointer advances by
+ * a POLY_FT4 so the caller's bump allocation never changes stride. */
+/* bucketIo: 0 picks the bucket from the quad's own depth and reports it;
+ * non-zero forces that bucket, so two quads in one plane keep their order. */
+static POLY_FT4* ShNetG_EmitFlat(GsOT* ot, POLY_FT4* poly,
+                                 const VECTOR3* centre,
+                                 const VECTOR3* axisU, const VECTOR3* axisV,
+                                 u8 cr, u8 cg, u8 cb, int alpha, int* bucketIo)
+{
+    MATRIX   mat;
+    SVECTOR  v;
+    s16      sx[4], sy[4];
+    s32      bucketSum = 0, bucket;
+    int      k;
+    POLY_F4* f = (POLY_F4*)poly;
+
+    Vw_WorldScreenMatrixAtPositionGet(&mat, centre->vx, centre->vy, centre->vz);
+    SetRotMatrix(&mat);
+    SetTransMatrix(&mat);
+    for (k = 0; k < 4; k++)
+    {
+        s32  st = (k & 1) ? 1 : -1;
+        s32  sb = (k & 2) ? 1 : -1;
+        s32  otz, sxy;
+        long p, flag;
+        v.vx  = (s16)Q12_TO_Q8(st * axisU->vx + sb * axisV->vx);
+        v.vy  = (s16)Q12_TO_Q8(st * axisU->vy + sb * axisV->vy);
+        v.vz  = (s16)Q12_TO_Q8(st * axisU->vz + sb * axisV->vz);
+        v.pad = 0;
+        otz = RotTransPers(&v, (int*)&sxy, &p, &flag);
+        if (otz <= 8) return poly;
+        sx[k] = (s16)(sxy & 0xFFFF);
+        sy[k] = (s16)((u32)sxy >> 16);
+        if (ABS(sx[k]) > 2048 || ABS(sy[k]) > 2048) return poly;
+        bucketSum += otz;
+    }
+    bucket = ((bucketSum >> 2) >> SHNET_OT_SHIFT) - 1;
+    if (bucketIo && *bucketIo > 0) bucket = *bucketIo;
+    if (bucket < 1) bucket = 1;
+    if (bucket >= ORDERING_TABLE_SIZE) bucket = ORDERING_TABLE_SIZE - 1;
+    if (bucketIo) *bucketIo = bucket;
+
+    setPolyF4(f);
+    setSemiTrans(f, true);
+    PsyX_SetNextPrimAlpha(alpha);
+    setRGB0(f, cr, cg, cb);
+    setXY4(f, sx[0], sy[0], sx[1], sy[1], sx[2], sy[2], sx[3], sy[3]);
+    addPrim(&ot->org[bucket], f);
+    return poly + 1;
+}
+
+/* A partner's health, as a thin bar under the nameplate: dark track, a fill
+ * that drains and reddens. */
+static POLY_FT4* ShNetG_DrawHealthBar(GsOT* ot, POLY_FT4* poly, int gx, int gy, int gz, int pct)
+{
+    VECTOR3   centre, axisU, axisV;
+    const s32 halfW = Q12(0.32f), halfH = Q12(0.028f);
+    s32       fillW;
+    int       bucket = 0;
+    u8        r, g;
+
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    centre.vx = gx;
+    centre.vy = gy - Q12(1.86f);
+    centre.vz = gz;
+    axisU.vx = (halfW * GsWSMATRIX.m[0][0]) >> 12;
+    axisU.vy = (halfW * GsWSMATRIX.m[0][1]) >> 12;
+    axisU.vz = (halfW * GsWSMATRIX.m[0][2]) >> 12;
+    axisV.vx = 0; axisV.vy = halfH; axisV.vz = 0;
+    /* Track and fill share a plane. Each picking its own bucket let the
+     * track land in front of the fill on some frames (the bar flickering
+     * dark); the fill takes the next nearer bucket, and sits a little
+     * toward the camera for the depth test. */
+    poly = ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, 16, 16, 24, 190, &bucket);
+    if (pct == 0 || bucket == 0) return poly;
+    bucket = bucket > 1 ? bucket - 1 : 1;
+
+    fillW = (s32)(((long long)halfW * pct) / 100);
+    /* The fill is left-anchored: its centre slides left as it drains. */
+    centre.vx = gx - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][0]) >> 12) - ((Q12(0.03f) * GsWSMATRIX.m[2][0]) >> 12);
+    centre.vy = gy - Q12(1.86f) - ((Q12(0.03f) * GsWSMATRIX.m[2][1]) >> 12);
+    centre.vz = gz - (s32)(((long long)(halfW - fillW) * GsWSMATRIX.m[0][2]) >> 12) - ((Q12(0.03f) * GsWSMATRIX.m[2][2]) >> 12);
+    axisU.vx = (fillW * GsWSMATRIX.m[0][0]) >> 12;
+    axisU.vy = (fillW * GsWSMATRIX.m[0][1]) >> 12;
+    axisU.vz = (fillW * GsWSMATRIX.m[0][2]) >> 12;
+    axisV.vy = halfH - Q12(0.006f);
+    r = (u8)(pct > 50 ? 70 + (100 - pct) * 3 : 220);
+    g = (u8)(pct > 50 ? 200 : 60 + pct * 3);
+    return ShNetG_EmitFlat(ot, poly, &centre, &axisU, &axisV, r, g, 50, 235, &bucket);
+}
+
+/* Each partner's flashlight, for the renderer's extra cones: once a frame,
+ * right after our own light is pushed (bodyprog_80055028.c), on every
+ * flashlight mode, since our own mode says nothing about whether we should
+ * see someone else's light. Off in scripted shots, which light themselves.
+ * The beam leaves the chest and points along the heading, tipped a little
+ * down, as the game's own flashlight does when Harry is not aiming. In a
+ * room the game lights itself (the fog town) the local flashlight is only
+ * the PSX glow, so a partner's beam is dimmed to sit beside it. */
+#define SHNET_PL_LIT_ROOM_GAIN 0.35f
+
+void ShNet_PartnerLightsUpdate(int allowed, int roomDark)
+{
+    extern int   g_PsyX_PartnerLightCount;
+    extern float g_PsyX_PartnerLightPos[];
+    extern float g_PsyX_PartnerLightDir[];
+    extern float g_PsyX_PartnerLightColor[];
+    extern float g_PsyX_FlashlightIntensity;
+    extern int   g_PcCoopGame;
+    const int    lightsMax = 4;
+    const float  gain      = g_PsyX_FlashlightIntensity * (roomDark ? 1.0f : SHNET_PL_LIT_ROOM_GAIN);
+    int          n = 0, i, mc, myMap;
+
+    g_PsyX_PartnerLightColor[0] = 1.00f * gain;
+    g_PsyX_PartnerLightColor[1] = 0.95f * gain;
+    g_PsyX_PartnerLightColor[2] = 0.85f * gain;
+
+    if (allowed && g_PcCoopGame && ShSession_Active() && g_GameWork.gameState == GameState_InGame && g_SavegamePtr)
+    {
+        myMap = (int)g_SavegamePtr->mapIdx;
+        mc    = ShSession_MemberCount();
+        for (i = 0; i < mc && n < lightsMax; i++)
+        {
+            const ShSessionMember* m = ShSession_Member(i);
+            ShSessionPoseNow       pn;
+            s32                    lx, ly, lz, fx, fy, fz;
+
+            if (!m || m->poseMs == 0 || m->mapIdx != myMap) continue;
+            if ((m->flags & (SHNET_PF_FLASHLIGHT | SHNET_PF_ALIVE)) != (SHNET_PF_FLASHLIGHT | SHNET_PF_ALIVE)) continue;
+            if (!ShSession_MemberPoseNow(i, &pn)) continue;
+
+            fx = Math_Sin(pn.rotY);
+            fz = Math_Cos(pn.rotY);
+            fy = Q12(0.35f);
+            lx = Q12_TO_Q8(pn.x + ((fx * Q12(0.2f)) >> 12));
+            ly = Q12_TO_Q8(pn.y - Q12(1.1f));
+            lz = Q12_TO_Q8(pn.z + ((fz * Q12(0.2f)) >> 12));
+
+            g_PsyX_PartnerLightPos[n * 3 + 0] = (float)((s32)(((s64)GsWSMATRIX.m[0][0] * lx + (s64)GsWSMATRIX.m[0][1] * ly + (s64)GsWSMATRIX.m[0][2] * lz) >> 12) + GsWSMATRIX.t[0]);
+            g_PsyX_PartnerLightPos[n * 3 + 1] = (float)((s32)(((s64)GsWSMATRIX.m[1][0] * lx + (s64)GsWSMATRIX.m[1][1] * ly + (s64)GsWSMATRIX.m[1][2] * lz) >> 12) + GsWSMATRIX.t[1]);
+            g_PsyX_PartnerLightPos[n * 3 + 2] = (float)((s32)(((s64)GsWSMATRIX.m[2][0] * lx + (s64)GsWSMATRIX.m[2][1] * ly + (s64)GsWSMATRIX.m[2][2] * lz) >> 12) + GsWSMATRIX.t[2]);
+            g_PsyX_PartnerLightDir[n * 3 + 0] = (float)(s32)(((s64)GsWSMATRIX.m[0][0] * fx + (s64)GsWSMATRIX.m[0][1] * fy + (s64)GsWSMATRIX.m[0][2] * fz) >> 12);
+            g_PsyX_PartnerLightDir[n * 3 + 1] = (float)(s32)(((s64)GsWSMATRIX.m[1][0] * fx + (s64)GsWSMATRIX.m[1][1] * fy + (s64)GsWSMATRIX.m[1][2] * fz) >> 12);
+            g_PsyX_PartnerLightDir[n * 3 + 2] = (float)(s32)(((s64)GsWSMATRIX.m[2][0] * fx + (s64)GsWSMATRIX.m[2][1] * fy + (s64)GsWSMATRIX.m[2][2] * fz) >> 12);
+            n++;
+        }
+    }
+    g_PsyX_PartnerLightCount = n;
+}
+
+void ShNet_DrawWorld(GsOT* ot)
+{
+    POLY_FT4*    poly;
+    POLY_FT4*    primBase;
+    int          modelsDrawn;
+    int          namesDrawn;
+    int          i;
+    int          count;
+    const int    style = g_PcConfig.onlineGhostStyle;
+    s32          range;
+    const s32    markRange = ShNetG_RangeQ12();
+    const VECTOR3* self = &g_SysWork.playerWork.player.position;
+
+    /* Two sources of other players: the living world (master server ghosts) and
+     * a co-op Steam session (peers). Draw if either is live. */
+    {
+        extern int g_PcCoopGame;
+        int livingWorld = g_PcConfig.onlineEnabled && ShNet_Status() == SHNET_ST_CONNECTED;
+        int coop        = g_PcCoopGame && ShSession_Active();
+        if (!livingWorld && !coop)
+        {
+            return;
+        }
+    }
+    if (g_GameWork.gameState != GameState_InGame)
+    {
+        return;
+    }
+
+    ShNetG_EnsureTextures();
+    if (!s_ghostTexOk && !s_memoTexOk)
+    {
+        return;
+    }
+
+    poly     = (POLY_FT4*)GsOUT_PACKET_P;
+    primBase = poly;
+    range    = ShNetG_PlayerRangeQ12();
+    modelsDrawn = 0;
+    namesDrawn  = 0;
+
+    /* ---- co-op session peers ----
+     * Before the living-world ghosts: the full-body and nameplate budgets are
+     * first come, and the people you are actually playing with must never
+     * fall back to a silhouette because strangers took the slots. */
+    {
+        extern int g_PcCoopGame;
+        if (g_PcCoopGame && ShSession_Active() && s_ghostTexOk)
+        {
+            int myMap = (g_SavegamePtr) ? (int)g_SavegamePtr->mapIdx : -1;
+            int mc    = ShSession_MemberCount();
+            for (i = 0; i < mc; i++)
+            {
+                const ShSessionMember* m = ShSession_Member(i);
+                VECTOR3 centre, axisU, axisV;
+                int     gx, gy, gz;
+                short   grot;
+                u8      cr, cg, cb;
+
+                if (poly - primBase >= SHNET_MAX_PRIMS)
+                {
+                    break;
+                }
+                ShSessionPoseNow pn;
+                ShNetGPose       gp;
+
+                if (!m || m->poseMs == 0 || m->mapIdx != myMap) /* self/no pose/other map */
+                {
+                    continue;
+                }
+                if (!ShSession_MemberPoseNow(i, &pn))
+                {
+                    continue;
+                }
+                /* A partner in a shared scene reports the seat they are drawn
+                 * at (sh_net_cutscene.c), so the pose is the place. */
+                gx = pn.x; gy = pn.y; gz = pn.z; grot = pn.rotY;
+                gp.lowKf0 = pn.lowKf0; gp.lowKf1 = pn.lowKf1; gp.lowAlpha = pn.lowAlpha;
+                gp.upKf0  = pn.upKf0;  gp.upKf1  = pn.upKf1;  gp.upAlpha  = pn.upAlpha;
+                gp.weaponAnm = pn.weaponAnm;
+                gp.heldItem  = pn.heldItem;
+                gp.handBone  = pn.handBone;
+                if (ABS(gx - self->vx) > range || ABS(gz - self->vz) > range)
+                {
+                    continue;
+                }
+
+                centre.vx = gx;
+                centre.vy = gy - GHOST_HALF_H;
+                centre.vz = gz;
+                axisU.vx  = (GHOST_HALF_W * GsWSMATRIX.m[0][0]) >> 12;
+                axisU.vy  = (GHOST_HALF_W * GsWSMATRIX.m[0][1]) >> 12;
+                axisU.vz  = (GHOST_HALF_W * GsWSMATRIX.m[0][2]) >> 12;
+                axisV.vx  = 0;
+                axisV.vy  = GHOST_HALF_H; /* quad top uses -axisV; +Y (world down) = upright */
+                axisV.vz  = 0;
+
+                ShNetG_GhostColor((unsigned int)m->steamId, &cr, &cg, &cb);
+                {
+                    int drewModel = 0;
+                    /* Co-op shows each player as their REAL character model by
+                     * default (that is the whole point -- you see your friend as
+                     * Harry, or whatever PLAYAS character they picked, which the
+                     * pose carries in charaId). The silhouette is only the
+                     * fallback when the model cannot be drawn (assets not
+                     * resident). */
+                    if (modelsDrawn < SHNET_MAX_MODELS) /* CUTSCENE unreliable; always draw the body */
+                    {
+                        unsigned char* before = (unsigned char*)poly;
+                        GsOUT_PACKET_P = (PACKET*)poly;
+                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, &gp);
+                        {
+                            unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
+                            poly     = (POLY_FT4*)after;
+                            primBase = (POLY_FT4*)((unsigned char*)primBase + (after - before));
+                        }
+                        if (drewModel) modelsDrawn++;
+                    }
+                    if (!drewModel)
+                    {
+                        int alpha = (m->flags & SHNET_PF_FLASHLIGHT) ? 255 : 230;
+                        poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
+                                               SHNET_CLUT(GHOST_SLOT),
+                                               GHOST_TEX_W - 1, GHOST_TEX_H - 1,
+                                               cr, cg, cb, alpha);
+                    }
+                }
+                /* No plates or bars over a scene. */
+                if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
+                    m->name[0] && m->name[0] != '?' && !(g_SysWork.sysFlags & SysFlag_CutsceneActive))
+                {
+                    poly = ShNetG_DrawNameplate(ot, poly, m->name, gx, gy, gz);
+                    namesDrawn++;
+                }
+                if ((g_PcConfig.onlineHealthBars & 2) && m->healthPct1 != 0 && !(g_SysWork.sysFlags & SysFlag_CutsceneActive))
+                {
+                    poly = ShNetG_DrawHealthBar(ot, poly, gx, gy, gz, m->healthPct1 - 1);
+                }
+            }
+        }
+    }
+
+    /* ---- other players ---- */
+    if (g_PcConfig.onlineGhosts && ShNet_CoopLivingWorld() && (s_ghostTexOk || s_memoTexOk))
+    {
+        /* Nearest first, so the full-body and nameplate caps fall on the far
+         * end of a crowd rather than on whoever joined the server first. */
+        int                order[SHNET_MAX_GHOSTS];
+        unsigned long long orderD2[SHNET_MAX_GHOSTS];
+        int                orderCount = 0;
+        int                k;
+
+        count = ShNet_GhostCount();
+        if (count > SHNET_MAX_GHOSTS)
+        {
+            count = SHNET_MAX_GHOSTS;
+        }
+        for (i = 0; i < count; i++)
+        {
+            int                ox, oy, oz;
+            short              orot;
+            long long          dx, dz;
+            unsigned long long d2;
+            int                j;
+            if (!ShNet_GhostInterp(i, &ox, &oy, &oz, &orot))
+            {
+                continue;
+            }
+            dx = (long long)ox - self->vx;
+            dz = (long long)oz - self->vz;
+            d2 = (unsigned long long)(dx * dx) + (unsigned long long)(dz * dz);
+            for (j = orderCount; j > 0 && orderD2[j - 1] > d2; j--)
+            {
+                order[j]   = order[j - 1];
+                orderD2[j] = orderD2[j - 1];
+            }
+            order[j]   = i;
+            orderD2[j] = d2;
+            orderCount++;
+        }
+
+        for (k = 0; k < orderCount; k++)
+        {
+            const ShNetGhost* g;
+            i = order[k];
+            g = ShNet_Ghost(i);
+            VECTOR3           centre;
+            VECTOR3           axisU;
+            VECTOR3           axisV;
+            int               gx, gy, gz;
+            short             grot;
+            u8                cr, cg, cb;
+
+            if (poly - primBase >= SHNET_MAX_PRIMS)
+            {
+                break;
+            }
+            if (!g || !ShNet_GhostInterp(i, &gx, &gy, &gz, &grot))
+            {
+                continue;
+            }
+            /* In a co-op game the same player is also a session peer, drawn by
+             * the co-op loop below. Don't double-draw them here, or you get the
+             * body plus a ghost silhouette "rim" over it. */
+            {
+                extern int g_PcCoopGame;
+                if (g_PcCoopGame && ShSession_Active())
+                {
+                    int k, dup = 0, mc2 = ShSession_MemberCount();
+                    for (k = 0; k < mc2; k++)
+                    {
+                        const ShSessionMember* mm = ShSession_Member(k);
+                        if (mm && (unsigned int)mm->steamId == g->playerId) { dup = 1; break; }
+                    }
+                    if (dup) continue;
+                }
+            }
+            if (ABS(gx - self->vx) > range || ABS(gz - self->vz) > range)
+            {
+                continue;
+            }
+
+            /* Feet at the reported position, so the quad rises to head height.
+             * PSX -Y is up. */
+            centre.vx = gx;
+            centre.vy = gy - GHOST_HALF_H;
+            centre.vz = gz;
+
+            /* The camera's right axis in world space is row 0 of the
+             * world->screen ROTATION: for a rotation R, R*v gives view
+             * coordinates, so the world vector that maps to view +X is
+             * transpose(R) * (1,0,0), which reads out as that row.
+             * Vw_WorldScreenMatrixAtPositionGet copies this same rotation
+             * verbatim and only varies the translation, so reading GsWSMATRIX
+             * saves building a second matrix per ghost. */
+            axisU.vx = (GHOST_HALF_W * GsWSMATRIX.m[0][0]) >> 12;
+            axisU.vy = (GHOST_HALF_W * GsWSMATRIX.m[0][1]) >> 12;
+            axisU.vz = (GHOST_HALF_W * GsWSMATRIX.m[0][2]) >> 12;
+
+            axisV.vx = 0;
+            axisV.vy = GHOST_HALF_H; /* quad top uses -axisV; +Y (world down) = upright */
+            axisV.vz = 0;
+
+            ShNetG_GhostColor(g->playerId, &cr, &cg, &cb);
+            /* A ghost with no flashlight and no motion is a little dimmer, so
+             * the ones actually moving read first. */
+            {
+                int drewModel = 0;
+                /* A full character model costs several KB of the shared packet
+                 * arena, so cap how many draw as models per frame; the rest
+                 * fall back to the cheap silhouette. */
+                /* Always attempt the (translucent) body, like co-op -- a stale
+                 * config's onlineGhostModel=0 must not force everyone back to
+                 * flat silhouettes. The cap + cutscene check still apply. */
+                if (modelsDrawn < SHNET_MAX_MODELS) /* CUTSCENE flag is unreliable; always draw the body */
+                {
+                    /* func_80045534 allocates through GsOUT_PACKET_P, so commit
+                     * the silhouette cursor into it first and read it back
+                     * after. primBase is re-based by the same delta so the
+                     * silhouette-prim budget below is not tripped by the
+                     * model's own packets. */
+                    unsigned char* before = (unsigned char*)poly;
+                    GsOUT_PACKET_P = (PACKET*)poly;
+                    ShNetGPose gp;
+                    gp.lowKf0 = gp.lowKf1 = gp.upKf0 = gp.upKf1 = (int)g->animFrame;
+                    gp.lowAlpha = gp.upAlpha = 0;
+                    gp.weaponAnm = 0xFF;
+                    gp.heldItem  = 0xFF;
+                    gp.handBone  = 0;
+                    g_PcCharaTranslucent = 1; /* living-world bodies are translucent */
+                    drewModel = ShNetG_TryDrawModel(g->charaId, gx, gy, gz, grot, &gp);
+                    g_PcCharaTranslucent = 0;
+                    {
+                        unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
+                        poly     = (POLY_FT4*)after;
+                        primBase = (POLY_FT4*)((unsigned char*)primBase + (after - before));
+                    }
+                    if (drewModel) modelsDrawn++;
+                }
+                if (!drewModel && s_ghostTexOk && style != SHNET_GS_FOOTPRINT)
+                {
+                    int alpha = 230;
+                    if (!(g->flags & SHNET_PF_ALIVE))   alpha = 150;
+                    if (g->flags & SHNET_PF_FLASHLIGHT) alpha = 255;
+                    poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
+                                           SHNET_CLUT(GHOST_SLOT),
+                                           GHOST_TEX_W - 1, GHOST_TEX_H - 1,
+                                           cr, cg, cb, alpha);
+                }
+            }
+            if (s_memoTexOk && style != SHNET_GS_SILHOUETTE)
+            {
+                poly = ShNetG_EmitFootprint(ot, poly, gx, gy, gz, cr, cg, cb);
+            }
+
+            /* The player's name over their head. Off is a config toggle; the
+             * '?' placeholder (no roster entry yet) is skipped. */
+            if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
+                g->name[0] && g->name[0] != '?')
+            {
+                poly = ShNetG_DrawNameplate(ot, poly, g->name, gx, gy, gz);
+                namesDrawn++;
+            }
+        }
+    }
+
+    /* ---- markers ---- */
+    if (g_PcConfig.onlineMemos && ShNet_CoopLivingWorld() && s_memoTexOk)
+    {
+        count = ShNet_MemoCount();
+        for (i = 0; i < count; i++)
+        {
+            const ShNetMemo* m = ShNet_Memo(i);
+            VECTOR3          centre;
+            VECTOR3          axisU;
+            VECTOR3          axisV;
+            u8               cr, cg, cb;
+
+            if (poly - primBase >= SHNET_MAX_PRIMS)
+            {
+                break;
+            }
+            if (!m)
+            {
+                continue;
+            }
+            if ((m->kind & 0x0F) == SHNET_MARK_DEATH && !g_PcConfig.onlineDeaths) /* low nibble = kind; high = emote */
+            {
+                continue;
+            }
+            if (ABS(m->x - self->vx) > markRange || ABS(m->z - self->vz) > markRange)
+            {
+                continue;
+            }
+
+            /* Snap to the floor under the marker rather than trusting the
+             * placer's Y: they may have been standing on a step the local
+             * geometry does not have loaded, and a marker floating in the air
+             * is worse than one a few centimetres off. */
+            {
+                s_CollisionSurface surf;
+                Collision_SurfaceGet(&surf, m->x, m->z);
+                centre.vx = m->x;
+                centre.vy = surf.groundHeight - MEMO_LIFT;
+                centre.vz = m->z;
+                /* A floor sample that disagrees wildly with where the marker
+                 * was placed means a different storey; keep the placer's. */
+                if (ABS(centre.vy - m->y) > Q12(2.5f))
+                {
+                    centre.vy = m->y - MEMO_LIFT;
+                }
+            }
+
+            axisU.vx = MEMO_HALF;
+            axisU.vy = 0;
+            axisU.vz = 0;
+            axisV.vx = 0;
+            axisV.vy = 0;
+            axisV.vz = MEMO_HALF;
+
+            ShNetG_MarkerColor(m->kind & 0x0F, &cr, &cg, &cb);
+            poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
+                                   SHNET_CLUT(MEMO_SLOT),
+                                   MEMO_TEX_W - 1, MEMO_TEX_H - 1,
+                                   cr, cg, cb, 255);
+        }
+    }
+
+    GsOUT_PACKET_P = (PACKET*)poly;
+}

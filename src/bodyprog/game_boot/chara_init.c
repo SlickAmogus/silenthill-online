@@ -26,6 +26,9 @@ void GameBoot_NpcClear(void) // 0x80034EC8
 
     g_SysWork.field_228C[0] = 0;
     g_SysWork.npcFlags = 0;
+#ifdef SH_PC_PORT
+    { extern void Pc_NetNpc_Reset(void); Pc_NetNpc_Reset(); }
+#endif
 
     bzero(g_SysWork.npcs, ARRAY_SIZE(g_SysWork.npcs) * sizeof(s_SubCharacter));
 

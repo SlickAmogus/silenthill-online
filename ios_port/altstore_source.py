@@ -16,23 +16,23 @@ import os
 env = os.environ
 repo = env["R"]
 icon = ("https://raw.githubusercontent.com/" + repo +
-        "/web-port/web_port/www/icon-512.png")
+        "/web/web_port/www/icon-512.png")
 
 source = {
-    "name": "Silent Hill PC Port",
-    "identifier": "com.silenthill.port.source",
-    "subtitle": "Automatic iOS builds of the Silent Hill PC port",
-    "description": "Every change to the iOS port, built automatically. "
+    "name": "Silent Hill: Online",
+    "identifier": "com.silenthill.online.source",
+    "subtitle": "Automatic iOS builds of Silent Hill: Online",
+    "description": "Every change to Silent Hill: Online, built automatically. "
                    "These builds are not tested first, so back up your saves.",
     "iconURL": icon,
     "website": "https://github.com/" + repo,
     "apps": [{
-        "name": "Silent Hill",
-        "bundleIdentifier": "com.silenthill.port",
+        "name": "Silent Hill: Online",
+        "bundleIdentifier": "com.silenthill.online",
         "developerName": "SlickAmogus",
-        "subtitle": "The Silent Hill PC port on iPhone and iPad",
-        "localizedDescription": "A native port of Silent Hill (1999) built from the "
-                                "decompilation. You need your own disc image of the game.",
+        "subtitle": "Co-op Silent Hill on iPhone and iPad",
+        "localizedDescription": "Silent Hill (1999), built from the decompilation, with "
+                                "online co-op. You need your own disc image of the game.",
         "iconURL": icon,
         "tintColor": "7A1F1A",
         "versions": [{

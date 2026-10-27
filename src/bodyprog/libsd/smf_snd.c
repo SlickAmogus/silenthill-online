@@ -664,6 +664,40 @@ s16 SdVabOpenHeadSticky(u8* addr, s16 vabid, s32 sbaddr) // 0x8009F91C
     return i;
 }
 
+#ifdef SH_PC_PORT
+/* SdVabOpenHeadSticky for a body placed PAST the PSX SPU map (PsyCross backs
+ * 2 MiB): the allocator refuses anything at or above 0x80000, so the slot is
+ * filled directly with the caller's address. Co-op keeps every weapon bank
+ * resident this way (pc_weapon_banks.c). */
+s16 SdVabOpenHeadStickyPc(u8* addr, s16 vabid, u32 sbaddr)
+{
+    VAB_H*  p;
+    VabHdr* sd_vab_h;
+
+    if (*addr != 0x70 || vabid < 0 || vabid >= 0x10 || sbaddr < 0x80000u || sbaddr >= 0x200000u)
+    {
+        return -1;
+    }
+    sd_vab_h = (VabHdr*)addr;
+    p        = &vab_h[vabid];
+
+    p->vab_id_0         = vabid;
+    p->vh_addr_4        = (SD_VAB_H*)addr;
+    p->vh_size_8        = 0xA20 + (sd_vab_h->ps * 0x200);
+    p->vb_size_14       = sd_vab_h->fsize - p->vh_size_8;
+    p->mvol_18          = sd_vab_h->mvol;
+    p->mpan_1B          = sd_vab_h->pan;
+    p->vb_start_addr_10 = sbaddr;
+    if (p->vb_size_14 <= 0 || sbaddr + (u32)p->vb_size_14 > 0x200000u)
+    {
+        p->vab_id_0 = -1;
+        return -1;
+    }
+    tone_adsr_mem(vabid);
+    return vabid;
+}
+#endif
+
 s16 SdVabFakeHead(u8* addr, s16 vabid, u32 sbaddr) // 0x8009FAC0
 {
     VAB_H*  p;

@@ -795,6 +795,25 @@ s32 func_8008A3E0(s_SubCharacter* chara) // 0x8008A3E0
 #endif
                     ptr  = D_800C4728.character;
 #ifdef SH_PC_PORT
+                    /* Friendly fire: the same bullet against remote players'
+                     * proxies. A proxy hit that is nearer than whatever the
+                     * world/NPC trace found takes the bullet (no decal, no NPC). */
+                    if (chara == &g_SysWork.playerWork.player)
+                    {
+                        extern void* Pc_NetHit_BulletTrace(void*, const void*, void*, void*);
+                        static s_RayTrace s_pxTrace;
+                        s_SubCharacter* px = (s_SubCharacter*)Pc_NetHit_BulletTrace(
+                            chara, &chara->field_44.field_18, &chara->field_44.field_48[0], &s_pxTrace);
+                        if (px != NULL && (!temp || s_pxTrace.hitDistance < D_800C4728.hitDistance))
+                        {
+                            chara->field_44.field_48[1].vx = temp_s1_4;
+                            chara->field_44.field_48[1].vy = temp2;
+                            chara->field_44.field_48[1].vz = temp_s0_9;
+                            func_8008B714(chara, px, &s_pxTrace.target, 0);
+                            temp = 0;
+                            ptr  = NULL;
+                        }
+                    }
                     if (chara == &g_SysWork.playerWork.player) {
                         s32 tIdx = g_SysWork.targetNpcIdx;
                         s_SubCharacter* tn = (tIdx >= 0) ? &g_SysWork.npcs[tIdx] : NULL;
@@ -1469,7 +1488,16 @@ s32 func_8008B714(s_SubCharacter* attacker, s_SubCharacter* target, VECTOR3* arg
          * producing a garbage shift on 64-bit (where the struct is larger).
          * sp10 is `1 << npcIndex`, tested against attacker->field_44.field_8.
          * C pointer subtraction gives the index directly and portably. */
-        sp10 = 1 << (s32)(target - g_SysWork.npcs);
+        {
+            /* A remote-player proxy (friendly fire) is not in npcs[]; give it
+             * a latch bit of its own above the 6 NPC slots the melee sweep
+             * uses, so the one-hit-per-swing guard works for players too.
+             * (Guns are exempt from the guard, so their 32 NPC bits never
+             * collide with these.) */
+            extern int Pc_NetHit_ProxyIndex(const void*);
+            int pi = Pc_NetHit_ProxyIndex(target);
+            sp10 = (pi >= 0) ? (1 << (8 + pi)) : (1 << (s32)(target - g_SysWork.npcs));
+        }
 #else
         sp10 = 1 << (((s32)((u32)((u8*)target - sizeof(s_PlayerWork)) - (u32)&g_SysWork.playerWork) * -0x6EB3E453) >> 3);
 #endif
@@ -1894,6 +1922,7 @@ s32 func_8008B714(s_SubCharacter* attacker, s_SubCharacter* target, VECTOR3* arg
                         _deadSkipLogN++;
                     }
                 } else {
+                    { extern void Pc_NetHit_NoteHit(const void*, const VECTOR3*); Pc_NetHit_NoteHit(target, arg2); }
                     func_8005F6B0(target, arg2, var_a2, var_a3);
                 }
 #else
@@ -1911,6 +1940,7 @@ s32 func_8008BF84(s_SubCharacter* chara, q19_12 angle, s_800AD4C8* arg2, s32 arg
 #ifdef SH_PC_PORT
     q19_12           atkScale;
     q19_12           tgtScale = Q12(1.0f);
+    s32              pxCount  = 0; /* friendly fire: remote-player proxies after the NPC slots */
 #endif
     s_SubCharacter*  chara1;
     s32              sp14;
@@ -2093,6 +2123,15 @@ s32 func_8008BF84(s_SubCharacter* chara, q19_12 angle, s_800AD4C8* arg2, s32 arg
 #endif
         var_v0 = 6;
         var_v1 = 1;
+#ifdef SH_PC_PORT
+        {
+            /* Friendly fire: the player's swing also tests the remote-player
+             * proxies, appended to the candidate walk below. */
+            extern int Pc_NetHit_ProxyCount(void);
+            pxCount = Pc_NetHit_ProxyCount();
+            var_v0 += pxCount;
+        }
+#endif
     }
     else
     {
@@ -2117,6 +2156,17 @@ s32 func_8008BF84(s_SubCharacter* chara, q19_12 angle, s_800AD4C8* arg2, s32 arg
 
     for (i = var_v0; i > 0; i--, chara1++, sp18 *= 2)
     {
+#ifdef SH_PC_PORT
+        if (pxCount > 0 && i == pxCount)
+        {
+            /* Past the 6 NPC slots: jump to the proxies. They are contiguous,
+             * so the loop's chara1++ walks them; their latch bits start at 8,
+             * above any NPC slot this loop can reach (see func_8008B714). */
+            extern void* Pc_NetHit_Proxy(int i);
+            chara1 = (s_SubCharacter*)Pc_NetHit_Proxy(0);
+            sp18   = 1 << 8;
+        }
+#endif
         if (g_SysWork.sysState == SysState_GameOver ||
             g_SysWork.playerWork.player.health <= Q12(0.0f) ||
             chara1 == chara ||

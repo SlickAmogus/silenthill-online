@@ -87,8 +87,10 @@ add_subdirectory(
 # -----------------------------------------------------------------------------
 # The bundle identifier is load-bearing and must not change: re-signing keeps
 # the app's container (and therefore the user's disc image and saves) only while
-# it stays the same. Matches the Android applicationId.
-set(SH_IOS_BUNDLE_ID "com.silenthill.port" CACHE STRING "iOS bundle identifier")
+# it stays the same. Matches the Android applicationId. Silent Hill: Online has
+# its own, so it installs beside the single-player app (com.silenthill.port)
+# instead of replacing it, with its own disc image and saves.
+set(SH_IOS_BUNDLE_ID "com.silenthill.online" CACHE STRING "iOS bundle identifier")
 
 # Configure the plist ourselves rather than leaning on CMake's
 # MACOSX_BUNDLE_INFO_PLIST substitution, which only promises to fill the
@@ -138,7 +140,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Resources/Info.plist.in"
 
 set_target_properties(SilentHillPC PROPERTIES
     OUTPUT_NAME "SilentHill"
-    MACOSX_BUNDLE_BUNDLE_NAME "Silent Hill"
+    MACOSX_BUNDLE_BUNDLE_NAME "Silent Hill: Online"
     MACOSX_BUNDLE_GUI_IDENTIFIER "${SH_IOS_BUNDLE_ID}"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
     # Signed off-box; a CI build with no keychain cannot sign at all.

@@ -698,6 +698,11 @@ void Gfx_2dEffectsDraw(void) // 0x800550D0
         {
             g_PsyX_FlashlightActive = 0;
         }
+
+        {
+            extern void ShNet_PartnerLightsUpdate(int allowed, int roomDark);
+            ShNet_PartnerLightsUpdate(!Pc_ScriptOwnsShot(), roomLit);
+        }
     }
 #endif
 
@@ -4941,6 +4946,10 @@ void func_8005AC50(s_MeshHeader* meshHdr, s_GteScratchData2* scratchData, GsOT_T
 
             poly.gt3->code = ((prim->field_6.flags >> 15) * 2) | 0x34;
 #ifdef SH_PC_PORT
+            /* Co-op living-world ghost: force the whole body semi-transparent so
+             * it reads as a translucent presence. PsyCross blends a semiTrans
+             * prim as a whole (not per-texel), so this makes the model see-through. */
+            { extern int g_PcCharaTranslucent; if (g_PcCharaTranslucent) poly.gt3->code |= 2; }
             if (g_PsyX_PpLitActive)
                 Pc_PpLit_CharaPrim(poly.gt3, scratchData->u.s_1.field_4, scratchData->u.s_1.field_5,
                                    scratchData->u.s_1.field_6, scratchData->u.s_1.field_6);
@@ -5069,6 +5078,7 @@ void func_8005AC50(s_MeshHeader* meshHdr, s_GteScratchData2* scratchData, GsOT_T
 
             poly.gt4->code = ((prim->field_6.flags >> 15) * 2) | 0x3C;
 #ifdef SH_PC_PORT
+            { extern int g_PcCharaTranslucent; if (g_PcCharaTranslucent) poly.gt4->code |= 2; }
             if (g_PsyX_PpLitActive)
                 Pc_PpLit_CharaPrim(poly.gt4, scratchData->u.s_1.field_4, scratchData->u.s_1.field_5,
                                    scratchData->u.s_1.field_6, scratchData->u.s_1.field_7);

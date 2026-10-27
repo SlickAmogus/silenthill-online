@@ -203,6 +203,7 @@ void Pc_ControlStyleUpdate(void)
     extern int g_PcConsoleInputActive;
     extern int Pc_ConsoleIsOpen(void);
     extern int g_PcQuickOptionsActive;
+    extern int Pc_CoopMenu_InGame(void);
     extern int g_DebugCamEnabled;
 
     const Uint8* keys;
@@ -228,9 +229,13 @@ void Pc_ControlStyleUpdate(void)
         resolved = g_PcBindsGen + 1;
     }
 
-    inGameplay = (g_GameWork.gameState == GameState_InGame &&
-                  g_SysWork.sysState   == SysState_Gameplay &&
-                  !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive);
+    {
+        extern int Pc_TextInputActive(void);
+        inGameplay = (g_GameWork.gameState == GameState_InGame &&
+                      g_SysWork.sysState   == SysState_Gameplay &&
+                      !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame() &&
+                      !Pc_TextInputActive());
+    }
 
     keys   = SDL_GetKeyboardState(NULL);
     {

@@ -1,0 +1,100 @@
+name: Silent Hill Online (iOS)
+
+# Builds an UNSIGNED Silent Hill: Online .ipa on every push to `ios` (the
+# ios-port branch merged with online main) and publishes it to this repo's
+# realtime releases. Sideloadly or AltStore/SideStore sign it for the device.
+# See build-ios.yml (inherited from ios-port, which only runs in
+# SlickAmogus/silent-hill-decomp) for why it is built on macOS and unsigned.
+
+on:
+  push:
+    branches: [ios]
+    paths-ignore:
+      - '**.md'
+      - 'pc_port/launcher/**'
+  workflow_dispatch:
+
+concurrency:
+  group: online-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'SlickAmogus/silenthill-online'
+    permissions:
+      contents: write
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout (with SDL + PsyCross submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: brew install cmake ninja llvm
+
+      - name: Put Homebrew LLVM on PATH
+        run: echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Build + package
+        run: |
+          chmod +x ios_port/build_ios.sh
+          ./ios_port/build_ios.sh
+
+      - name: Check the bundle
+        run: |
+          set -o pipefail
+          APP="$(find build-ios -maxdepth 4 -name 'SilentHill.app' -type d | head -1)"
+          for k in CFBundleSupportedPlatforms CFBundleExecutable CFBundleIdentifier CFBundleDisplayName \
+                   MinimumOSVersion DTPlatformName DTSDKName; do
+            v=$(/usr/libexec/PlistBuddy -c "Print :$k" "$APP/Info.plist") || { echo "MISSING: $k"; exit 1; }
+            echo "  $k = $(echo "$v" | tr '\n' ' ')"
+          done
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "com.silenthill.online" ] ||
+            { echo "Bundle id is not com.silenthill.online"; exit 1; }
+          ls -la build-ios/SilentHill-unsigned.ipa
+
+      - name: Upload unsigned .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: SilentHillOnline-ios-unsigned
+          path: build-ios/SilentHill-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      # Newest build on `realtime` (one fixed name, replaced every push) plus a
+      # dated copy on `realtime-history`, which keeps the newest 15. The Windows
+      # publisher (tools/online_realtime_publish.py) leaves these names alone.
+      - name: Publish to the realtime releases
+        if: github.event_name == 'push' && github.ref == 'refs/heads/ios'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC: build-ios/SilentHill-unsigned.ipa
+          FIXED: SilentHillOnline-ios-unsigned.ipa
+          STEM: SilentHillOnline-ios-unsigned
+          EXT: .ipa
+          KEEP: 15
+        run: |
+          set -euo pipefail
+          R="$GITHUB_REPOSITORY"
+          gh release view realtime --repo "$R" >/dev/null 2>&1 || { echo "No realtime release yet (it is created by the Windows build)."; exit 1; }
+          cp "$SRC" "$RUNNER_TEMP/$FIXED"
+          gh release upload realtime "$RUNNER_TEMP/$FIXED" --clobber --repo "$R"
+          DATED="${STEM}_$(date -u +%Y.%m.%d)-${GITHUB_SHA:0:9}${EXT}"
+          cp "$SRC" "$RUNNER_TEMP/$DATED"
+          gh release upload realtime-history "$RUNNER_TEMP/$DATED" --clobber --repo "$R"
+          gh api "repos/$R/releases/tags/realtime-history" --jq \
+            "[.assets[] | select(.name | startswith(\"${STEM}_\"))] | sort_by(.created_at) | reverse | .[${KEEP}:] | .[].name" |
+            while read -r n; do gh release delete-asset realtime-history "$n" --repo "$R" --yes; done
+          # AltStore / SideStore source: devices that added it are offered each new build.
+          APP="$(find build-ios -maxdepth 4 -name 'SilentHill.app' -type d | head -1)"
+          export R DATED
+          export VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          export BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          export MINOS="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")"
+          export SIZE="$(stat -f%z "$SRC")"
+          export DATE="$(git log -1 --format=%cI)"
+          export SUMMARY="$(git log -1 --format=%s)"
+          python3 ios_port/altstore_source.py > "$RUNNER_TEMP/altstore-source.json"
+          gh release upload realtime "$RUNNER_TEMP/altstore-source.json" --clobber --repo "$R"
