@@ -7,8 +7,11 @@
  * <winsock2.h> pulls in <windows.h>, and RECT16 / `byte` / the CRITICAL_SECTION
  * family collide with the PSX headers the moment both land in one TU.
  *
- * Winsock2 on Windows, BSD sockets elsewhere.
+ * Winsock2 on Windows, BSD sockets elsewhere; the browser build has its own
+ * (sh_net_platform_web.c).
  */
+#if !defined(__EMSCRIPTEN__)
+
 #if defined(_WIN32)
 /* Ahead of any other header: <windows.h> arriving first would drag in the
  * winsock1 declarations and every winsock2 symbol would then redefine them. */
@@ -318,3 +321,5 @@ int ShNetPlat_AddrEqual(const ShNetAddr* a, const ShNetAddr* b)
     }
     return memcmp(a->bytes, b->bytes, (size_t)a->len) == 0;
 }
+
+#endif /* !__EMSCRIPTEN__ */
