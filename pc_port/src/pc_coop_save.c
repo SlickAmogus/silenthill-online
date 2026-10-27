@@ -3,198 +3,226 @@
 
 #include "game.h"
 #include "bodyprog/bodyprog.h"
+#include "bodyprog/memcard.h"
 #include "bodyprog/savegame.h"
 
 #include "pc_coop_save.h"
 #include "sh_log.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <dirent.h>
-#include <sys/stat.h>
 
-#ifdef _WIN32
-int _mkdir(const char* dirname);
-#endif
+/* Card image layout, as PsyCross's libapi.c writes it: 16 blocks of 8 KiB,
+ * block 0 holds the directory (one 128-byte frame per file, frames 1-15) and
+ * file N's data starts at block N. */
+#define CARD_BLOCK      8192
+#define CARD_FRAME      128
+#define CARD_DIR_FILES  15
+#define CARD_ATTR_FIRST 0x50
 
-#define COOP_SAVE_DIR   "gamedata/coopsaves"
-#define COOP_SAVE_EXT   ".sav"
-#define COOP_SAVE_MAGIC 0x53504F43u /* "COPS" */
-#define COOP_SAVE_VER   1u
+/* Inside a Silent Hill file (memcard.c): icon block, then the save headers,
+ * the options, and up to 11 saves. */
+#define SAVE_HEADER_OFS 0x200
+#define SAVE_DATA_OFS   0x380
 
-typedef struct
+extern char* g_Savegame_SaveLocationNames[];
+
+static s_Savegame s_guestSave;
+static int        s_guestStaged;
+
+static FILE* Coop_OpenCard(int card)
 {
-    unsigned int magic;
-    unsigned int version;
-    char         name[COOP_SAVE_NAME_MAX];
-    int          mapIdx;
-    int          saveCount;
-    unsigned int gameplayTimer;
-    unsigned int reserved[4];
-} CoopSaveHeader;
-
-static void Coop_EnsureDir(void)
-{
-#ifdef _WIN32
-    _mkdir("gamedata");
-    _mkdir(COOP_SAVE_DIR);
-#else
-    mkdir("gamedata", 0755);
-    mkdir(COOP_SAVE_DIR, 0755);
-#endif
+    char path[64];
+    snprintf(path, sizeof(path), "gamedata/save/%d.MCD", card);
+    return fopen(path, "rb");
 }
 
-/* Lowercased, spaces to '_', only [a-z0-9_-] kept, so a custom name is always a
- * safe filename. */
-static void Coop_SafeName(const char* in, char* out, int cap)
+/* Port 1 slots A-D and port 2 slots A-D, numbered as libapi.c numbers them. */
+static int Coop_CardAt(int i)
 {
-    int i = 0;
-    if (cap <= 0) return;
-    if (in)
+    return (i < 4) ? i : i + 4;
+}
+
+static int Coop_ReadSlot(FILE* f, int dirIdx, int slot, s_Savegame_Container* out)
+{
+    long ofs = (long)dirIdx * CARD_BLOCK + SAVE_DATA_OFS + (long)slot * (long)sizeof(s_Savegame_Container);
+    if (fseek(f, ofs, SEEK_SET) != 0 || fread(out, sizeof(*out), 1, f) != 1)
     {
-        for (; *in && i < cap - 1; in++)
+        return 0;
+    }
+    return MemCard_ChecksumValidate(&out->footer, (s8*)out, sizeof(*out)) ? 1 : 0;
+}
+
+/* The directory index of every Silent Hill file on a card for this region. */
+static int Coop_GameFiles(FILE* f, int* out)
+{
+    unsigned char dir[(CARD_DIR_FILES + 1) * CARD_FRAME];
+    char          prefix[32];
+    size_t        plen;
+    int           i, n = 0;
+
+    MemCard_FilenameGenerate(prefix, 0);
+    plen = strlen(prefix) - 2; /* the two digits are the file number */
+    if (fseek(f, 0, SEEK_SET) != 0 || fread(dir, sizeof(dir), 1, f) != 1 || dir[0] != 'M' || dir[1] != 'C')
+    {
+        return 0;
+    }
+    for (i = 1; i <= CARD_DIR_FILES; i++)
+    {
+        const unsigned char* e = dir + i * CARD_FRAME;
+        if ((e[0] & 0xF0) == CARD_ATTR_FIRST && strncmp((const char*)e + 10, prefix, plen) == 0)
         {
-            char c = *in;
-            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')
-                out[i++] = c;
-            else if (c == ' ' || c == '_')
-                out[i++] = '_';
+            out[n++] = i;
         }
     }
-    if (i == 0)
-    {
-        /* Nothing usable: a stable default so a save is never nameless. */
-        const char* d = "coop";
-        while (*d && i < cap - 1) out[i++] = *d++;
-    }
-    out[i] = '\0';
+    return n;
 }
 
-static void Coop_Path(const char* name, char* out, int cap)
+static int Coop_NewestFirst(const void* a, const void* b)
 {
-    char safe[COOP_SAVE_NAME_MAX];
-    Coop_SafeName(name, safe, sizeof(safe));
-    snprintf(out, cap, "%s/%s%s", COOP_SAVE_DIR, safe, COOP_SAVE_EXT);
-}
-
-int Pc_CoopSave_Write(const char* name)
-{
-    char           path[256];
-    CoopSaveHeader h;
-    FILE*          f;
-
-    Coop_EnsureDir();
-    Coop_Path(name, path, sizeof(path));
-
-    /* Pull the live player state into the savegame blob first, exactly as a
-     * save point does. */
-    SysWork_SavegameUpdatePlayer();
-
-    f = fopen(path, "wb");
-    if (!f)
-    {
-        SH_DBG("[COOPSAVE] cannot write %s", path);
-        return 0;
-    }
-
-    memset(&h, 0, sizeof(h));
-    h.magic         = COOP_SAVE_MAGIC;
-    h.version       = COOP_SAVE_VER;
-    Coop_SafeName(name, h.name, sizeof(h.name));
-    h.mapIdx        = (int)g_SavegamePtr->mapIdx;
-    h.saveCount     = (int)g_SavegamePtr->savegameCount;
-    h.gameplayTimer = (unsigned int)g_SavegamePtr->gameplayTimer;
-
-    if (fwrite(&h, sizeof(h), 1, f) != 1 ||
-        fwrite(g_SavegamePtr, sizeof(s_Savegame), 1, f) != 1)
-    {
-        SH_DBG("[COOPSAVE] short write %s", path);
-        fclose(f);
-        return 0;
-    }
-    fclose(f);
-    SH_DBG("[COOPSAVE] saved %s (map %d)", path, h.mapIdx);
-    return 1;
-}
-
-int Pc_CoopSave_Load(const char* name)
-{
-    char           path[256];
-    CoopSaveHeader h;
-    FILE*          f;
-
-    Coop_Path(name, path, sizeof(path));
-    f = fopen(path, "rb");
-    if (!f)
-    {
-        SH_DBG("[COOPSAVE] cannot open %s", path);
-        return 0;
-    }
-    if (fread(&h, sizeof(h), 1, f) != 1 ||
-        h.magic != COOP_SAVE_MAGIC || h.version != COOP_SAVE_VER)
-    {
-        SH_DBG("[COOPSAVE] bad header %s", path);
-        fclose(f);
-        return 0;
-    }
-    if (fread(g_SavegamePtr, sizeof(s_Savegame), 1, f) != 1)
-    {
-        SH_DBG("[COOPSAVE] short read %s", path);
-        fclose(f);
-        return 0;
-    }
-    fclose(f);
-    SH_DBG("[COOPSAVE] loaded %s (map %d)", path, (int)g_SavegamePtr->mapIdx);
-    return 1;
+    return ((const CoopSaveEntry*)b)->order - ((const CoopSaveEntry*)a)->order;
 }
 
 int Pc_CoopSave_List(CoopSaveEntry* out, int max)
 {
-    DIR*           d;
-    struct dirent* e;
-    int            n = 0;
+    int c, n = 0;
 
     if (!out || max <= 0)
     {
         return 0;
     }
-    d = opendir(COOP_SAVE_DIR);
-    if (!d)
+    for (c = 0; c < 8; c++)
     {
-        return 0;
-    }
-    while ((e = readdir(d)) != NULL && n < max)
-    {
-        char           path[256];
-        CoopSaveHeader h;
-        FILE*          f;
-        size_t         len = strlen(e->d_name);
-        const size_t   ext = sizeof(COOP_SAVE_EXT) - 1;
-
-        if (len <= ext || strcmp(e->d_name + (len - ext), COOP_SAVE_EXT) != 0)
-        {
-            continue;
-        }
-        snprintf(path, sizeof(path), "%s/%s", COOP_SAVE_DIR, e->d_name);
-        f = fopen(path, "rb");
+        int   files[CARD_DIR_FILES];
+        int   nf, fi;
+        FILE* f = Coop_OpenCard(Coop_CardAt(c));
         if (!f)
         {
             continue;
         }
-        if (fread(&h, sizeof(h), 1, f) == 1 &&
-            h.magic == COOP_SAVE_MAGIC && h.version == COOP_SAVE_VER)
+        nf = Coop_GameFiles(f, files);
+        for (fi = 0; fi < nf; fi++)
         {
-            h.name[COOP_SAVE_NAME_MAX - 1] = '\0';
-            snprintf(out[n].name, COOP_SAVE_NAME_MAX, "%s", h.name[0] ? h.name : e->d_name);
-            snprintf(out[n].file, sizeof(out[n].file), "%s", e->d_name);
-            out[n].mapIdx    = h.mapIdx;
-            out[n].saveCount = h.saveCount;
-            n++;
+            s_MemCard_SaveHeader hdr;
+            int                  slot;
+            if (fseek(f, (long)files[fi] * CARD_BLOCK + SAVE_HEADER_OFS, SEEK_SET) != 0 ||
+                fread(&hdr, sizeof(hdr), 1, f) != 1)
+            {
+                continue;
+            }
+            for (slot = 0; slot < MEMCARD_SAVES_COUNT_MAX; slot++)
+            {
+                s_Savegame_Container sc;
+                const s_Savegame*    sg = &sc.savegame;
+                int                  loc, secs;
+                CoopSaveEntry*       e;
+
+                if (hdr.saveMetadata[slot].savegameCount == 0 || !Coop_ReadSlot(f, files[fi], slot, &sc))
+                {
+                    continue;
+                }
+                if (n >= max)
+                {
+                    /* Full: keep the newest, dropping the oldest held. */
+                    qsort(out, (size_t)n, sizeof(*out), Coop_NewestFirst);
+                    if (hdr.saveMetadata[slot].totalSavegameCount <= out[n - 1].order)
+                    {
+                        continue;
+                    }
+                    n--;
+                }
+                e    = &out[n++];
+                loc  = sg->locationId;
+                secs = FP_FROM(sg->gameplayTimer, Q12_SHIFT);
+                if (loc < 0 || loc > SaveLocationId_NextFear) loc = SaveLocationId_Anywhere;
+                snprintf(e->name, sizeof(e->name), "%s  %d:%02d:%02d  (save %d)",
+                         g_Savegame_SaveLocationNames[loc], secs / 3600, (secs / 60) % 60, secs % 60,
+                         (int)sg->savegameCount);
+                {
+                    char* p;
+                    for (p = e->name; *p; p++) if (*p == '_') *p = ' ';
+                }
+                snprintf(e->key, sizeof(e->key), "%d.%d.%d", Coop_CardAt(c), files[fi], slot);
+                e->mapIdx = sg->mapIdx;
+                e->order  = hdr.saveMetadata[slot].totalSavegameCount;
+            }
         }
         fclose(f);
     }
-    closedir(d);
+    qsort(out, (size_t)n, sizeof(*out), Coop_NewestFirst);
     return n;
+}
+
+static int Coop_ReadKey(const char* key, s_Savegame* out)
+{
+    int                  card, dirIdx, slot, ok;
+    s_Savegame_Container sc;
+    FILE*                f;
+
+    if (!key || sscanf(key, "%d.%d.%d", &card, &dirIdx, &slot) != 3 ||
+        dirIdx < 1 || dirIdx > CARD_DIR_FILES || slot < 0 || slot >= MEMCARD_SAVES_COUNT_MAX)
+    {
+        return 0;
+    }
+    f = Coop_OpenCard(card);
+    if (!f)
+    {
+        SH_DBG("[COOPSAVE] card %d is gone", card);
+        return 0;
+    }
+    ok = Coop_ReadSlot(f, dirIdx, slot, &sc);
+    fclose(f);
+    if (!ok)
+    {
+        SH_DBG("[COOPSAVE] save %s is damaged", key);
+        return 0;
+    }
+    *out = sc.savegame;
+    return 1;
+}
+
+int Pc_CoopSave_Load(const char* key)
+{
+    if (!Coop_ReadKey(key, g_SavegamePtr))
+    {
+        return 0;
+    }
+    SH_DBG("[COOPSAVE] loaded save %s (map %d)", key, (int)g_SavegamePtr->mapIdx);
+    return 1;
+}
+
+int Pc_CoopSave_StageGuest(const char* key)
+{
+    s_guestStaged = Coop_ReadKey(key, &s_guestSave);
+    return s_guestStaged;
+}
+
+void Pc_CoopSave_ApplyGuest(void)
+{
+    extern int g_PcCoopGame;
+    s_Savegame fresh;
+
+    /* A staged save whose game never started must not land on a later
+     * single-player New Game. */
+    if (!s_guestStaged || !g_PcCoopGame)
+    {
+        s_guestStaged = 0;
+        return;
+    }
+    s_guestStaged = 0;
+    fresh         = *g_SavegamePtr;
+    *g_SavegamePtr = s_guestSave;
+    /* Where to stand is the host's map, not wherever the save was made. */
+    g_SavegamePtr->mapIdx          = fresh.mapIdx;
+    g_SavegamePtr->mapRoomIdx      = fresh.mapRoomIdx;
+    g_SavegamePtr->paperMapIdx     = fresh.paperMapIdx;
+    g_SavegamePtr->playerPositionX = fresh.playerPositionX;
+    g_SavegamePtr->playerPositionZ = fresh.playerPositionZ;
+    g_SavegamePtr->playerRotationY = fresh.playerRotationY;
+    if (g_SavegamePtr->playerHealth <= 0)
+    {
+        g_SavegamePtr->playerHealth = Q12(100.0f);
+    }
+    SH_DBG("[COOPSAVE] guest brought their save into map %d", (int)fresh.mapIdx);
 }

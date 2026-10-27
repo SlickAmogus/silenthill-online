@@ -1216,13 +1216,14 @@ void ShNet_GameTick(void)
               (g_SavegamePtr != NULL) &&
               !(g_SysWork.sysFlags & SysFlag_DemoActive);
 
-    /* Co-op inventory: the world keeps running and we are still standing in
-     * it, so keep sending where we are (flagged MENU) rather than vanishing
-     * from our partners' screens. Items, hits and sounds wait for gameplay. */
+    /* Co-op inventory or save screen: we are still standing in the world, so
+     * keep sending where we are (flagged MENU) rather than vanishing from our
+     * partners' screens. Items, hits and sounds wait for gameplay. */
     {
         extern int g_PcCoopGame;
         if (!inWorld && g_PcCoopGame && g_SavegamePtr != NULL &&
-            g_GameWork.gameState == GameState_InventoryScreen && (int)g_SavegamePtr->mapIdx == s_lastMap)
+            (g_GameWork.gameState == GameState_InventoryScreen || g_GameWork.gameState == GameState_SaveScreen) &&
+            (int)g_SavegamePtr->mapIdx == s_lastMap)
         {
             ShNetG_PublishPose((int)g_SavegamePtr->mapIdx, ShNetG_BuildFlags() | SHNET_PF_MENU);
             ShNet_PumpToGameThread();
