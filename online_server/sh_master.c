@@ -26,6 +26,12 @@
  *
  * The listening port must be reachable: forward UDP 27888 to this machine, or
  * keep every player on the same LAN.
+ *
+ * BROWSER PLAYERS
+ *   sh_master --ws 27890
+ * also takes WebSocket clients on TCP 27890. The browser build needs wss://,
+ * so put a TLS reverse proxy in front of it (Caddy:
+ * `server.example.com { reverse_proxy 127.0.0.1:27890 }`).
  */
 
 /* rand_s is only declared when this is set before the first stdlib.h, and
@@ -35,6 +41,10 @@
 #endif
 
 #if defined(_WIN32)
+#if !defined(SH_MASTER_EMBED) && !defined(FD_SETSIZE)
+/* Winsock's default of 64 is fewer sockets than the WebSocket clients alone. */
+#define FD_SETSIZE 1024
+#endif
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -49,6 +59,7 @@ typedef int       ShSockLen;
 #include <sys/select.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -437,14 +448,24 @@ static void SrvRandomBytes(void* out, int n)
 /* Client table                                                        */
 /* ------------------------------------------------------------------ */
 
+/* The first three bytes of sin_zero mark a WebSocket client and its slot
+ * (see the WebSocket section); a UDP address has them zeroed. */
 static int SrvAddrEqual(const struct sockaddr_in* a, const struct sockaddr_in* b)
 {
-    return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
+    return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port &&
+           memcmp(a->sin_zero, b->sin_zero, 3) == 0;
 }
 
 static void SrvAddrStr(const struct sockaddr_in* a, char* out, int cap)
 {
     unsigned int ip = ntohl(a->sin_addr.s_addr);
+    if (a->sin_zero[0])
+    {
+        snprintf(out, (size_t)cap, "%u.%u.%u.%u (web %u)",
+                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
+                 (unsigned)(a->sin_zero[1] | (a->sin_zero[2] << 8)));
+        return;
+    }
     snprintf(out, (size_t)cap, "%u.%u.%u.%u:%u",
              (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
              (unsigned)ntohs(a->sin_port));
@@ -652,8 +673,19 @@ static int SrvCoordOk(shn_s32 v)
 /* Send helpers                                                        */
 /* ------------------------------------------------------------------ */
 
+#ifndef SH_MASTER_EMBED
+static void WsSend(const struct sockaddr_in* to, const shn_u8* buf, int len);
+#endif
+
 static void SrvSend(const struct sockaddr_in* to, const shn_u8* buf, int len)
 {
+#ifndef SH_MASTER_EMBED
+    if (to->sin_zero[0])
+    {
+        WsSend(to, buf, len);
+        return;
+    }
+#endif
     sendto(g_sock, (const char*)buf, (size_t)len, 0,
            (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
 }
@@ -2128,6 +2160,591 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     }
 }
 
+#ifndef SH_MASTER_EMBED
+/* ------------------------------------------------------------------ */
+/* WebSocket clients (the browser build)                               */
+/* ------------------------------------------------------------------ */
+
+/* A browser cannot send UDP, so the web build sends the same datagrams as
+ * WebSocket binary messages, one datagram per message, and everything above
+ * this section never knows the difference. Each connection is given a
+ * stand-in sockaddr_in: the player's IP, the slot's generation as the port,
+ * and WS_TAG plus the slot index in sin_zero, which no address from recvfrom
+ * carries (the UDP path zeroes it), so the two kinds can never be confused.
+ *
+ * TLS is a reverse proxy's job (a page served over https may only open
+ * wss://). Behind one the peer is loopback, and the player's address comes
+ * from the last X-Forwarded-For entry, the one the proxy itself appended.
+ * That header is believed from loopback only: anyone else could write
+ * whatever address they liked into it and walk past the per-address limits. */
+
+#define WS_MAX_CONNS     SRV_MAX_CLIENTS
+#define WS_RX_CAP        4096   /* the handshake, or a frame plus the next one's start */
+#define WS_TX_CAP        65536
+#define WS_HANDSHAKE_MS  5000
+#define WS_IDLE_MS       30000  /* a live client pings every 2 s */
+#define WS_TAG           0x57
+
+typedef struct
+{
+    ShSock             fd;
+    int                used;
+    int                open;      /* the HTTP upgrade is done */
+    unsigned short     gen;
+    struct sockaddr_in addr;
+    unsigned int       acceptMs;
+    unsigned int       lastRxMs;
+    int                rxLen;
+    int                txLen;
+    shn_u8             rx[WS_RX_CAP];
+    shn_u8             tx[WS_TX_CAP];
+} WsConn;
+
+static WsConn          g_ws[WS_MAX_CONNS];
+static ShSock          g_wsListen = SH_INVALID_SOCK;
+static unsigned short  g_wsPort;
+
+/* --- SHA-1, for the Sec-WebSocket-Accept answer and nothing else --- */
+
+typedef struct { shn_u32 h[5]; shn_u8 blk[64]; unsigned long long len; int fill; } WsSha1Ctx;
+
+static shn_u32 WsRol(shn_u32 v, int n) { return (v << n) | (v >> (32 - n)); }
+
+static void WsSha1Block(WsSha1Ctx* s, const shn_u8* p)
+{
+    shn_u32 w[80], a, b, c, d, e, f, k, t;
+    int     i;
+    for (i = 0; i < 16; i++)
+        w[i] = ((shn_u32)p[i * 4] << 24) | ((shn_u32)p[i * 4 + 1] << 16) |
+               ((shn_u32)p[i * 4 + 2] << 8) | (shn_u32)p[i * 4 + 3];
+    for (i = 16; i < 80; i++) w[i] = WsRol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    a = s->h[0]; b = s->h[1]; c = s->h[2]; d = s->h[3]; e = s->h[4];
+    for (i = 0; i < 80; i++)
+    {
+        if (i < 20)      { f = (b & c) | (~b & d);           k = 0x5A827999u; }
+        else if (i < 40) { f = b ^ c ^ d;                    k = 0x6ED9EBA1u; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d);  k = 0x8F1BBCDCu; }
+        else             { f = b ^ c ^ d;                    k = 0xCA62C1D6u; }
+        t = WsRol(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = WsRol(b, 30); b = a; a = t;
+    }
+    s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d; s->h[4] += e;
+}
+
+static void WsSha1Feed(WsSha1Ctx* s, const shn_u8* p, int n)
+{
+    while (n-- > 0)
+    {
+        s->blk[s->fill++] = *p++;
+        s->len += 8;
+        if (s->fill == 64) { WsSha1Block(s, s->blk); s->fill = 0; }
+    }
+}
+
+static void WsSha1(const shn_u8* p, int n, shn_u8 out[20])
+{
+    WsSha1Ctx          s;
+    unsigned long long bits;
+    shn_u8             pad = 0x80, z = 0, lenBe[8];
+    int                i;
+    memset(&s, 0, sizeof(s));
+    s.h[0] = 0x67452301u; s.h[1] = 0xEFCDAB89u; s.h[2] = 0x98BADCFEu;
+    s.h[3] = 0x10325476u; s.h[4] = 0xC3D2E1F0u;
+    WsSha1Feed(&s, p, n);
+    bits = s.len;
+    WsSha1Feed(&s, &pad, 1);
+    while (s.fill != 56) WsSha1Feed(&s, &z, 1);
+    for (i = 0; i < 8; i++) lenBe[i] = (shn_u8)(bits >> (56 - 8 * i));
+    WsSha1Feed(&s, lenBe, 8);
+    for (i = 0; i < 20; i++) out[i] = (shn_u8)(s.h[i / 4] >> (24 - 8 * (i % 4)));
+}
+
+static void WsBase64(const shn_u8* p, int n, char* out)
+{
+    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int i, o = 0;
+    for (i = 0; i < n; i += 3)
+    {
+        shn_u32 v = (shn_u32)p[i] << 16;
+        if (i + 1 < n) v |= (shn_u32)p[i + 1] << 8;
+        if (i + 2 < n) v |= p[i + 2];
+        out[o++] = t[(v >> 18) & 63];
+        out[o++] = t[(v >> 12) & 63];
+        out[o++] = (i + 1 < n) ? t[(v >> 6) & 63] : '=';
+        out[o++] = (i + 2 < n) ? t[v & 63] : '=';
+    }
+    out[o] = '\0';
+}
+
+/* --- connections --- */
+
+static void WsSetNonBlocking(ShSock fd)
+{
+#if defined(_WIN32)
+    u_long nb = 1;
+    ioctlsocket(fd, FIONBIO, &nb);
+#else
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+#endif
+}
+
+static int WsWouldBlock(void)
+{
+#if defined(_WIN32)
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+}
+
+static int WsListen(unsigned short port)
+{
+    struct sockaddr_in a;
+    int                one = 1;
+
+    g_wsListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (g_wsListen == SH_INVALID_SOCK)
+    {
+        return 0;
+    }
+    setsockopt(g_wsListen, SOL_SOCKET, SO_REUSEADDR, (const char*)&one, sizeof(one));
+    memset(&a, 0, sizeof(a));
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = INADDR_ANY;
+    a.sin_port        = htons(port);
+    if (bind(g_wsListen, (struct sockaddr*)&a, sizeof(a)) != 0 || listen(g_wsListen, 64) != 0)
+    {
+        SH_CLOSESOCK(g_wsListen);
+        g_wsListen = SH_INVALID_SOCK;
+        return 0;
+    }
+    WsSetNonBlocking(g_wsListen);
+    return 1;
+}
+
+static int WsFlush(WsConn* w)
+{
+    while (w->txLen > 0)
+    {
+#if defined(MSG_NOSIGNAL)
+        int n = (int)send(w->fd, (const char*)w->tx, (size_t)w->txLen, MSG_NOSIGNAL);
+#else
+        int n = (int)send(w->fd, (const char*)w->tx, (size_t)w->txLen, 0);
+#endif
+        if (n <= 0)
+        {
+            return (n < 0 && WsWouldBlock()) ? 1 : 0;
+        }
+        memmove(w->tx, w->tx + n, (size_t)(w->txLen - n));
+        w->txLen -= n;
+    }
+    return 1;
+}
+
+/* Queues one frame. A frame that does not fit is dropped whole, the same as
+ * a datagram lost on the way: half of one would wreck the stream. */
+static void WsQueueFrame(WsConn* w, int opcode, const shn_u8* p, int n)
+{
+    int hdr = (n < 126) ? 2 : 4;
+    if (w->txLen + hdr + n > WS_TX_CAP)
+    {
+        return;
+    }
+    w->tx[w->txLen++] = (shn_u8)(0x80 | opcode);
+    if (n < 126)
+    {
+        w->tx[w->txLen++] = (shn_u8)n;
+    }
+    else
+    {
+        w->tx[w->txLen++] = 126;
+        w->tx[w->txLen++] = (shn_u8)(n >> 8);
+        w->tx[w->txLen++] = (shn_u8)n;
+    }
+    if (n > 0)
+    {
+        memcpy(w->tx + w->txLen, p, (size_t)n);
+        w->txLen += n;
+    }
+}
+
+static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n);
+
+static void WsClose(WsConn* w)
+{
+    if (!w->used)
+    {
+        return;
+    }
+    if (w->open)
+    {
+        /* A closed tab is a goodbye: say so for the player rather than leave
+         * their room waiting out the 15 s timeout. */
+        Client* c = SrvFindByAddr(&w->addr);
+        if (c)
+        {
+            shn_u8 bye[SHNET_HDR_SIZE];
+            ShnPutHeader(bye, SHNET_MSG_BYE, 0, c->session);
+            SrvDispatch(&w->addr, bye, SHNET_HDR_SIZE);
+        }
+    }
+    SH_CLOSESOCK(w->fd);
+    w->fd    = SH_INVALID_SOCK;
+    w->used  = 0;
+    w->open  = 0;
+    w->rxLen = 0;
+    w->txLen = 0;
+    w->gen++;
+}
+
+static void WsSend(const struct sockaddr_in* to, const shn_u8* buf, int len)
+{
+    int     slot = to->sin_zero[1] | (to->sin_zero[2] << 8);
+    WsConn* w;
+    if (slot >= WS_MAX_CONNS)
+    {
+        return;
+    }
+    w = &g_ws[slot];
+    if (!w->used || !w->open || htons(w->gen) != to->sin_port)
+    {
+        return;
+    }
+    WsQueueFrame(w, 0x2, buf, len);
+    if (!WsFlush(w))
+    {
+        WsClose(w);
+    }
+}
+
+static void WsAccept(unsigned int now)
+{
+    for (;;)
+    {
+        struct sockaddr_in peer;
+        ShSockLen          plen = (ShSockLen)sizeof(peer);
+        ShSock             fd   = accept(g_wsListen, (struct sockaddr*)&peer, &plen);
+        int                i;
+        if (fd == SH_INVALID_SOCK)
+        {
+            return;
+        }
+        for (i = 0; i < WS_MAX_CONNS && g_ws[i].used; i++)
+        {
+        }
+        if (i == WS_MAX_CONNS)
+        {
+            SH_CLOSESOCK(fd);
+            continue;
+        }
+        WsSetNonBlocking(fd);
+        {
+            int one = 1;
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char*)&one, sizeof(one));
+        }
+        g_ws[i].fd       = fd;
+        g_ws[i].used     = 1;
+        g_ws[i].open     = 0;
+        g_ws[i].rxLen    = 0;
+        g_ws[i].txLen    = 0;
+        g_ws[i].acceptMs = now;
+        g_ws[i].lastRxMs = now;
+        memset(&g_ws[i].addr, 0, sizeof(g_ws[i].addr));
+        g_ws[i].addr.sin_family = AF_INET;
+        g_ws[i].addr.sin_addr   = peer.sin_addr;
+        g_ws[i].addr.sin_port   = htons(g_ws[i].gen);
+        g_ws[i].addr.sin_zero[0] = WS_TAG;
+        g_ws[i].addr.sin_zero[1] = (unsigned char)(i & 0xFF);
+        g_ws[i].addr.sin_zero[2] = (unsigned char)(i >> 8);
+    }
+}
+
+/* The value of header `name` (case-insensitive) in the request, trimmed. */
+static int WsHeader(const char* req, const char* name, char* out, int cap)
+{
+    const char* p   = req;
+    size_t      nl  = strlen(name);
+    while ((p = strstr(p, "\r\n")) != NULL)
+    {
+        p += 2;
+        if (!strncmp(p, "\r\n", 2))
+        {
+            break;
+        }
+        {
+            size_t i;
+            for (i = 0; i < nl; i++)
+            {
+                char a = p[i], b = name[i];
+                if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+                if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+                if (a != b) break;
+            }
+            if (i == nl && p[nl] == ':')
+            {
+                const char* v = p + nl + 1;
+                int         o = 0;
+                while (*v == ' ' || *v == '\t') v++;
+                while (*v && *v != '\r' && o < cap - 1) out[o++] = *v++;
+                while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '\t')) o--;
+                out[o] = '\0';
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Returns 0 when the request is not a WebSocket upgrade. */
+static int WsHandshake(WsConn* w, char* req)
+{
+    static const char guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    char   key[128], cat[192], accept[40], resp[256], fwd[256];
+    shn_u8 dig[20];
+    int    n;
+
+    if (strncmp(req, "GET ", 4) != 0 || !WsHeader(req, "Sec-WebSocket-Key", key, (int)sizeof(key)) ||
+        !key[0] || strlen(key) > 64)
+    {
+        return 0;
+    }
+    if (w->addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+        WsHeader(req, "X-Forwarded-For", fwd, (int)sizeof(fwd)))
+    {
+        const char*   last = strrchr(fwd, ',');
+        unsigned long ip;
+        last = last ? last + 1 : fwd;
+        while (*last == ' ') last++;
+        ip = inet_addr(last);
+        if (ip != INADDR_NONE)
+        {
+            w->addr.sin_addr.s_addr = (shn_u32)ip;
+        }
+    }
+    snprintf(cat, sizeof(cat), "%s%s", key, guid);
+    WsSha1((const shn_u8*)cat, (int)strlen(cat), dig);
+    WsBase64(dig, 20, accept);
+    n = snprintf(resp, sizeof(resp),
+                 "HTTP/1.1 101 Switching Protocols\r\n"
+                 "Upgrade: websocket\r\n"
+                 "Connection: Upgrade\r\n"
+                 "Sec-WebSocket-Accept: %s\r\n\r\n", accept);
+    if (w->txLen + n > WS_TX_CAP)
+    {
+        return 0;
+    }
+    memcpy(w->tx + w->txLen, resp, (size_t)n);
+    w->txLen += n;
+    w->open = 1;
+    if (g_verbose)
+    {
+        char a[48];
+        SrvAddrStr(&w->addr, a, (int)sizeof(a));
+        SrvLog("websocket open from %s", a);
+    }
+    return 1;
+}
+
+/* Handles every whole frame in rx. Returns 0 when the connection must close. */
+static int WsFrames(WsConn* w)
+{
+    int pos = 0;
+    while (w->rxLen - pos >= 2)
+    {
+        const shn_u8* f      = w->rx + pos;
+        int           fin    = f[0] & 0x80;
+        int           opcode = f[0] & 0x0F;
+        int           masked = f[1] & 0x80;
+        int           len    = f[1] & 0x7F;
+        int           hdr    = 2;
+        shn_u8        payload[SHNET_MTU];
+        int           i;
+
+        /* Clients always mask (RFC 6455 5.1); our datagrams always fit one
+         * unfragmented frame, and anything larger is not a datagram. */
+        if (!masked || (f[0] & 0x70))
+        {
+            return 0;
+        }
+        if (len == 126)
+        {
+            if (w->rxLen - pos < 4) break;
+            len = (f[2] << 8) | f[3];
+            hdr = 4;
+        }
+        else if (len == 127)
+        {
+            return 0;
+        }
+        if (len > SHNET_MTU)
+        {
+            return 0;
+        }
+        if (w->rxLen - pos < hdr + 4 + len)
+        {
+            break;
+        }
+        for (i = 0; i < len; i++)
+        {
+            payload[i] = (shn_u8)(f[hdr + 4 + i] ^ f[hdr + (i & 3)]);
+        }
+        pos += hdr + 4 + len;
+
+        if (opcode == 0x8)
+        {
+            WsQueueFrame(w, 0x8, NULL, 0);
+            WsFlush(w);
+            return 0;
+        }
+        if (opcode == 0x9)
+        {
+            WsQueueFrame(w, 0xA, payload, len);
+            continue;
+        }
+        if (opcode == 0x2)
+        {
+            if (!fin) return 0;
+            SrvDispatch(&w->addr, payload, len);
+            if (!w->used) return 1; /* the dispatch closed it */
+            continue;
+        }
+        if (opcode == 0x0)
+        {
+            return 0;
+        }
+        /* text and pong: nothing to do */
+    }
+    if (pos > 0)
+    {
+        memmove(w->rx, w->rx + pos, (size_t)(w->rxLen - pos));
+        w->rxLen -= pos;
+    }
+    return 1;
+}
+
+static void WsRead(WsConn* w, unsigned int now)
+{
+    for (;;)
+    {
+        int n;
+        if (w->rxLen >= WS_RX_CAP)
+        {
+            WsClose(w);
+            return;
+        }
+        n = (int)recv(w->fd, (char*)w->rx + w->rxLen, (size_t)(WS_RX_CAP - w->rxLen), 0);
+        if (n == 0 || (n < 0 && !WsWouldBlock()))
+        {
+            WsClose(w);
+            return;
+        }
+        if (n < 0)
+        {
+            break;
+        }
+        w->rxLen   += n;
+        w->lastRxMs = now;
+
+        if (!w->open)
+        {
+            char* end;
+            w->rx[w->rxLen < WS_RX_CAP ? w->rxLen : WS_RX_CAP - 1] = 0;
+            end = strstr((char*)w->rx, "\r\n\r\n");
+            if (!end)
+            {
+                continue;
+            }
+            end[2] = '\0';
+            if (!WsHandshake(w, (char*)w->rx))
+            {
+                static const char bad[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+                send(w->fd, bad, (int)sizeof(bad) - 1, 0);
+                WsClose(w);
+                return;
+            }
+            {
+                int used = (int)(end + 4 - (char*)w->rx);
+                memmove(w->rx, w->rx + used, (size_t)(w->rxLen - used));
+                w->rxLen -= used;
+            }
+        }
+        if (!WsFrames(w))
+        {
+            WsClose(w);
+            return;
+        }
+        if (!w->used)
+        {
+            return;
+        }
+    }
+    if (!WsFlush(w))
+    {
+        WsClose(w);
+    }
+}
+
+static void WsExpire(unsigned int now)
+{
+    int i;
+    for (i = 0; i < WS_MAX_CONNS; i++)
+    {
+        WsConn* w = &g_ws[i];
+        if (!w->used) continue;
+        if ((!w->open && now - w->acceptMs > WS_HANDSHAKE_MS) || now - w->lastRxMs > WS_IDLE_MS)
+        {
+            WsClose(w);
+        }
+    }
+}
+
+/* Adds the listener and every connection to the select() sets. */
+static void WsFdSets(fd_set* rd, fd_set* wr, ShSock* maxFd)
+{
+    int i;
+    if (g_wsListen == SH_INVALID_SOCK)
+    {
+        return;
+    }
+    FD_SET(g_wsListen, rd);
+    if (g_wsListen > *maxFd) *maxFd = g_wsListen;
+    for (i = 0; i < WS_MAX_CONNS; i++)
+    {
+        if (!g_ws[i].used) continue;
+        FD_SET(g_ws[i].fd, rd);
+        if (g_ws[i].txLen > 0) FD_SET(g_ws[i].fd, wr);
+        if (g_ws[i].fd > *maxFd) *maxFd = g_ws[i].fd;
+    }
+}
+
+static void WsService(fd_set* rd, fd_set* wr, unsigned int now)
+{
+    int i;
+    if (g_wsListen == SH_INVALID_SOCK)
+    {
+        return;
+    }
+    if (FD_ISSET(g_wsListen, rd))
+    {
+        WsAccept(now);
+    }
+    for (i = 0; i < WS_MAX_CONNS; i++)
+    {
+        WsConn* w = &g_ws[i];
+        if (!w->used) continue;
+        if (FD_ISSET(w->fd, rd))
+        {
+            WsRead(w, now);
+        }
+        if (w->used && w->txLen > 0 && FD_ISSET(w->fd, wr) && !WsFlush(w))
+        {
+            WsClose(w);
+        }
+    }
+}
+#endif /* !SH_MASTER_EMBED */
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -2140,6 +2757,8 @@ static void SrvUsage(const char* argv0)
     printf("Silent Hill Online master server (protocol v%d)\n\n", SHNET_PROTO_VER);
     printf("  %s [options]\n\n", argv0);
     printf("  -p PORT      UDP port to listen on (default %d)\n", SHNET_DEFAULT_PORT);
+    printf("  --ws PORT    also take browser players over WebSocket on TCP PORT\n");
+    printf("               (behind a TLS proxy: browsers need wss://)\n");
     printf("  -n NAME      server name shown to players\n");
     printf("  -m TEXT      message of the day\n");
     printf("  -w WORD      require this password\n");
@@ -2166,6 +2785,10 @@ int main(int argc, char** argv)
         if (!strcmp(a, "-p") && i + 1 < argc)
         {
             g_port = (unsigned short)atoi(argv[++i]);
+        }
+        else if (!strcmp(a, "--ws") && i + 1 < argc)
+        {
+            g_wsPort = (unsigned short)atoi(argv[++i]);
         }
         else if (!strcmp(a, "-n") && i + 1 < argc)
         {
@@ -2295,6 +2918,18 @@ int ShMaster_Serve(void)
 #endif
 
 #ifndef SH_MASTER_EMBED
+    if (g_wsPort && !WsListen(g_wsPort))
+    {
+        fprintf(stderr, "could not listen on TCP port %u for WebSocket clients\n", (unsigned)g_wsPort);
+        return 1;
+    }
+    {
+        int i;
+        for (i = 0; i < WS_MAX_CONNS; i++) g_ws[i].fd = SH_INVALID_SOCK;
+    }
+#ifdef SIGPIPE
+    signal(SIGPIPE, SIG_IGN); /* a browser tab closing mid-send */
+#endif
     signal(SIGINT, SrvOnSignal);
 #ifdef SIGTERM
     signal(SIGTERM, SrvOnSignal);
@@ -2310,19 +2945,38 @@ int ShMaster_Serve(void)
            (g_featureFlags & SHNET_SF_GHOSTS) ? "" : ", no ghosts",
            (g_featureFlags & SHNET_SF_MEMOS)  ? "" : ", no memos",
            (g_featureFlags & SHNET_SF_DEATHS) ? "" : ", no deaths");
+#ifndef SH_MASTER_EMBED
+    if (g_wsListen != SH_INVALID_SOCK)
+    {
+        SrvLog("browser players: WebSocket on TCP %u", (unsigned)g_wsPort);
+    }
+#endif
 
     while (g_running)
     {
-        fd_set          rd;
+        fd_set          rd, wr;
         struct timeval  tv;
         unsigned int    now;
+        ShSock          maxFd = g_sock;
+        int             ready;
 
         FD_ZERO(&rd);
+        FD_ZERO(&wr);
         FD_SET(g_sock, &rd);
+#ifndef SH_MASTER_EMBED
+        WsFdSets(&rd, &wr, &maxFd);
+#endif
         tv.tv_sec  = 0;
         tv.tv_usec = 20000;
 
-        if (select((int)g_sock + 1, &rd, NULL, NULL, &tv) > 0 && FD_ISSET(g_sock, &rd))
+        ready = select((int)maxFd + 1, &rd, &wr, NULL, &tv) > 0;
+#ifndef SH_MASTER_EMBED
+        if (ready)
+        {
+            WsService(&rd, &wr, SrvMillis());
+        }
+#endif
+        if (ready && FD_ISSET(g_sock, &rd))
         {
             int budget;
             for (budget = 0; budget < SRV_RX_PER_PASS; budget++)
@@ -2338,6 +2992,7 @@ int ShMaster_Serve(void)
                 {
                     break;
                 }
+                memset(from.sin_zero, 0, sizeof(from.sin_zero));
                 SrvDispatch(&from, buf, n);
             }
         }
@@ -2349,6 +3004,9 @@ int ShMaster_Serve(void)
         {
             lastExpire = now;
             SrvExpire(now);
+#ifndef SH_MASTER_EMBED
+            WsExpire(now);
+#endif
         }
         if (g_dbDirty && (now - g_lastSaveMs) >= SRV_SAVE_GAP_MS)
         {

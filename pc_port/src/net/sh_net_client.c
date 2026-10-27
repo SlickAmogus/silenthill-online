@@ -19,6 +19,10 @@
  *
  * The worker never allocates and never blocks except in getaddrinfo, which is
  * exactly why it is not on the game thread.
+ *
+ * The browser build has no threads. There the game thread runs one worker step
+ * a frame itself (ShNet_Service), and the lock is SDL's no-op stand-in; the
+ * socket is a WebSocket, so there is no getaddrinfo to block on.
  */
 
 #include <stdio.h>
@@ -55,6 +59,12 @@
  * their connection died. Deliberately longer than SHNET_TIMEOUT_MS so a brief
  * packet-loss burst does not make everyone flicker out. */
 #define SHNET_GHOST_STALE_MS 3000
+
+#if defined(__EMSCRIPTEN__)
+#define SHNET_INLINE_WORKER 1
+#else
+#define SHNET_INLINE_WORKER 0
+#endif
 
 /* Outbound commands the game thread queues for the worker. Kept as a tiny
  * ring rather than a malloc'd list so the game thread's enqueue is a memcpy
@@ -146,6 +156,7 @@ static SDL_mutex*  s_lock;
 static SDL_Thread* s_thread;
 static volatile int s_quit;
 static volatile int s_workerDone; /* the worker has returned */
+static int          s_inline;     /* the worker is stepped from the game thread */
 /* This install's persistent id (online_uid): what memos are attributed to. */
 static unsigned int s_uid;
 static int          s_enabled;   /* the worker is running at all */
@@ -234,7 +245,12 @@ typedef struct
     int          memoPendingMap;
     int          rosterTries;
     int          memoTries;
+    int          resolved;
+    int          napping;      /* backing off until napUntil */
+    unsigned int napUntil;
 } ShNetWorker;
+
+static ShNetWorker s_w;
 
 static void ShNetW_Send(ShNetWorker* w, const unsigned char* buf, int len)
 {
@@ -911,24 +927,18 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
 /* Worker loop                                                         */
 /* ------------------------------------------------------------------ */
 
-/* A wait the shutdown can cut short. */
-static void ShNetW_Nap(unsigned int ms)
+/* A back-off served across steps rather than slept: the browser build steps
+ * the worker on the game thread, which must never stall. */
+static void ShNetW_Nap(ShNetWorker* w, unsigned int ms)
 {
-    const unsigned int t0 = SDL_GetTicks();
-    while (!s_quit && SDL_GetTicks() - t0 < ms)
-    {
-        SDL_Delay(50);
-    }
+    w->napping  = 1;
+    w->napUntil = ShNetPlat_Millis() + ms;
 }
 
-static int SDLCALL ShNet_Worker(void* unused)
+static int ShNetW_Begin(ShNetWorker* w)
 {
-    ShNetWorker w;
-    int         resolved = 0;
-
-    (void)unused;
-    memset(&w, 0, sizeof(w));
-    s_activeW = &w;
+    memset(w, 0, sizeof(*w));
+    s_activeW = w;
 
     if (!ShNetPlat_Init())
     {
@@ -940,8 +950,8 @@ static int SDLCALL ShNet_Worker(void* unused)
 
     if (s_masterOn)
     {
-        w.sock = ShNetPlat_Open();
-        if (!w.sock)
+        w->sock = ShNetPlat_Open();
+        if (!w->sock)
         {
             SDL_LockMutex(s_lock);
             ShNet_SetStatus(SHNET_ST_REJECTED, "Could not open a UDP socket");
@@ -963,12 +973,26 @@ static int SDLCALL ShNet_Worker(void* unused)
         ShNet_SanitizeName(s_name);
     }
 
-    while (!s_quit)
+    return 1;
+}
+
+/* One pass of the worker loop. Never sleeps. */
+static void ShNetW_Step(ShNetWorker* w)
+{
     {
         unsigned int now = ShNetPlat_Millis();
         int          st;
         int          reconnect;
         int          chara;
+
+        if (w->napping)
+        {
+            if ((int)(now - w->napUntil) < 0)
+            {
+                return;
+            }
+            w->napping = 0;
+        }
 
         SDL_LockMutex(s_lock);
         reconnect = s_sh.wantReconnect;
@@ -982,9 +1006,9 @@ static int SDLCALL ShNet_Worker(void* unused)
 
         if (reconnect)
         {
-            resolved     = 0;
-            w.session    = 0;
-            w.helloTries = 0;
+            w->resolved     = 0;
+            w->session    = 0;
+            w->helloTries = 0;
         }
 
         if (!s_masterOn)
@@ -992,20 +1016,19 @@ static int SDLCALL ShNet_Worker(void* unused)
             /* Steam-session-only: no master server to talk to, but the session
              * still needs its callbacks pumped and its pings sent. */
             ShSession_Tick(now);
-            SDL_Delay(5);
-            continue;
+            return;
         }
 
-        if (!resolved)
+        if (!w->resolved)
         {
             char text[128];
-            if (ShNetPlat_Resolve(s_host, s_port, &w.server))
+            if (ShNetPlat_Resolve(s_host, s_port, &w->server))
             {
                 char addr[64];
-                ShNetPlat_AddrToString(&w.server, addr, (int)sizeof(addr));
-                resolved     = 1;
-                w.helloTries = 0;
-                w.lastHelloMs = 0;
+                ShNetPlat_AddrToString(&w->server, addr, (int)sizeof(addr));
+                w->resolved     = 1;
+                w->helloTries = 0;
+                w->lastHelloMs = 0;
                 SDL_LockMutex(s_lock);
                 SDL_snprintf(text, sizeof(text), "Connecting to %s...", addr);
                 ShNet_SetStatus(SHNET_ST_CONNECTING, text);
@@ -1020,8 +1043,8 @@ static int SDLCALL ShNet_Worker(void* unused)
                 SDL_UnlockMutex(s_lock);
                 /* A failed lookup is usually "no network yet"; retrying every
                  * few seconds costs nothing and recovers on its own. */
-                ShNetW_Nap(4000);
-                continue;
+                ShNetW_Nap(w, 4000);
+                return;
             }
         }
 
@@ -1031,27 +1054,23 @@ static int SDLCALL ShNet_Worker(void* unused)
 
         if (st == SHNET_ST_CONNECTING || st == SHNET_ST_LOST)
         {
-            if (now - w.lastHelloMs >= SHNET_HELLO_MS)
+            if (now - w->lastHelloMs >= SHNET_HELLO_MS)
             {
-                w.lastHelloMs = now;
-                if (w.helloTries < SHNET_HELLO_MAX)
+                w->lastHelloMs = now;
+                if (w->helloTries < SHNET_HELLO_MAX)
                 {
-                    w.helloTries++;
-                    ShNetW_SendHello(&w, chara);
+                    w->helloTries++;
+                    ShNetW_SendHello(w, chara);
                 }
                 else
                 {
                     SDL_LockMutex(s_lock);
                     ShNet_SetStatus(SHNET_ST_LOST, "No reply from server");
                     SDL_UnlockMutex(s_lock);
-                    /* Back off rather than spinning HELLOs at a dead host.
-                     * `continue` because `now` is five seconds stale after the
-                     * sleep, and handing that to ShNetW_Receive would stamp a
-                     * freshly-arrived packet as five seconds old -- which is
-                     * most of the way to a spurious timeout. */
-                    w.helloTries = 0;
-                    ShNetW_Nap(5000);
-                    continue;
+                    /* Back off rather than spinning HELLOs at a dead host. */
+                    w->helloTries = 0;
+                    ShNetW_Nap(w, 5000);
+                    return;
                 }
             }
         }
@@ -1078,25 +1097,25 @@ static int SDLCALL ShNet_Worker(void* unused)
             }
             SDL_UnlockMutex(s_lock);
 
-            if (localValid && now - w.lastStateMs >= (unsigned int)tick)
+            if (localValid && now - w->lastStateMs >= (unsigned int)tick)
             {
-                w.lastStateMs = now;
+                w->lastStateMs = now;
                 SDL_LockMutex(s_lock);
-                ShNetW_SendState(&w);
+                ShNetW_SendState(w);
                 SDL_UnlockMutex(s_lock);
             }
 
-            if (now - w.lastPingMs >= SHNET_PING_MS)
+            if (now - w->lastPingMs >= SHNET_PING_MS)
             {
-                w.lastPingMs = now;
-                ShNetW_SendPing(&w, now);
+                w->lastPingMs = now;
+                ShNetW_SendPing(w, now);
             }
 
             {
                 int i;
                 for (i = 0; i < pendingCount; i++)
                 {
-                    ShNetW_SendCmd(&w, &pending[i]);
+                    ShNetW_SendCmd(w, &pending[i]);
                 }
             }
 
@@ -1114,61 +1133,61 @@ static int SDLCALL ShNet_Worker(void* unused)
                 SDL_strlcpy(line, s_sh.chatOut[s_sh.chatOutTail].text, sizeof(line));
                 s_sh.chatOutTail = (s_sh.chatOutTail + 1) % SHNET_CHAT_RING;
                 SDL_UnlockMutex(s_lock);
-                ShNetW_SendChat(&w, scope, line);
+                ShNetW_SendChat(w, scope, line);
             }
 
             if (wantRoster)
             {
-                w.rosterPending = 1;
-                w.rosterTries   = 0;
-                w.lastRosterMs  = 0;
+                w->rosterPending = 1;
+                w->rosterTries   = 0;
+                w->lastRosterMs  = 0;
             }
-            if (w.rosterPending && now - w.lastRosterMs >= SHNET_RETRY_MS)
+            if (w->rosterPending && now - w->lastRosterMs >= SHNET_RETRY_MS)
             {
-                w.lastRosterMs = now;
-                if (++w.rosterTries > SHNET_REQ_TRIES)
+                w->lastRosterMs = now;
+                if (++w->rosterTries > SHNET_REQ_TRIES)
                 {
-                    w.rosterPending = 0;
+                    w->rosterPending = 0;
                 }
                 else
                 {
-                    ShNetW_SendSimple(&w, SHNET_MSG_ROSTER_REQ);
+                    ShNetW_SendSimple(w, SHNET_MSG_ROSTER_REQ);
                 }
             }
 
             if (wantMemos)
             {
-                w.memoPending    = 1;
-                w.memoTries      = 0;
-                w.memoPendingMap = memoMap;
-                w.lastMemoMs     = 0;
+                w->memoPending    = 1;
+                w->memoTries      = 0;
+                w->memoPendingMap = memoMap;
+                w->lastMemoMs     = 0;
             }
-            if (w.memoPending && now - w.lastMemoMs >= SHNET_RETRY_MS)
+            if (w->memoPending && now - w->lastMemoMs >= SHNET_RETRY_MS)
             {
-                w.lastMemoMs = now;
-                if (++w.memoTries > SHNET_REQ_TRIES)
+                w->lastMemoMs = now;
+                if (++w->memoTries > SHNET_REQ_TRIES)
                 {
-                    w.memoPending = 0;
+                    w->memoPending = 0;
                 }
                 else
                 {
-                    ShNetW_SendMemoQuery(&w, w.memoPendingMap);
+                    ShNetW_SendMemoQuery(w, w->memoPendingMap);
                 }
             }
 
-            if (now - w.lastRxMs > SHNET_TIMEOUT_MS)
+            if (now - w->lastRxMs > SHNET_TIMEOUT_MS)
             {
                 SDL_LockMutex(s_lock);
                 ShNet_SetStatus(SHNET_ST_LOST, "Lost contact, reconnecting...");
                 s_sh.ghostCount = 0;
                 SDL_UnlockMutex(s_lock);
-                w.helloTries  = 0;
-                w.lastHelloMs = 0;
-                SH_DBG("[NET] timed out after %u ms of silence", now - w.lastRxMs);
+                w->helloTries  = 0;
+                w->lastHelloMs = 0;
+                SH_DBG("[NET] timed out after %u ms of silence", now - w->lastRxMs);
             }
         }
 
-        ShNetW_Receive(&w, now);
+        ShNetW_Receive(w, now);
         ShSession_Tick(now);
 
         /* Expire ghosts even when SNAPSHOTs have stopped, or a server that
@@ -1176,22 +1195,48 @@ static int SDLCALL ShNet_Worker(void* unused)
         SDL_LockMutex(s_lock);
         ShNetW_GhostExpire(now);
         SDL_UnlockMutex(s_lock);
-
-        SDL_Delay(5);
     }
+}
 
+static void ShNetW_End(ShNetWorker* w)
+{
     SH_DBG("[NET] worker stopping: co-op session");
     ShSession_Shutdown();
     SH_DBG("[NET] worker stopping: living world");
-    if (w.session)
+    if (w->session)
     {
-        ShNetW_SendSimple(&w, SHNET_MSG_BYE);
+        ShNetW_SendSimple(w, SHNET_MSG_BYE);
     }
-    ShNetPlat_Close(w.sock);
+    ShNetPlat_Close(w->sock);
+    w->sock = NULL;
     ShNetPlat_Shutdown();
+}
+
+static int SDLCALL ShNet_Worker(void* unused)
+{
+    (void)unused;
+    if (ShNetW_Begin(&s_w))
+    {
+        while (!s_quit)
+        {
+            ShNetW_Step(&s_w);
+            SDL_Delay(5);
+        }
+        ShNetW_End(&s_w);
+    }
     s_workerDone = 1;
     return 0;
 }
+
+/* The browser build's worker: one step a frame, from ShNet_GameTick. */
+void ShNet_Service(void)
+{
+    if (s_inline && !s_quit)
+    {
+        ShNetW_Step(&s_w);
+    }
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
@@ -1199,7 +1244,7 @@ static int SDLCALL ShNet_Worker(void* unused)
 
 void ShNet_Init(void)
 {
-    if (s_thread)
+    if (s_thread || s_inline)
     {
         return;
     }
@@ -1264,6 +1309,17 @@ void ShNet_Init(void)
         s_gt.status = SHNET_ST_OFF;
     }
 
+#if SHNET_INLINE_WORKER
+    s_inline = ShNetW_Begin(&s_w);
+    if (!s_inline)
+    {
+        SH_DBG("[NET] online client could not start");
+        SDL_DestroyMutex(s_lock);
+        s_lock    = NULL;
+        s_enabled = 0;
+        return;
+    }
+#else
     s_thread = SDL_CreateThread(ShNet_Worker, "SH_NET", NULL);
     if (!s_thread)
     {
@@ -1273,12 +1329,23 @@ void ShNet_Init(void)
         s_enabled = 0;
         return;
     }
+#endif
 
     SH_DBG("[NET] online client started: %s:%u as \"%s\"", s_host, (unsigned)s_port, s_name);
 }
 
 void ShNet_Shutdown(void)
 {
+    if (s_inline)
+    {
+        s_quit = 1;
+        ShNetW_End(&s_w);
+        s_inline  = 0;
+        SDL_DestroyMutex(s_lock);
+        s_lock    = NULL;
+        s_enabled = 0;
+        return;
+    }
     if (!s_thread)
     {
         return;

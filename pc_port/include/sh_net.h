@@ -110,6 +110,10 @@ void ShNet_Shutdown(void);
  * This is the ONLY function that takes the lock. */
 void ShNet_GameTick(void);
 
+/* The browser build has no worker thread: this runs one worker step, and
+ * ShNet_GameTick calls it every frame. A no-op everywhere else. */
+void ShNet_Service(void);
+
 /* Reconnect with the current config (used by the console command and by the
  * player-list panel's Reconnect row). */
 void ShNet_Reconnect(void);

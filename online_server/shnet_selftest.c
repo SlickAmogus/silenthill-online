@@ -15,6 +15,11 @@
  *
  * -i 100 because every synthetic player shares 127.0.0.1, and the crowd test
  * needs more of them than the default per-address cap allows.
+ *
+ *   sh_master -p 27899 --ws 27900 -d selftest.db -i 100 --max 128 &
+ *   shnet_selftest --ws 27900 127.0.0.1 27899
+ * runs every check with the synthetic players on WebSocket instead, the way
+ * the browser build connects.
  */
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -51,9 +56,13 @@ static int g_fail;
         else      { printf("  FAIL " __VA_ARGS__); printf("\n"); g_fail++; } \
     } while (0)
 
+static unsigned short g_wsPort; /* --ws: talk WebSocket to this TCP port */
+
 typedef struct
 {
     TSock              sock;
+    int                rlen;      /* WebSocket: bytes of rbuf not yet parsed */
+    shn_u8             rbuf[8192];
     struct sockaddr_in server;
     shn_u32            session;
     shn_u32            playerId;
@@ -61,9 +70,72 @@ typedef struct
     const char*        build; /* NULL = "selftest" */
 } Peer;
 
+static void PeerSetNonBlocking(TSock s)
+{
+#if defined(_WIN32)
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);
+#else
+    int fl = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, fl | O_NONBLOCK);
+#endif
+}
+
+/* Blocking connect and HTTP upgrade, then non-blocking like the UDP peer. */
+static void PeerOpenWs(Peer* p, const char* host)
+{
+    struct sockaddr_in a;
+    char               req[256];
+    int                n, got = 0;
+    memset(&a, 0, sizeof(a));
+    a.sin_family      = AF_INET;
+    a.sin_port        = htons(g_wsPort);
+    a.sin_addr.s_addr = inet_addr(host);
+    p->sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (connect(p->sock, (struct sockaddr*)&a, sizeof(a)) != 0)
+    {
+        printf("  FAIL cannot connect to WebSocket port %u\n", (unsigned)g_wsPort);
+        g_fail++;
+        return;
+    }
+    n = snprintf(req, sizeof(req),
+                 "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", host);
+    send(p->sock, req, n, 0);
+    while (got < (int)sizeof(p->rbuf) - 1)
+    {
+        n = (int)recv(p->sock, (char*)p->rbuf + got, (int)sizeof(p->rbuf) - 1 - got, 0);
+        if (n <= 0) break;
+        got += n;
+        p->rbuf[got] = 0;
+        if (strstr((char*)p->rbuf, "\r\n\r\n")) break;
+    }
+    {
+        char* end = strstr((char*)p->rbuf, "\r\n\r\n");
+        /* RFC 6455's own sample key, so the expected answer is its sample too. */
+        if (!end || strncmp((char*)p->rbuf, "HTTP/1.1 101", 12) != 0 ||
+            !strstr((char*)p->rbuf, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="))
+        {
+            printf("  FAIL WebSocket upgrade refused\n");
+            g_fail++;
+            return;
+        }
+        end += 4;
+        p->rlen = got - (int)(end - (char*)p->rbuf);
+        memmove(p->rbuf, end, (size_t)p->rlen);
+    }
+    PeerSetNonBlocking(p->sock);
+}
+
 static void PeerOpen(Peer* p, const char* host, unsigned short port, const char* name)
 {
     memset(p, 0, sizeof(*p));
+    if (g_wsPort)
+    {
+        snprintf(p->name, sizeof(p->name), "%s", name);
+        PeerOpenWs(p, host);
+        return;
+    }
     p->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     p->server.sin_family      = AF_INET;
     p->server.sin_port        = htons(port);
@@ -85,8 +157,56 @@ static void PeerOpen(Peer* p, const char* host, unsigned short port, const char*
 
 static void PeerSend(Peer* p, const shn_u8* buf, int len)
 {
+    if (g_wsPort)
+    {
+        shn_u8 f[SHNET_MTU + 8];
+        int    o = 0, i;
+        static const shn_u8 mask[4] = { 0x12, 0x34, 0x56, 0x78 };
+        if (len > SHNET_MTU) return;
+        f[o++] = 0x82;
+        if (len < 126) f[o++] = (shn_u8)(0x80 | len);
+        else { f[o++] = 0x80 | 126; f[o++] = (shn_u8)(len >> 8); f[o++] = (shn_u8)len; }
+        memcpy(f + o, mask, 4);
+        o += 4;
+        for (i = 0; i < len; i++) f[o++] = (shn_u8)(buf[i] ^ mask[i & 3]);
+        send(p->sock, (const char*)f, o, 0);
+        return;
+    }
     sendto(p->sock, (const char*)buf, (size_t)len, 0,
            (struct sockaddr*)&p->server, (TSockLen)sizeof(p->server));
+}
+
+/* One datagram out of the WebSocket stream, or 0 when none is whole yet. */
+static int PeerRecvWs(Peer* p, shn_u8* out, int cap)
+{
+    for (;;)
+    {
+        if (p->rlen >= 2)
+        {
+            int len = p->rbuf[1] & 0x7F, hdr = 2, op = p->rbuf[0] & 0x0F;
+            if (len == 126)
+            {
+                if (p->rlen < 4) goto more;
+                len = (p->rbuf[2] << 8) | p->rbuf[3];
+                hdr = 4;
+            }
+            if (p->rlen >= hdr + len)
+            {
+                int n = (op == 0x2 && len <= cap) ? len : 0;
+                if (n) memcpy(out, p->rbuf + hdr, (size_t)n);
+                memmove(p->rbuf, p->rbuf + hdr + len, (size_t)(p->rlen - hdr - len));
+                p->rlen -= hdr + len;
+                if (n) return n;
+                continue;
+            }
+        }
+    more:
+        {
+            int n = (int)recv(p->sock, (char*)p->rbuf + p->rlen, (int)sizeof(p->rbuf) - p->rlen, 0);
+            if (n <= 0) return 0;
+            p->rlen += n;
+        }
+    }
 }
 
 /* Waits up to `ms` for a datagram of `want`, returning its payload length or
@@ -98,7 +218,8 @@ static int PeerWait(Peer* p, int want, int ms, shn_u8* payOut, int payCap)
     while (spent < (unsigned int)ms)
     {
         shn_u8  buf[SHNET_MTU];
-        int     n = (int)recv(p->sock, (char*)buf, sizeof(buf), 0);
+        int     n = g_wsPort ? PeerRecvWs(p, buf, (int)sizeof(buf))
+                             : (int)recv(p->sock, (char*)buf, sizeof(buf), 0);
         if (n > 0)
         {
             shn_u8  type;
@@ -279,6 +400,12 @@ static void PeerQueryMemos(Peer* p, int mapIdx)
 
 int main(int argc, char** argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "--ws"))
+    {
+        g_wsPort = (unsigned short)atoi(argv[2]);
+        argc -= 2;
+        argv += 2;
+    }
     const char*    host = (argc > 1) ? argv[1] : "127.0.0.1";
     unsigned short port = (unsigned short)((argc > 2) ? atoi(argv[2]) : SHNET_DEFAULT_PORT);
     Peer           a, b;
@@ -293,7 +420,8 @@ int main(int argc, char** argv)
     {
         g_password = argv[3];
     }
-    printf("Silent Hill Online protocol self-test against %s:%u\n\n", host, (unsigned)port);
+    printf("Silent Hill Online protocol self-test against %s:%u%s\n\n", host, (unsigned)port,
+           g_wsPort ? " over WebSocket" : "");
 
     /* --- entry sizes must agree with what both ends serialize --- */
     printf("wire layout\n");
