@@ -55,6 +55,11 @@
 #include "map_registry.h"
 #include "dbg_overlay.h"
 #include "pc_config.h"
+#include "pc_discord.h" /* Pc_MapAreaName, for NET WHO */
+#include "sh_net.h"
+#include "sh_net_session.h"
+#include "sh_net_chat.h"
+#include "sh_net_coop.h"
 #include "pc_title_style.h"
 #include "pc_credits.h"
 #include "pc_pick.h"
@@ -533,6 +538,18 @@ static const char* const HELP_LINES[] = {
     " about          PC port credits",
     " pccredits [0|1]  PC port credits block in the staff roll",
     " loga / logb    log Harry+camera pos/angles to SilentHill.log",
+    " net            online status, ghosts and markers here",
+    " net reconnect  drop and re-join the master server",
+    " net who       who is online, and where",
+    " net coop 0|1  force co-op mode (blocks pausing) for testing",
+    " net model 0|1 EXPERIMENTAL: draw ghosts as full character models",
+    " status        co-op: session, players, pings, pausing",
+    " bgm <2-41>    play a track from THIS area's music bank; bgm stop",
+    " steam         Steam session status",
+    " steam host    open a co-op lobby (friends only)",
+    " steam invite  Steam overlay friend invite",
+    " steam join <id> | steam leave",
+    " chat hide|show   toggle the chat overlay (Y type, U channel)",
     "Quick Save: F6   Quick Load: F8 (work outside console)",
 };
 
@@ -1425,6 +1442,189 @@ void Pc_ConsoleExec(const char* line)
 
     if (cmd[0] == '\0') {
         return;
+    } else if (strcmp(cmd, "NET") == 0) {
+        extern int          ShNet_Status(void);
+        extern const char*  ShNet_StatusText(void);
+        extern const char*  ShNet_ServerName(void);
+        extern int          ShNet_PingMs(void);
+        extern int          ShNet_GhostCount(void);
+        extern int          ShNet_MemoCount(void);
+        extern int          ShNet_PeerCount(void);
+        extern int          ShNet_PeerTotal(void);
+        extern void         ShNet_Reconnect(void);
+        extern const ShNetPeer* ShNet_Peer(int i);
+        extern void         ShNet_RequestRoster(void);
+        extern void         ShNet_RequestMemos(void);
+
+        if (strcmp(arg, "RECONNECT") == 0) {
+            ShNet_Reconnect();
+            cprintf("online: reconnecting");
+        } else if (strcmp(arg, "WHO") == 0) {
+            int n = ShNet_PeerCount();
+            int i;
+            ShNet_RequestRoster();
+            if (n == 0) {
+                cprintf("online: nobody listed yet (roster requested)");
+            }
+            for (i = 0; i < n; i++) {
+                const ShNetPeer* p = ShNet_Peer(i);
+                if (!p) continue;
+                cprintf("  %-16s %-28s %d ms", p->name,
+                        Pc_MapAreaName(p->mapIdx), p->pingMs);
+            }
+            cprintf("online: %d of %d listed", n, ShNet_PeerTotal());
+        } else if (strncmp(arg, "COOP", 4) == 0) {
+            const char* v = arg + 4;
+            while (*v == ' ') v++;
+            if (*v == '0' || *v == '1')
+                ShNet_SetCoopActive(*v == '1', "console");
+            else
+                ShNet_SetCoopActive(!ShNet_CoopActive(), "console");
+            cprintf("co-op mode: %s (pausing %s)",
+                    ShNet_CoopActive() ? "ON" : "off",
+                    ShNet_PauseBlocked() ? "BLOCKED" : "allowed");
+        } else if (strncmp(arg, "MODEL", 5) == 0) {
+            const char* v = arg + 5;
+            while (*v == ' ') v++;
+            if (*v == '0' || *v == '1')
+                g_PcConfig.onlineGhostModel = (*v == '1');
+            else
+                g_PcConfig.onlineGhostModel = !g_PcConfig.onlineGhostModel;
+            cprintf("ghost model: %s (experimental; silhouette otherwise)",
+                    g_PcConfig.onlineGhostModel ? "ON" : "off");
+        } else if (strcmp(arg, "MEMOS") == 0) {
+            ShNet_RequestMemos();
+            cprintf("online: re-queried this map's markers (%d held)", ShNet_MemoCount());
+        } else {
+            static const char* const st[] = {
+                "off", "resolving", "connecting", "connected", "refused", "lost"
+            };
+            int s = ShNet_Status();
+            cprintf("online: %s - %s", (s >= 0 && s <= 5) ? st[s] : "?", ShNet_StatusText());
+            if (s == 3) {
+                cprintf("  server \"%s\"  %d ms  %d online",
+                        ShNet_ServerName(), ShNet_PingMs(), ShNet_PeerTotal());
+                cprintf("  %d ghost(s) on this map, %d marker(s)",
+                        ShNet_GhostCount(), ShNet_MemoCount());
+            }
+            cprintf("  co-op mode: %s", ShNet_CoopActive()
+                    ? "ON - pausing is blocked" : "off");
+            cprintf("  net reconnect | net who | net memos | net coop [0|1]");
+        }
+    } else if (strcmp(cmd, "STATUS") == 0) {
+        /* Co-op-oriented one-look: mode, session, who is in it, and whether the
+         * world is shared (pausing blocked). */
+        extern int g_PcCoopGame;
+        int i, n = ShSession_MemberCount();
+        cprintf("multiplayer status:");
+        cprintf("  this game: %s", g_PcCoopGame ? "MULTIPLAYER" : "single-player");
+        if (ShSession_Active()) {
+            cprintf("  session: %s, lobby %llu, %d player(s)",
+                    ShSession_IsHost() ? "HOSTING" : "guest",
+                    ShSession_LobbyId(), n);
+        } else {
+            cprintf("  session: not in a lobby");
+        }
+        cprintf("  pausing: %s", ShNet_PauseBlocked()
+                ? "blocked (shared world)" : "allowed");
+        cprintf("  fps cap: %d", g_PcConfig.fpsCap);
+        for (i = 0; i < n; i++) {
+            const ShSessionMember* m = ShSession_Member(i);
+            if (!m) continue;
+            if (m->pingMs >= 0)
+                cprintf("  - %-20s %d ms%s", m->name, m->pingMs,
+                        m->linked ? "" : "  (no link)");
+            else
+                cprintf("  - %-20s  --%s", m->name,
+                        m->linked ? "" : "  (no link)");
+        }
+    } else if (strcmp(cmd, "COOPDEBUG") == 0) {
+        /* Host-only: allow JOINED players to use debug controls (console, cheat
+         * keys). Off by default, so a guest cannot cheat/console unless the host
+         * turns this on. Rides the lobby data to every guest; the host's own
+         * debug controls are governed by allow_debug_controls as usual. */
+        extern int g_PcCoopGame;
+        if (!g_PcCoopGame || !ShSession_Active() || !ShSession_IsHost()) {
+            cprintf("coopdebug: only the host of a co-op game can allow guest debug controls");
+        } else if (strcmp(arg, "1") == 0 || strcmp(arg, "ON") == 0) {
+            ShSession_SetGuestDebug(1);
+            cprintf("coopdebug: joined players MAY now use debug controls");
+        } else if (strcmp(arg, "0") == 0 || strcmp(arg, "OFF") == 0) {
+            ShSession_SetGuestDebug(0);
+            cprintf("coopdebug: joined players may NOT use debug controls");
+        } else {
+            cprintf("coopdebug <0|1>  allow joined players debug controls (off by default)");
+        }
+    } else if (strcmp(cmd, "BGM") == 0) {
+        /* Play a sequenced music track by number. IMPORTANT: a track only plays
+         * if its sequence is in the CURRENT area's sound bank -- the engine
+         * loads BGM per map, there is no global jukebox -- so most numbers do
+         * nothing on a given map, and a map with no music (e.g. the police
+         * station) plays none at all. Stop is a one-shot layer mute;
+         * Bgm_CrossfadeToTrack is a multi-frame fade a console call can't pump. */
+        extern void Bgm_AllLayersMute(void);
+        if (strcmp(arg, "STOP") == 0 || strcmp(arg, "OFF") == 0) {
+            Bgm_AllLayersMute();
+            cprintf("bgm: muted (a running map may restart its own track)");
+        } else {
+            int n = atoi(arg);
+            if (n >= 2 && n <= 41) {
+                Bgm_PlayNewTrack(n);
+                cprintf("bgm: track %d  (plays only if this area's bank has it; bgm stop)", n);
+            } else {
+                cprintf("bgm <2-41>  play a track in THIS area's bank;  bgm stop");
+            }
+        }
+    } else if (strcmp(cmd, "STEAM") == 0) {
+        char line[128];
+        ShSession_StatusLine(line, (int)sizeof(line));
+        if (strcmp(arg, "HOST") == 0) {
+            ShSession_RequestHost();
+            cprintf("steam: opening a session (friends only)");
+        } else if (strcmp(arg, "INVITE") == 0) {
+            ShSession_RequestInvite();
+            cprintf("steam: opening the invite overlay");
+        } else if (strcmp(arg, "LEAVE") == 0) {
+            ShSession_RequestLeave();
+            cprintf("steam: leaving the session");
+        } else if (strncmp(arg, "JOIN", 4) == 0) {
+            unsigned long long id = strtoull(arg + 4, NULL, 10);
+            if (id) {
+                ShSession_RequestJoin(id);
+                cprintf("steam: joining %llu", id);
+            } else {
+                cprintf("steam: give a lobby id, e.g. steam join 109775241010101010");
+            }
+        } else {
+            int i, n = ShSession_MemberCount();
+            cprintf("%s", line);
+            if (ShSession_Active()) {
+                cprintf("  lobby %llu, %s", ShSession_LobbyId(),
+                        ShSession_IsHost() ? "hosting" : "guest");
+            }
+            for (i = 0; i < n; i++) {
+                const ShSessionMember* m = ShSession_Member(i);
+                if (!m) continue;
+                if (m->pingMs >= 0)
+                    cprintf("  %-20s %d ms%s", m->name, m->pingMs,
+                            m->linked ? "" : "  (no link)");
+                else
+                    cprintf("  %-20s  --%s", m->name, m->linked ? "" : "  (no link)");
+            }
+            cprintf("  steam host | steam invite | steam join <id> | steam leave");
+        }
+    } else if (strcmp(cmd, "CHAT") == 0) {
+        if (strcmp(arg, "HIDE") == 0 || strcmp(arg, "OFF") == 0) {
+            ShNetChat_SetHidden(1);
+            cprintf("chat overlay hidden");
+        } else if (strcmp(arg, "SHOW") == 0 || strcmp(arg, "ON") == 0) {
+            ShNetChat_SetHidden(0);
+            cprintf("chat overlay shown");
+        } else {
+            ShNetChat_SetHidden(!ShNetChat_Hidden());
+            cprintf("chat overlay %s (Y to type, U to switch channel)",
+                    ShNetChat_Hidden() ? "hidden" : "shown");
+        }
     } else if (strcmp(cmd, "QUIT") == 0) {
         SH_DBG("[CONSOLE] quit");
         exit(0);

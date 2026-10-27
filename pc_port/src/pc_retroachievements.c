@@ -596,6 +596,7 @@ static SDL_sem*     s_queueSem;
 static s_RaJob*     s_pending;      /* worker inbox  */
 static s_RaJob*     s_completed;    /* main-thread inbox */
 static volatile int s_httpQuit;
+static volatile int s_httpDone; /* the uploader thread has returned */
 
 static char* Pc_RaStrdup(const char* s)
 {
@@ -675,6 +676,7 @@ static int SDLCALL Pc_RaHttpThread(void* unused)
         Pc_RaQueuePush(&s_completed, job);
         SDL_UnlockMutex(s_queueLock);
     }
+    s_httpDone = 1;
     return 0;
 }
 #endif
@@ -1476,7 +1478,25 @@ void Pc_Ra_Shutdown(void)
     }
     if (s_httpThread)
     {
-        SDL_WaitThread(s_httpThread, NULL);
+        /* A request in flight has its own timeout; the exit does not wait
+         * for it. The thread is left behind and the client not destroyed
+         * under it, since the process is ending anyway. */
+        const unsigned int t0 = SDL_GetTicks();
+        while (!s_httpDone && SDL_GetTicks() - t0 < 3000u)
+        {
+            SDL_Delay(20);
+        }
+        if (s_httpDone)
+        {
+            SDL_WaitThread(s_httpThread, NULL);
+        }
+        else
+        {
+            SDL_DetachThread(s_httpThread);
+            SH_DBG("[RA] uploader still busy at exit; left behind");
+            s_httpThread = NULL;
+            return;
+        }
         s_httpThread = NULL;
     }
     if (s_client)

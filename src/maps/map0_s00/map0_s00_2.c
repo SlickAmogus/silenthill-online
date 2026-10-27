@@ -1030,6 +1030,26 @@ void MapEven_CutsceneAlleyGetsDarker(void) // 0x800DB514
             break;
 
         case 5:
+#ifdef SH_PC_PORT
+            /* EventFlag_16 comes from the darkness value, which only climbs on
+             * its own once it has passed 80 (EventFlag_15, func_800DCF38); below
+             * that it follows the player's walk down the alley. Walking in always
+             * gets it there before this trigger, but a co-op partner placed at the
+             * scene's start never walked it, and the scene waited forever. Start
+             * the climb from 80, as a walk in would have. */
+            if (!Savegame_EventFlagGet(EventFlag_15))
+            {
+                if (D_800DFADC != NO_VALUE && D_800DFADC < Q12(80.0f))
+                {
+                    D_800DFADC = Q12(80.0f);
+                }
+                Savegame_EventFlagSet(EventFlag_15);
+            }
+            if (!Savegame_EventFlagGet(EventFlag_13))
+            {
+                Savegame_EventFlagSet(EventFlag_16); /* the darkness never started here at all */
+            }
+#endif
             func_8008605C(EventFlag_16, 6, 5, false);
             break;
 

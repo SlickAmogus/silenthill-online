@@ -9,6 +9,7 @@
 #endif
 
 #include "bodyprog/bodyprog.h"
+#include "bodyprog/player.h" /* HARRY_*_BODY_BONE_MASK: co-op pose capture */
 #include "bodyprog/screen/screen_data.h"
 #include "bodyprog/screen/screen_draw.h"
 #include "bodyprog/math/math.h"
@@ -96,6 +97,13 @@ void Anim_BoneInit(s_AnmHeader* anmHdr, GsCOORDINATE2* boneCoords) // 0x800445A4
     }
 }
 
+#ifdef SH_PC_PORT
+/* The exact keyframe pair and blend each half of the local Harry was last
+ * posed with: [0] legs, [1] torso and arms. Co-op sends these so a partner
+ * shows this frame, not the nearest whole keyframe (sh_net_game.c). */
+s32 g_PcHarryPoseKf[2][3];
+#endif
+
 void Anim_BoneUpdate(s_AnmHeader* anmHdr, GsCOORDINATE2* boneCoords, s32 keyframe0, s32 keyframe1, q19_12 alpha) // 0x800446D8
 {
     s32            boneCount;
@@ -135,6 +143,31 @@ void Anim_BoneUpdate(s_AnmHeader* anmHdr, GsCOORDINATE2* boneCoords, s32 keyfram
     }
     if (keyframe0 < 0) keyframe0 = 0;
     if (keyframe1 < 0) keyframe1 = 0;
+    {
+        extern GsCOORDINATE2* g_PcNetNpcCapBones;
+        extern void           Pc_NetNpc_CapturePose(s32 k0, s32 k1, s32 alpha);
+        if (g_PcNetNpcCapBones != NULL && boneCoords == g_PcNetNpcCapBones)
+        {
+            Pc_NetNpc_CapturePose(keyframe0, keyframe1, alpha);
+        }
+    }
+    if (boneCoords == &g_SysWork.playerBoneCoords[HarryBone_Root] && anmHdr == (s_AnmHeader*)FS_BUFFER_0)
+    {
+        s32 dis = g_SysWork.playerWork.extra.disabledAnimBones;
+        s32 h;
+        for (h = 0; h < 2; h++)
+        {
+            /* Pass 0 runs with the upper half disabled, pass 1 with the lower;
+             * a pass with neither disabled poses both. */
+            if (dis == ((h == 0) ? HARRY_LOWER_BODY_BONE_MASK : HARRY_UPPER_BODY_BONE_MASK))
+            {
+                continue;
+            }
+            g_PcHarryPoseKf[h][0] = keyframe0;
+            g_PcHarryPoseKf[h][1] = keyframe1;
+            g_PcHarryPoseKf[h][2] = alpha;
+        }
+    }
 #endif
     frame0Data    = ((u8*)anmHdr + anmHdr->dataOffset) + (anmHdr->keyframeDataSize * keyframe0);
     frame0RotData = frame0Data + (anmHdr->translationBoneCount * 3);

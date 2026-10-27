@@ -502,50 +502,74 @@ static int PlayAs_HarryAnmReady(const u8* anm)
     return anm[0] == 0x94 && anm[1] == 0x01 && anm[0x06] == PLAYAS_BONE_MAX;
 }
 
-static void PlayAs_LoadSkinBinds(void)
+/* Harry's own binds and root height, latched once off a resident HB_BASE:
+ * the swap-back path writes them back, the leg-drop compensation is measured
+ * against them, and every remote rig is built against them. 0 = HB_BASE is
+ * not in FS_BUFFER_0 yet. */
+static int PlayAs_LatchHarry(void)
 {
-    const PcPlayAsChara* p = PlayAs_Cur();
-    u8*                  harryAnm = (u8*)FS_BUFFER_0;
+    u8* harryAnm = (u8*)FS_BUFFER_0;
+    int harryBones;
+
+    if (s_harryBindLatched)
+    {
+        return 1;
+    }
+    if (!PlayAs_HarryAnmReady(harryAnm))
+    {
+        return 0;
+    }
+    PlayAs_ReadBinds(harryAnm, s_harryBindT, s_harryBindHas, &harryBones, &s_rootYOrig);
+    s_harryBindLatched = 1;
+    s_rootYPatched     = 1;
+    return 1;
+}
+
+static const PcPlayAsChara* PlayAs_RowFor(int charaId)
+{
+    int i;
+    for (i = 0; i < PLAYAS_COUNT; i++)
+    {
+        if (s_playable[i].charaId == charaId)
+        {
+            return &s_playable[i];
+        }
+    }
+    return NULL;
+}
+
+/* Read a skin's ANM far enough for its bind table and build the rig Harry's
+ * keyframes pose it with. Read straight through the FS queue like the chara
+ * pool does (pumping it rather than waiting a VSync per state), into a buffer
+ * freed before returning. Needs Harry's binds latched. */
+static int PlayAs_RigLoad(int charaId, PcPlayAsRig* rig)
+{
+    const PcPlayAsChara* row = PlayAs_RowFor(charaId);
     s32                  skinT[PLAYAS_BONE_MAX][3];
     u8                   skinHas[PLAYAS_BONE_MAX];
     s16                  animFileIdx;
     s32                  size;
     u8*                  buf;
     s32                  pump = 0;
-    int                  boneCount;
-    int                  harryBones;
+    int                  boneCount = 0;
     u8                   throwaway;
     int                  i;
 
-    if (p->charaId == Chara_Harry)
+    memset(rig, 0, sizeof(*rig));
+    rig->charaId = charaId;
+    if (charaId <= Chara_Harry || charaId >= Chara_Count || !s_harryBindLatched)
     {
-        return; /* the caller clears; nothing to load */
+        return 0;
     }
-
-    animFileIdx = CHARA_FILE_INFOS[p->charaId].animFileIdx;
-    if (animFileIdx == (s16)NO_VALUE || animFileIdx == s_skinBindFileIdx)
+    animFileIdx = CHARA_FILE_INFOS[charaId].animFileIdx;
+    if (animFileIdx == (s16)NO_VALUE)
     {
-        return; /* nothing to load, or already loaded for this skin */
+        return 0;
     }
-    if (!PlayAs_HarryAnmReady(harryAnm))
-    {
-        SH_DBG("[PLAYAS] HB_BASE not resident yet — retarget deferred");
-        return;
-    }
-
-    /* Harry's own offsets, latched once: the swap-back path writes these back,
-     * and the leg-drop compensation is measured against them. */
-    if (!s_harryBindLatched)
-    {
-        PlayAs_ReadBinds(harryAnm, s_harryBindT, s_harryBindHas, &harryBones, &s_rootYOrig);
-        s_harryBindLatched = 1;
-        s_rootYPatched     = 1;
-    }
-
     size = Fs_GetFileSectorAlignedSize(animFileIdx);
     if (size <= 0x14 + PLAYAS_BONE_MAX * 6)
     {
-        return;
+        return 0;
     }
     /* calloc, not malloc: a dropped read or an exhausted pump budget must leave
      * a buffer that FAILS the header check below rather than one holding heap
@@ -553,7 +577,7 @@ static void PlayAs_LoadSkinBinds(void)
     buf = (u8*)calloc(1, (size_t)size);
     if (buf == NULL)
     {
-        return;
+        return 0;
     }
 
     Fs_QueueStartRead(animFileIdx, buf);
@@ -562,8 +586,6 @@ static void PlayAs_LoadSkinBinds(void)
         Fs_QueueUpdate();
     }
 
-    boneCount    = 0;
-    s_extraCount = 0;
     if (buf[0] == 0x94 && buf[1] == 0x01 && buf[0x12] <= 4 && buf[0x06] >= PLAYAS_BONE_MAX)
     {
         int raw   = buf[0x06];
@@ -579,20 +601,21 @@ static void PlayAs_LoadSkinBinds(void)
         u32 dataOffset = (u32)buf[0] | ((u32)buf[1] << 8);
         int transBC    = buf[0x03];
 
-        for (e = PLAYAS_BONE_MAX; e < raw && s_extraCount < PLAYAS_EXTRA_MAX; e++)
+        for (e = PLAYAS_BONE_MAX; e < raw && rig->extraCount < PLAYAS_EXTRA_MAX; e++)
         {
             const u8* b   = buf + 0x14 + e * 6;
             int       rot = (s8)b[1];
             int       k;
+            int       x   = rig->extraCount;
 
-            s_extraParent[s_extraCount] = (u8)b[0];
-            s_extraT[s_extraCount][0]   = (s32)(s8)b[3] << scale;
-            s_extraT[s_extraCount][1]   = (s32)(s8)b[4] << scale;
-            s_extraT[s_extraCount][2]   = (s32)(s8)b[5] << scale;
+            rig->extraParent[x] = (u8)b[0];
+            rig->extraT[x][0]   = (s32)(s8)b[3] << scale;
+            rig->extraT[x][1]   = (s32)(s8)b[4] << scale;
+            rig->extraT[x][2]   = (s32)(s8)b[5] << scale;
 
             for (k = 0; k < 9; k++)
             {
-                s_extraR[s_extraCount][k] = ((k % 4) == 0) ? Q12_ANGLE(360.0f) : Q12_ANGLE(0.0f);
+                rig->extraR[x][k] = ((k % 4) == 0) ? Q12_ANGLE(360.0f) : Q12_ANGLE(0.0f);
             }
             if (rot >= 0)
             {
@@ -602,11 +625,11 @@ static void PlayAs_LoadSkinBinds(void)
                 {
                     for (k = 0; k < 9; k++)
                     {
-                        s_extraR[s_extraCount][k] = (s32)(s8)buf[off + k] << 5;
+                        rig->extraR[x][k] = (s32)(s8)buf[off + k] << 5;
                     }
                 }
             }
-            s_extraCount++;
+            rig->extraCount++;
         }
     }
     free(buf);
@@ -616,8 +639,8 @@ static void PlayAs_LoadSkinBinds(void)
         /* Unreadable, or a rig too short to cover Harry's bones — either way the
          * missing bones would keep Harry's offsets, which is the mismatch this
          * path exists to remove. */
-        SH_DBG("[PLAYAS] %s ANM unusable for retarget (bones %d)", p->label, boneCount);
-        return;
+        rig->extraCount = 0;
+        return 0;
     }
 
     /* A bone is retargetable only when BOTH rigs treat it as static. The engine
@@ -626,25 +649,218 @@ static void PlayAs_LoadSkinBinds(void)
      * but the predicate should not depend on that). */
     for (i = 1; i < PLAYAS_BONE_MAX; i++)
     {
-        s_skinBindHas[i] = (u8)(skinHas[i] && s_harryBindHas[i]);
-        s_skinBindT[i][0] = skinT[i][0];
-        s_skinBindT[i][1] = skinT[i][1];
-        s_skinBindT[i][2] = skinT[i][2];
+        rig->bindHas[i] = (u8)(skinHas[i] && s_harryBindHas[i]);
+        rig->bindT[i][0] = skinT[i][0];
+        rig->bindT[i][1] = skinT[i][1];
+        rig->bindT[i][2] = skinT[i][2];
     }
-    s_skinBindValid   = 1;
-    s_skinBindFileIdx = animFileIdx;
 
-    /* Foot-height compensation through the header byte the engine already
-     * applies every frame to each slot-0 sharer. */
+    /* Foot-height compensation through the header byte the engine applies
+     * every frame to each slot-0 sharer. */
     {
-        s32 drop  = PlayAs_LegDrop(s_harryBindT, s_harryBindHas) - PlayAs_LegDrop(s_skinBindT, s_skinBindHas);
+        s32 drop  = PlayAs_LegDrop(s_harryBindT, s_harryBindHas) - PlayAs_LegDrop(rig->bindT, rig->bindHas);
         s32 rootY = (s32)s_rootYOrig - drop;
 
         if (rootY < 0)   rootY = 0;
         if (rootY > 255) rootY = 255;
-        harryAnm[0x13] = (u8)rootY;
-        SH_DBG("[PLAYAS] %s retarget: leg drop %+d, rootYOffset %d -> %d",
-               p->label, (int)drop, (int)s_rootYOrig, (int)rootY);
+        rig->rootY = (u8)rootY;
+    }
+    rig->hideParts = row ? row->hideParts : NULL;
+    rig->valid     = 1;
+    return 1;
+}
+
+static void PlayAs_LoadSkinBinds(void)
+{
+    const PcPlayAsChara* p = PlayAs_Cur();
+    u8*                  harryAnm = (u8*)FS_BUFFER_0;
+    PcPlayAsRig          rig;
+    s16                  animFileIdx;
+    int                  i;
+
+    if (p->charaId == Chara_Harry)
+    {
+        return; /* the caller clears; nothing to load */
+    }
+
+    animFileIdx = CHARA_FILE_INFOS[p->charaId].animFileIdx;
+    if (animFileIdx == (s16)NO_VALUE || animFileIdx == s_skinBindFileIdx)
+    {
+        return; /* nothing to load, or already loaded for this skin */
+    }
+    if (!PlayAs_LatchHarry())
+    {
+        SH_DBG("[PLAYAS] HB_BASE not resident yet — retarget deferred");
+        return;
+    }
+
+    s_extraCount = 0;
+    if (!PlayAs_RigLoad(p->charaId, &rig))
+    {
+        SH_DBG("[PLAYAS] %s ANM unusable for retarget", p->label);
+        return;
+    }
+
+    for (i = 1; i < PLAYAS_BONE_MAX; i++)
+    {
+        s_skinBindHas[i]  = rig.bindHas[i];
+        s_skinBindT[i][0] = rig.bindT[i][0];
+        s_skinBindT[i][1] = rig.bindT[i][1];
+        s_skinBindT[i][2] = rig.bindT[i][2];
+    }
+    s_extraCount = rig.extraCount;
+    memcpy(s_extraT, rig.extraT, sizeof(s_extraT));
+    memcpy(s_extraR, rig.extraR, sizeof(s_extraR));
+    memcpy(s_extraParent, rig.extraParent, sizeof(s_extraParent));
+    s_skinBindValid   = 1;
+    s_skinBindFileIdx = animFileIdx;
+
+    harryAnm[0x13] = rig.rootY;
+    SH_DBG("[PLAYAS] %s retarget: rootYOffset %d -> %d", p->label, (int)s_rootYOrig, (int)rig.rootY);
+}
+
+/* ---- rigs for the other players' skins (sh_net_ghost.c) ---------------- */
+static PcPlayAsRig s_rigCache[PLAYAS_BUILTIN + PLAYAS_SWAP_MAX];
+static u8          s_rigTried[PLAYAS_BUILTIN + PLAYAS_SWAP_MAX];
+
+static int PlayAs_RosterIdx(int charaId)
+{
+    int i;
+    for (i = 0; i < PLAYAS_COUNT; i++)
+    {
+        if (s_playable[i].charaId == charaId)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void Pc_PlayAs_RigPrefetch(int charaId)
+{
+    int idx = PlayAs_RosterIdx(charaId);
+
+    if (idx < 0 || charaId == Chara_Harry || s_rigCache[idx].valid || s_rigTried[idx])
+    {
+        return;
+    }
+    if (!PlayAs_LatchHarry())
+    {
+        return; /* HB_BASE not resident yet: next tick */
+    }
+    s_rigTried[idx] = 1;
+    if (PlayAs_RigLoad(charaId, &s_rigCache[idx]))
+    {
+        SH_DBG("[PLAYAS] partner skin %s: rig loaded (%d extra bones, rootYOffset %d)",
+               s_playable[idx].label, s_rigCache[idx].extraCount, (int)s_rigCache[idx].rootY);
+    }
+    else
+    {
+        SH_DBG("[PLAYAS] partner skin %s: ANM unusable, drawn on Harry's proportions", s_playable[idx].label);
+    }
+}
+
+const PcPlayAsRig* Pc_PlayAs_RigFor(int charaId)
+{
+    int idx = PlayAs_RosterIdx(charaId);
+
+    if (idx < 0 || charaId == Chara_Harry || !s_rigCache[idx].valid)
+    {
+        return NULL;
+    }
+    return &s_rigCache[idx];
+}
+
+int Pc_PlayAs_HarryRootY(void)
+{
+    if (PlayAs_LatchHarry())
+    {
+        return s_rootYOrig;
+    }
+    return ((const u8*)FS_BUFFER_0)[0x13];
+}
+
+void Pc_PlayAs_RigHideParts(const PcPlayAsRig* rig, void* charaModel, unsigned int saved[2])
+{
+    s_CharaModel* model = (s_CharaModel*)charaModel;
+    s_Skeleton*   skel  = &model->skeleton;
+    int           i;
+    int           j;
+
+    saved[0] = saved[1] = 0;
+    if (model->lmHdr == NULL || skel->bones_8 == NULL)
+    {
+        return;
+    }
+    for (i = 0; i < model->lmHdr->modelCount && i < 56; i++)
+    {
+        s_LinkedBone* bone = &skel->bones_8[i];
+        const char*   nm;
+        int           hide = 0;
+
+        if (bone->bone.modelInfo.modelHdr == NULL)
+        {
+            continue;
+        }
+        if (bone->bone.modelInfo.field_0 & (1u << 31))
+        {
+            saved[i >> 5] |= 1u << (i & 31);
+        }
+        nm = bone->bone.modelInfo.modelHdr->name.str;
+        if (rig != NULL && rig->hideParts != NULL)
+        {
+            for (j = 0; rig->hideParts[j] != NULL; j++)
+            {
+                if (PlayAs_PartNameIs(nm, rig->hideParts[j]))
+                {
+                    hide = 1;
+                    break;
+                }
+            }
+        }
+        /* A part bound past the bones the rig seats would read a coord
+         * nobody posed. */
+        if (nm[0] >= '0' && nm[0] <= '9' && nm[1] >= '0' && nm[1] <= '9' &&
+            ((nm[0] - '0') * 10 + (nm[1] - '0')) >= PLAYAS_BONE_MAX + (rig ? rig->extraCount : 0))
+        {
+            hide = 1;
+        }
+        if (hide)
+        {
+            bone->bone.modelInfo.field_0 |= 1u << 31;
+        }
+        else
+        {
+            bone->bone.modelInfo.field_0 &= ~(1u << 31);
+        }
+    }
+}
+
+void Pc_PlayAs_RigRestoreParts(void* charaModel, const unsigned int saved[2])
+{
+    s_CharaModel* model = (s_CharaModel*)charaModel;
+    s_Skeleton*   skel  = &model->skeleton;
+    int           i;
+
+    if (model->lmHdr == NULL || skel->bones_8 == NULL)
+    {
+        return;
+    }
+    for (i = 0; i < model->lmHdr->modelCount && i < 56; i++)
+    {
+        s_LinkedBone* bone = &skel->bones_8[i];
+        if (bone->bone.modelInfo.modelHdr == NULL)
+        {
+            continue;
+        }
+        if (saved[i >> 5] & (1u << (i & 31)))
+        {
+            bone->bone.modelInfo.field_0 |= 1u << 31;
+        }
+        else
+        {
+            bone->bone.modelInfo.field_0 &= ~(1u << 31);
+        }
     }
 }
 

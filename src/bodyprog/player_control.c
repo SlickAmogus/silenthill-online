@@ -34,6 +34,7 @@ extern int g_DebugViewNpcSlot;   /* keyframe viewer target: -1 = Harry, else g_S
 extern int g_DebugAnimPlayGen;   /* bumped on each play (re)start so the loop cursor re-seeds */
 extern s32 g_TpsCamYaw;
 extern const unsigned char* g_sdlKeyboardState;
+extern const unsigned char* g_PcMoveKeys; /* zeroed while a text field is open (dbg_overlay.c) */
 /* Fixed (classic) camera world pose. The 2D screen-relative control path takes
  * "into the screen" from the camera's OWN look yaw (vwGetViewAngle -> worldang.vy);
  * the position is only used to spot a hard cut. */
@@ -902,6 +903,14 @@ void Player_Update(s_SubCharacter* player, s_AnmHeader* anmHdr, GsCOORDINATE2* c
         {
             g_MapOverlayHdr.func_BC(player, extra, coords);
         }
+#ifdef SH_PC_PORT
+        {
+            /* Co-op: in a shared scene every player's script puts them on
+             * the same spot, so we are drawn (and reported) a seat aside. */
+            extern void ShNetCut_SelfOffsetApply(void* coords);
+            ShNetCut_SelfOffsetApply(coords);
+        }
+#endif
 
 #ifdef SH_PC_PORT
         /* OTS/TPS full-body movement: Player_AnimUpdate poses the lower body from
@@ -2029,10 +2038,10 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * to face it. Works under the fixed classic camera (the authentic SH
                      * "2D control type") and under the TPS/OTS orbit camera (twin-stick). */
                     s32  held  = g_Controller0->heldBtnFlags;
-                    int  fwd   = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
-                    int  back  = (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
-                    int  left  = (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
-                    int  right = (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
+                    int  fwd   = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
+                    int  back  = (g_PcMoveKeys[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
+                    int  left  = (g_PcMoveKeys[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
+                    int  right = (g_PcMoveKeys[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
                     int  inX   = (right ? 1 : 0) - (left ? 1 : 0);
                     int  inZ   = (fwd   ? 1 : 0) - (back ? 1 : 0);
                     int  anyInput = (inX != 0) || (inZ != 0);
@@ -2299,10 +2308,10 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     if (g_PcFpsCam && !g_SysWork.playerCombat.isAiming)
                     {
                         s32 held   = g_Controller0->heldBtnFlags;
-                        int moveIn = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) ||
-                                     (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) ||
-                                     (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) ||
-                                     (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) ||
+                        int moveIn = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) ||
+                                     (g_PcMoveKeys[SDL_SCANCODE_A] != 0) ||
+                                     (g_PcMoveKeys[SDL_SCANCODE_S] != 0) ||
+                                     (g_PcMoveKeys[SDL_SCANCODE_D] != 0) ||
                                      (held & (ControllerFlag_LStickUp   | ControllerFlag_LStickDown  |
                                               ControllerFlag_LStickLeft | ControllerFlag_LStickRight |
                                               ControllerFlag_DpadUp     | ControllerFlag_DpadDown    |
@@ -2335,10 +2344,10 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * camera). */
                     {
                         s32  held  = g_Controller0->heldBtnFlags;
-                        int  fwd   = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
-                        int  back  = (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
-                        int  left  = (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
-                        int  right = (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
+                        int  fwd   = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) || (held & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp));
+                        int  back  = (g_PcMoveKeys[SDL_SCANCODE_S] != 0) || (held & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown));
+                        int  left  = (g_PcMoveKeys[SDL_SCANCODE_A] != 0) || (held & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft));
+                        int  right = (g_PcMoveKeys[SDL_SCANCODE_D] != 0) || (held & (ControllerFlag_LStickRight | ControllerFlag_DpadRight));
 
                         g_Player_IsMovingForward     = (g_Player_IsMovingForward & 0x2) | (fwd ? 1 : 0);
                         g_Player_IsMovingBackward    = back  ? 1 : 0;
@@ -3542,6 +3551,17 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     if (player->health <= Q12(0.0f) && player->properties.player.afkTimer <= Q12(0.0f))
                     {
                         g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                        {
+                            /* Co-op: no game over; sh_net_respawn.c holds the
+                             * corpse and puts the player back later. */
+                            extern int Pc_Respawn_HoldDeath(void);
+                            if (Pc_Respawn_HoldDeath())
+                            {
+                                return;
+                            }
+                        }
+#endif
                         SysWork_StateSetNext(SysState_GameOver);
 
                         player->health                                                         = Q12(100.0f);
@@ -3634,6 +3654,17 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     if (player->health <= Q12(0.0f) && player->properties.player.afkTimer <= Q12(0.0f))
                     {
                         g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                        {
+                            /* Co-op: no game over; sh_net_respawn.c holds the
+                             * corpse and puts the player back later. */
+                            extern int Pc_Respawn_HoldDeath(void);
+                            if (Pc_Respawn_HoldDeath())
+                            {
+                                return;
+                            }
+                        }
+#endif
 
                         SysWork_StateSetNext(SysState_GameOver);
 
@@ -4230,6 +4261,18 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
             if (player->model.anim.keyframeIdx == g_MapOverlayHdr.field_38[D_800AF220].keyframeIdx_6)
             {
                 g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                {
+                    /* Co-op: no game over; sh_net_respawn.c holds the corpse
+                     * (anim locked on its last keyframe) and puts the player
+                     * back later. */
+                    extern int Pc_Respawn_HoldDeath(void);
+                    if (Pc_Respawn_HoldDeath())
+                    {
+                        return;
+                    }
+                }
+#endif
 
                 SysWork_StateSetNext(SysState_GameOver);
 
@@ -4282,7 +4325,13 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
              * line 2651 (which reads player->model.anim.keyframeIdx) never fires
              * without this copy. */
             if (player->model.stateStep == 2) {
-                Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
+                /* Co-op respawn holds the corpse frozen on its last keyframe
+                 * and blinks it out (sh_net_respawn.c); re-asserting here
+                 * would undo both. */
+                extern int Pc_Respawn_Holding(void);
+                if (!Pc_Respawn_Holding()) {
+                    Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
+                }
                 if (extra->model.anim.keyframeIdx > player->model.anim.keyframeIdx) {
                     player->model.anim.keyframeIdx = extra->model.anim.keyframeIdx;
                     player->model.anim.time        = extra->model.anim.time;
@@ -4327,6 +4376,14 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                 {
                     g_MapOverlayHdr.playerAnimLock();
                     Savegame_EventFlagSet(EventFlag_25);
+#ifdef SH_PC_PORT
+                    {
+                        /* Co-op: this death is the story (it leads to the
+                         * cafe), so every partner in the alley dies with us. */
+                        extern void ShNetCut_OnSharedDeath(void);
+                        ShNetCut_OnSharedDeath();
+                    }
+#endif
 
                     func_8007E9C4();
 
@@ -4338,6 +4395,18 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                 }
 
                 g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                {
+                    /* Co-op: no game over; sh_net_respawn.c holds the corpse
+                     * (anim locked on its last keyframe) and puts the player
+                     * back later. */
+                    extern int Pc_Respawn_HoldDeath(void);
+                    if (Pc_Respawn_HoldDeath())
+                    {
+                        return;
+                    }
+                }
+#endif
 
                 SysWork_StateSetNext(SysState_GameOver);
 
@@ -4384,6 +4453,18 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
 #endif
             {
                 g_MapOverlayHdr.playerAnimLock();
+#ifdef SH_PC_PORT
+                {
+                    /* Co-op: no game over; sh_net_respawn.c holds the corpse
+                     * (anim locked on its last keyframe) and puts the player
+                     * back later. */
+                    extern int Pc_Respawn_HoldDeath(void);
+                    if (Pc_Respawn_HoldDeath())
+                    {
+                        return;
+                    }
+                }
+#endif
 
                 SysWork_StateSetNext(SysState_GameOver);
 
@@ -10626,7 +10707,19 @@ void Player_ReceiveDamage(s_SubCharacter* player, s_PlayerExtra* extra) // 0x800
                 g_SysWork.playerWork.player.collision.shapeOffsets.box.vx = Q12(0.0f);
             }
 
+#ifdef SH_PC_PORT
+            {
+                /* A friendly-fire hit carries the attacker's heading in the
+                 * packet (there is no NPC to read it from; field_40 is -1). */
+                extern int Pc_NetHit_TakePendingYaw(short*);
+                short netYaw;
+                if (Pc_NetHit_TakePendingYaw(&netYaw))      enemyRotY = netYaw;
+                else if (player->field_40 >= 0)             enemyRotY = g_SysWork.npcs[player->field_40].rotation.vy;
+                else                                        enemyRotY = player->rotation.vy;
+            }
+#else
             enemyRotY = g_SysWork.npcs[player->field_40].rotation.vy;
+#endif
             if (player->attackReceived >= 64 && player->attackReceived < 66)
             {
                 enemyRotY -= Q12_ANGLE(90.0f);

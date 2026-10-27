@@ -52,6 +52,7 @@ extern int Ios_ShowRetroAchievementsLogin(void);
 #include "lang_text.h" /* PAL Language row (title-screen options) */
 #ifdef SH_PC_PORT
 #include "lang_quick.h" /* quick-menu row values */
+#include "pc_pplit.h"
 #endif
 #include "lang_pack.h" /* PC-side pack language label (Polish) */
 #define LAYER_24   PSX_OT_OFS(24)
@@ -984,7 +985,7 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        /* Quick menu only: the PC Options graphics page is at its row limit. */
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
-       QO_X_LINEGAP, QO_X_CHARALIGHT };
+       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT };
 
 /* display_aspect = crt puts the picture on (4:3 x trim), so one framebuffer
  * pixel lands on screen this many times wider than tall at trim 1.0. It is the
@@ -1096,6 +1097,14 @@ const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz)
         return Pc_LangQuickMenu((g_OtsSide > 0) ? "Right" : "Left");
     case QO_X_CHARALIGHT:
         return Pc_LangQuick(g_PcConfig.charaPerPixelLight ? "Per Pixel" : "Per Vertex");
+    case QO_X_PPLIGHT:
+        return Pc_LangQuickMenu(g_PcConfig.perPixelLighting ? "On" : "Off");
+    case QO_X_HEROLIGHT: {
+        static const char* const lbl[4] = { "Off", "Low", "Medium", "High" };
+        int i = g_PcConfig.heroLight;
+        if (i < 0 || i > 3) i = 0;
+        return (i == 0) ? Pc_LangQuickMenu("Off") : Pc_LangQuick(lbl[i]);
+    }
     case QO_X_LINEGAP: {
         int i = PcOpt_LineGapIndex();
         return (i == 0) ? Pc_LangQuickMenu("Off") : Pc_LangQuick(QO_LINEGAP_LBL[i]);
@@ -1574,6 +1583,23 @@ void PcOpt_QuickExtraAdjust(int which, int dir)
         PcConfig_SaveKeyValue("chara_per_pixel_light", g_PcConfig.charaPerPixelLight ? "1" : "0");
         Sd_PlaySfx(Sfx_MenuMove, 0, 64);
         break;
+    case QO_X_PPLIGHT:
+        g_PcConfig.perPixelLighting = !g_PcConfig.perPixelLighting;
+        Pc_PpLit_Apply();
+        PcConfig_SaveKeyValue("per_pixel_lighting", g_PcConfig.perPixelLighting ? "1" : "0");
+        Sd_PlaySfx(Sfx_MenuMove, 0, 64);
+        break;
+    case QO_X_HEROLIGHT: {
+        char v[4];
+        int l = g_PcConfig.heroLight + dir;
+        if (l < 0 || l > 3) { SD_Call(Sfx_MenuError); break; }
+        g_PcConfig.heroLight = l;
+        Pc_PpLit_Apply();
+        snprintf(v, sizeof(v), "%d", l);
+        PcConfig_SaveKeyValue("hero_light", v);
+        Sd_PlaySfx(Sfx_MenuMove, 0, 64);
+        break;
+    }
     /* Read every frame by the gameplay gate in game_main.c, so it applies live. */
     /* The Change-Camera cycle, both ways. Persisted by Pc_ControlStyleSet. */
     case QO_X_CAMSTYLE: {

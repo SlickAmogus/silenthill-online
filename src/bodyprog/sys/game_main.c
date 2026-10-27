@@ -62,6 +62,7 @@ extern VC_WORK vcWork;
 extern void vcGetNowCamPos(VECTOR3* cam_pos);
 extern void vcGetNowWatchPos(VECTOR3* watch_pos);
 extern const unsigned char* g_sdlKeyboardState;
+extern const unsigned char* g_PcMoveKeys; /* zeroed while a text field is open (dbg_overlay.c) */
 #include "dbg_overlay.h"
 #include "map_registry.h"
 #include "texpack_lazy.h"
@@ -657,7 +658,12 @@ static void Pc_TpsCamera_Apply(void)
          * accumulator (below) so the view doesn't jump when the console closes. */
         extern int g_PcConsoleInputActive;
         extern int g_PcQuickOptionsActive;
-        int frozen = g_PcConsoleInputActive || g_PcQuickOptionsActive;
+        extern int ShNet_LiveWorld(void);
+        extern int Pc_CoopMenu_InGame(void);
+        /* The co-op menu leaves the world running, but the view is ours: it
+         * holds still while the menu has the mouse. */
+        int frozen = ((g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
+                      !ShNet_LiveWorld()) || Pc_CoopMenu_InGame();
 
         SDL_GetRelativeMouseState(&mdx, &mdy);
         if (frozen) { mdx = 0; mdy = 0; }
@@ -817,10 +823,10 @@ static void Pc_TpsCamera_Apply(void)
                     static Uint32 s_lastMoveMs = 0;
                     Uint32 now   = SDL_GetTicks();
                     s32    held2 = g_Controller0->heldBtnFlags;
-                    int    moving = (g_sdlKeyboardState[SDL_SCANCODE_W] != 0) ||
-                                    (g_sdlKeyboardState[SDL_SCANCODE_A] != 0) ||
-                                    (g_sdlKeyboardState[SDL_SCANCODE_S] != 0) ||
-                                    (g_sdlKeyboardState[SDL_SCANCODE_D] != 0) ||
+                    int    moving = (g_PcMoveKeys[SDL_SCANCODE_W] != 0) ||
+                                    (g_PcMoveKeys[SDL_SCANCODE_A] != 0) ||
+                                    (g_PcMoveKeys[SDL_SCANCODE_S] != 0) ||
+                                    (g_PcMoveKeys[SDL_SCANCODE_D] != 0) ||
                                     (held2 & (ControllerFlag_LStickUp   | ControllerFlag_LStickDown  |
                                               ControllerFlag_LStickLeft | ControllerFlag_LStickRight |
                                               ControllerFlag_DpadUp     | ControllerFlag_DpadDown    |
@@ -1550,11 +1556,15 @@ void DebugCamera_Update(void)
     if (!g_sdlKeyboardState) return;
 #ifdef SH_PC_PORT
     /* Master gate for all dev/cheat keys (numpad cam, top-row digits, give-
-     * weapon cheats, kill-Harry, noclip, etc.). Off unless allow_debug_controls
-     * is set in config. */
+     * weapon cheats, kill-Harry, noclip, keyframe inspector, etc.). Off unless
+     * allow_debug_controls is set in config -- and always off once online is in
+     * play: cheats and the keyframe inspector have no place in a world other
+     * people share. The free camera and TPS below are user features, not dev
+     * keys, so they still work; the console (a separate handler) is untouched. */
     {
         extern int g_PcAllowDebugControls;
-        if (!g_PcAllowDebugControls) {
+        int onlineActive = g_PcConfig.onlineEnabled || g_PcConfig.onlineSteam;
+        if (!g_PcAllowDebugControls || onlineActive) {
             /* The free camera is a user feature (quick options row), so it
              * flies with the dev keys off too. */
             if (g_DebugCamEnabled && g_GameWork.gameState == GameState_InGame) {
@@ -1576,7 +1586,12 @@ void DebugCamera_Update(void)
     {
         extern int g_PcConsoleInputActive;
         extern int g_PcQuickOptionsActive;
-        if (g_PcConsoleInputActive || g_PcQuickOptionsActive) {
+        extern int ShNet_LiveWorld(void);
+        /* In a live/shared world the console and quick-options overlays do NOT
+         * pause -- pausing a world someone else is standing in (or watching
+         * your ghost in) is no longer a local act. Input is still swallowed
+         * below, so nothing moves; the world simply keeps running. */
+        if ((g_PcConsoleInputActive || g_PcQuickOptionsActive) && !ShNet_LiveWorld()) {
             /* Keep the alternate (TPS/OTS/FPS) camera applied while the console
              * is open, so the frozen frame shows the exact view you were looking
              * at instead of snapping back to the default game camera. The look
@@ -2352,6 +2367,14 @@ void MainLoop(void) // 0x80032EE0
             static int s_qoPreloaded = 0;
             if (!s_qoPreloaded) { s_qoPreloaded = 1; Pc_QuickOptions_PreloadGL(); }
         }
+        /* Same claim, same reason, for the online panels: a texture allocated
+         * later can be handed a recycled name a framebuffer object still refers
+         * to, and that pass then renders the scene into the panel's glyphs. */
+        {
+            extern void ShNetUi_PreloadGL(void);
+            static int s_netUiPreloaded = 0;
+            if (!s_netUiPreloaded) { s_netUiPreloaded = 1; ShNetUi_PreloadGL(); }
+        }
         DbgOverlay_Update();
 
         /* Randomizer: per-area monster placement, entry-door relock timer.
@@ -2470,6 +2493,116 @@ void MainLoop(void) // 0x80032EE0
                 g_Controller0->releasedBtnFlags  = 0;
                 g_Controller0->pulsedBtnFlags    = 0;
                 g_Controller0->pulsedGuiBtnFlags = 0;
+                /* Online the world runs under the menu, so the sticks must
+                 * not keep steering Harry while the rows are being browsed. */
+                g_Controller0->sticks_20.rawData_0 = 0;
+                g_Controller0->sticks_24.rawData_0 = 0;
+            }
+        }
+
+        /* Chat: while the box is open, swallow the whole pad so typing cannot
+         * also drive Harry -- and keep swallowing after it closes until the
+         * submit/exit keys release, exactly like the console below. Without the
+         * tail the Enter that sends a line leaks through as Start (pausing) and
+         * the Esc that closes the box leaks through as the exit bind (warm
+         * reset). It never freezes the game -- pausing a live session is the one
+         * thing chat must not do -- it only zeroes input. */
+        {
+            extern int  ShNetChat_IsOpen(void);
+            static int  s_chatSwallow = 0;
+            if (ShNetChat_IsOpen()) {
+                s_chatSwallow = 1;
+            }
+            if (s_chatSwallow) {
+                int release =
+                    !ShNetChat_IsOpen() &&
+                    g_sdlKeyboardState != NULL &&
+                    !g_sdlKeyboardState[SDL_SCANCODE_RETURN] &&
+                    !g_sdlKeyboardState[SDL_SCANCODE_KP_ENTER] &&
+                    !g_sdlKeyboardState[SDL_SCANCODE_ESCAPE] &&
+                    !(g_Controller0->heldBtnFlags & ControllerFlag_Start);
+                if (release) {
+                    s_chatSwallow = 0;
+                } else {
+                    g_Controller0->heldBtnFlags        = 0;
+                    g_Controller0->clickedBtnFlags     = 0;
+                    g_Controller0->releasedBtnFlags    = 0;
+                    g_Controller0->pulsedBtnFlags      = 0;
+                    g_Controller0->pulsedGuiBtnFlags   = 0;
+                    g_Controller0->sticks_20.rawData_0 = 0;
+                    g_Controller0->sticks_24.rawData_0 = 0;
+                }
+            }
+        }
+
+        /* Online message composer. Same arrangement as the quick options above
+         * and for the same reason: the pad edges are consumed HERE, after the
+         * parse refills g_Controller0 and before any game logic reads it, then
+         * zeroed so Harry does not walk while the player is picking words. */
+        {
+            extern int  ShNetMemo_ComposerActive(void);
+            extern void ShNetMemo_ComposerInput(int, int, int, int, int, int);
+            extern void ShNetMemo_ComposerClose(void);
+
+            if (ShNetMemo_ComposerActive() &&
+                (g_GameWork.gameState != GameState_InGame ||
+                 g_SysWork.sysState   != SysState_Gameplay ||
+                 (g_SysWork.sysFlags & SysFlag_DemoActive)))
+                ShNetMemo_ComposerClose();
+
+            if (ShNetMemo_ComposerActive()) {
+                const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
+                /* PULSED for the axes so a held direction repeats, CLICKED for
+                 * confirm and cancel so a held button cannot place two memos. */
+                ShNetMemo_ComposerInput(
+                    (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickUp    | ControllerFlag_DpadUp))    != 0,
+                    (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown))  != 0,
+                    (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft))  != 0,
+                    (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickRight | ControllerFlag_DpadRight)) != 0,
+                    (g_Controller0->clickedBtnFlags & (cc->enter | cc->action))  != 0,
+                    (g_Controller0->clickedBtnFlags & (cc->cancel | cc->option)) != 0);
+                /* Carry the true held state to the next pad update (same fix as
+                 * the quick menu) so edges compute correctly -- zeroing held
+                 * alone made a held direction read as a fresh press every frame
+                 * and the composer raced at frame rate. */
+                s_pcQoHeldStash      = g_Controller0->heldBtnFlags;
+                s_pcQoHeldStashValid = 1;
+                g_Controller0->heldBtnFlags      = 0;
+                g_Controller0->clickedBtnFlags   = 0;
+                g_Controller0->releasedBtnFlags  = 0;
+                g_Controller0->pulsedBtnFlags    = 0;
+                g_Controller0->pulsedGuiBtnFlags = 0;
+            }
+        }
+
+        /* Co-op in-game menu (M): a floating overlay over the live session. It
+         * NEVER freezes the game -- pausing a shared world is the one thing it
+         * must not do -- so it only swallows the pad while open so Harry does not
+         * walk. The mouse is handled in the draw hook; drop mouse-bound pad bits
+         * so a click is not also seen here. */
+        {
+            extern int  Pc_CoopMenu_InGame(void);
+            extern void Pc_CoopMenu_Update(int, int, int, int);
+            if (Pc_CoopMenu_InGame()) {
+                const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
+                extern unsigned int Pc_MouseCursor_BoundPadBits(void);
+                unsigned int clk = g_Controller0->clickedBtnFlags & ~Pc_MouseCursor_BoundPadBits();
+                Pc_CoopMenu_Update(
+                    (clk & cc->cancel) != 0,
+                    (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickUp   | ControllerFlag_DpadUp))   != 0,
+                    (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickDown | ControllerFlag_DpadDown)) != 0,
+                    (clk & (cc->enter | cc->action)) != 0);
+                /* Carry true held to the next pad update so nav edges are right
+                 * (same fix as the quick menu) rather than a press every frame. */
+                s_pcQoHeldStash      = g_Controller0->heldBtnFlags;
+                s_pcQoHeldStashValid = 1;
+                g_Controller0->heldBtnFlags        = 0;
+                g_Controller0->clickedBtnFlags     = 0;
+                g_Controller0->releasedBtnFlags    = 0;
+                g_Controller0->pulsedBtnFlags      = 0;
+                g_Controller0->pulsedGuiBtnFlags   = 0;
+                g_Controller0->sticks_20.rawData_0 = 0;
+                g_Controller0->sticks_24.rawData_0 = 0;
             }
         }
         {
@@ -2590,11 +2723,12 @@ void MainLoop(void) // 0x80032EE0
         {
             extern int g_cfg_disableDpadMovement;
             extern int g_PcQuickOptionsActive;
+            extern int Pc_CoopMenu_InGame(void);
             g_cfg_disableDpadMovement =
                 (g_PcConfig.disableDpadMovement &&
                  g_GameWork.gameState == GameState_InGame &&
                  g_SysWork.sysState   == SysState_Gameplay &&
-                 !g_PcQuickOptionsActive) ? 1 : 0;
+                 !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame()) ? 1 : 0;
         }
 
         /* Mouse cursor: drive free-cursor puzzles + the main menu from the mouse.
@@ -2604,6 +2738,10 @@ void MainLoop(void) // 0x80032EE0
             extern void Pc_MouseCursor_FrameUpdate(void);
             Pc_MouseCursor_FrameUpdate();
         }
+
+        /* Split screen (pc_split_screen.c): Player 2's window joins Player 1's
+         * room and follows it; Player 1's watches the second window. */
+        { extern void Pc_Split_Tick(void); Pc_Split_Tick(); }
 
         /* Console `fmv`: once the fade-out it started lands, this blocks in
          * FMV_Play and fades back in afterwards. */
@@ -2668,6 +2806,22 @@ void MainLoop(void) // 0x80032EE0
         /* Re-armed by the single Gfx_InGameDraw call site during this frame's
          * state update, and read by the clear-color choice further down. */
         g_PcWorldDrawnThisFrame = 0;
+#endif
+
+#ifdef SH_PC_PORT
+        /* Effective debug-controls gate, recomputed each frame BEFORE the state
+         * update (its consumers run inside it). Single-player and the co-op HOST
+         * use the config value; a co-op GUEST gets debug controls only if the host
+         * granted them (coopdebug, off by default), never from its own config. */
+        {
+            extern int  g_PcCoopGame;
+            extern int  ShSession_IsHost(void);
+            extern int  ShSession_GuestDebugGranted(void);
+            if (!g_PcCoopGame || ShSession_IsHost())
+                g_PcAllowDebugControls = g_PcConfig.allowDebugControls;
+            else
+                g_PcAllowDebugControls = ShSession_GuestDebugGranted();
+        }
 #endif
 
         // Call update function for current GameState.
@@ -2884,6 +3038,12 @@ void MainLoop(void) // 0x80032EE0
              * frame's world state is settled; self-gated to live gameplay and
              * to being signed in. */
             { extern void Pc_Ra_Update(void); Pc_Ra_Update(); }
+
+            /* Silent Hill Online: publish this player position and pull the
+             * worker thread findings into the game-thread copy. Same spot and
+             * the same reasoning as the RA tick above: the frame world state
+             * is settled here. Self-gated on online_enabled. */
+            { extern void ShNet_GameTick(void); ShNet_GameTick(); }
 
             /* Gameplay plugins: per-frame hooks after the frame's game state is
              * settled. Both are no-op loops over zero plugins unless the user
@@ -3387,7 +3547,9 @@ void MainLoop(void) // 0x80032EE0
             s32       dtCapped;
             int       pcInCutscene = (g_SysWork.sysFlags & SysFlag_CutsceneActive) ||
                                      g_SysWork.cutsceneBorderState != CutsceneBorderState_None;
+            extern int ShNet_LiveWorld(void);
             int       pcConsoleFrozen = (g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
+                                        !ShNet_LiveWorld() &&
                                         !(g_SysWork.bgmStatusFlags & BgmStatusFlag_Pause) &&
                                         !g_SysWork.isMgsStringSet;
 
@@ -3468,9 +3630,11 @@ void MainLoop(void) // 0x80032EE0
         {
             extern int g_PcConsoleInputActive;
             extern int g_PcQuickOptionsActive;
+            /* Not online: a shared world keeps its clock while an overlay
+             * is up; the pad is still swallowed, so nothing moves. */
             if ((g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
                 !(g_SysWork.bgmStatusFlags & BgmStatusFlag_Pause) &&
-                !g_SysWork.isMgsStringSet) {
+                !g_SysWork.isMgsStringSet && !ShNet_LiveWorld()) {
                 g_DeltaTime    = 0;
                 g_DeltaTimeRaw = 0;
                 g_GravitySpeed = 0;
@@ -3604,7 +3768,15 @@ void MainLoop(void) // 0x80032EE0
              * flag; before that the ending's write never left the DLL.) */
             const int cutsceneLive = ((g_SysWork.sysFlags & SysFlag_CutsceneActive) ||
                                       g_SysWork.cutsceneBorderState != CutsceneBorderState_None) ? 1 : 0;
-            int wantHorPlus = (g_GameWork.gameState == GameState_InGame &&
+            extern int g_PcCoopGame;
+            /* Co-op draws the live world behind the inventory (see the no-pause
+             * sim call in GameState_ItemScreens_Update), so that world frame
+             * must be framed Hor+ like gameplay even though gameState is the
+             * inventory. The inventory's own UI is kept 4:3 by the OT2 pass. */
+            int wantHorPlus = ((g_GameWork.gameState == GameState_InGame ||
+                                (g_PcCoopGame &&
+                                 g_GameWork.gameState == GameState_InventoryScreen &&
+                                 g_PcWorldDrawnThisFrame)) &&
                                !(g_PsxSkipFramebufferStore && !cutsceneLive) &&
                                !g_PcMapScreenActive &&
                                !bg2dHeld) ? 1 : 0;
@@ -4313,6 +4485,12 @@ void MainLoop(void) // 0x80032EE0
              * Once the world is gone the menu owns the screen and 4:3 is right,
              * which is also what stops the items and the portrait from being
              * drawn squished toward the centre over the black. */
+            extern int g_PcCoopGame;
+            /* Co-op draws the live world behind the inventory, so uiWorldOnScreen
+             * is now set during it; but the inventory UI is still 320-authored
+             * and must stay 4:3, so force the menu framing for it. */
+            const int uiCoopInv = (g_PcCoopGame &&
+                                   g_GameWork.gameState == GameState_InventoryScreen);
             const int uiWorldOnScreen = g_PcWorldDrawnThisFrame || g_PsxPresentLastFrame;
             const int uiMenuState = (g_SysWork.sysFlags & SysFlag_MenuActive)     ||
                                   g_GameWork.gameState == GameState_InventoryScreen  ||
@@ -4326,7 +4504,7 @@ void MainLoop(void) // 0x80032EE0
                                   g_SysWork.sysState == SysState_MapScreen   ||
                                   g_SysWork.sysState == SysState_SaveMenu0   ||
                                   g_SysWork.sysState == SysState_SaveMenu1;
-            const int uiIsMenu = uiMenuState && !uiWorldOnScreen;
+            const int uiIsMenu = uiCoopInv ? 1 : (uiMenuState && !uiWorldOnScreen);
 
             g_PcHorPlusEnabled = uiIsMenu ? 0 : g_PcHorPlusGate;
             g_PsxUIOrthoPass   = 1;

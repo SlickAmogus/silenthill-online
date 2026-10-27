@@ -1,4 +1,11 @@
-# Silent Hill PC nightly release script
+# Silent Hill Online nightly release script
+#
+# This is the ONLINE branch's copy (silenthill-online). It publishes to the
+# online nightly repo, SlickAmogus/silenthill-online-nightly, which the online
+# launcher reads (LauncherSettings.DefaultRepoUrl). The single-player port keeps
+# its own copy of this script and its own repo (silent-hill-pc-nightly); the two
+# never publish to each other's repo. The online branch has no Linux/macOS CI,
+# so releases are Windows-only unless -WithCrossPlatform is passed.
 #
 # Two release modes (prompted if -Mode is not given):
 #
@@ -71,12 +78,13 @@
 # Requires:
 #   - gh CLI installed and authenticated (gh auth login).
 #   - Build artifacts present in pc_port/build/ (run cmake --build first).
-#   - Repo SlickAmogus/silent-hill-pc-nightly already created on GitHub.
+#   - Repo SlickAmogus/silenthill-online-nightly already created on GitHub.
+#   - The silenthill-online branch checked out (pass -AnyBranch to override).
 
 [CmdletBinding()]
 param(
     [string]$BuildDir   = "$PSScriptRoot\..\pc_port\build",
-    [string]$Repo       = "SlickAmogus/silent-hill-pc-nightly",
+    [string]$Repo       = "SlickAmogus/silenthill-online-nightly",
     [ValidateSet("", "zip", "loose")]
     [string]$Mode       = "",
     [string]$BetaBranch    = "beta",
@@ -91,7 +99,12 @@ param(
     # cannot affect the launcher. Linux/macOS users download these zips by hand.
     # Pass -SkipCrossPlatform to publish a Windows-only release.
     [switch]$SkipCrossPlatform,
-    [string]$CrossPlatformBranch = "pc-port",
+    [string]$CrossPlatformBranch = "silenthill-online",
+    # The online branch has no Linux/macOS CI, so the gate is skipped unless
+    # this is passed (for when such CI exists).
+    [switch]$WithCrossPlatform,
+    # Publish from a branch other than silenthill-online.
+    [switch]$AnyBranch,
     # Custom named build (see the header): the display name users pick in the
     # launcher, e.g. "Open World Test". Implies zip mode on the custom branch.
     [string]$Name         = "",
@@ -103,6 +116,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+if (-not $WithCrossPlatform) { $SkipCrossPlatform = $true }
+
+# A single-player build published here would replace every online player's game.
+$curBranch = (git -C (Join-Path $PSScriptRoot "..") rev-parse --abbrev-ref HEAD).Trim()
+if ($curBranch -ne "silenthill-online" -and -not $AnyBranch) {
+    throw "On branch '$curBranch', not silenthill-online. This script publishes to $Repo (the ONLINE nightly repo). Pass -AnyBranch to publish anyway."
+}
 
 # ---- Sanity checks ----------------------------------------------------------
 
@@ -838,7 +859,7 @@ if ($isZip) {
         # $rel above), and also lets the empty gamedata/save dir still get an
         # explicit directory entry, which CreateFromDirectory provided for
         # free but a plain file-only loop would otherwise drop.
-        $zipName = "SHPC_$newTag.zip"
+        $zipName = "SHOnline_$newTag.zip"
         $zipPath = Join-Path ([IO.Path]::GetTempPath()) $zipName
         if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
         Add-Type -AssemblyName System.IO.Compression
@@ -942,7 +963,7 @@ if ($isZip) {
         if (Test-Path $changelogPath) { $betaAssets += $changelogPath }
         # A custom build is a PRERELEASE: GitHub's releases/latest then skips it, so
         # even a third-party-repo launcher on plain "latest" never lands on it.
-        $releaseTitle = if ($isCustom) { "$Name $newVersion" } else { "Beta $newVersion" }
+        $releaseTitle = if ($isCustom) { "$Name $newVersion" } else { "Online Beta $newVersion" }
         $releaseFlags = @()
         if ($isCustom) { $releaseFlags += "--prerelease" }
         gh release create $newTag `
@@ -1113,7 +1134,7 @@ $notesFile = Join-Path $stagingDir "release_notes.txt"
 Write-Host "Creating release $newTag..." -ForegroundColor Cyan
 gh release create $newTag `
     --repo $Repo `
-    --title "Nightly $newVersion" `
+    --title "Online Nightly $newVersion" `
     --notes-file $notesFile `
     @uploadAssets
 if ($LASTEXITCODE -ne 0) {

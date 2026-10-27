@@ -274,6 +274,10 @@ void GameState_PaperMapScreen_Update(void) // 0x80066EB0
             temp_s4 = (D_800C4454 >> 1) + Q12(0.5f);
 
             temp_s0_2 = func_80067914(paperMapIdx, var_s6, var_s5, temp_s4);
+#ifdef SH_PC_PORT
+            { extern void Pc_PaperMapDrawPartners(int, unsigned short, unsigned short, unsigned short);
+              Pc_PaperMapDrawPartners(paperMapIdx, var_s6, var_s5, temp_s4); }
+#endif
             func_80068E0C(1, paperMapIdx, 0, 0, var_s6, var_s5, temp_s4);
 
             if (ScreenFade_IsNone())
@@ -434,6 +438,10 @@ void GameState_PaperMapScreen_Update(void) // 0x80066EB0
             var_s5  = FP_FROM(temp4, Q12_SHIFT);
 
             func_80067914(paperMapIdx, var_s6, var_s5, temp_s4);
+#ifdef SH_PC_PORT
+            { extern void Pc_PaperMapDrawPartners(int, unsigned short, unsigned short, unsigned short);
+              Pc_PaperMapDrawPartners(paperMapIdx, var_s6, var_s5, temp_s4); }
+#endif
             func_80068E0C(1, paperMapIdx, 0, 0, var_s6, var_s5, temp_s4);
             func_800692A4(var_s6, var_s5, temp_s4);
 

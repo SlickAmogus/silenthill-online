@@ -13,6 +13,7 @@
 #include "bodyprog/item_screens.h"
 #include "bodyprog/player.h"
 #include "bodyprog/math/math.h"
+#include "bodyprog/view/vw_calc.h" /* vbSetRefView: re-pin the carousel view after the co-op sim step */
 
 #ifdef SH_PC_PORT
 #include "pc_inventory_mouse.h"
@@ -125,6 +126,61 @@ void GameState_ItemScreens_Update(void) // 0x8004C9B0
 {
     Gfx_StringSetColor(StringColorId_White);
     func_800363D0();
+
+#ifdef SH_PC_PORT
+    /* Co-op: the inventory does not pause the world. While the inventory is
+     * actually up (steps 1..16, not the load/exit/save steps), step the gameplay
+     * sim so enemies keep acting and can reach Harry while he is in his pack.
+     * His own control is frozen only across the sim call and restored right
+     * after, so he is never left frozen when the menu closes. Single-player
+     * leaves g_PcCoopGame 0 and keeps the classic frozen inventory.
+     *
+     * The sim runs SIM-ONLY: no alt camera, crosshair or combat input, and
+     * everything it drew is thrown away before the inventory draws. Drawing it
+     * showed the world through the menu, squashed into the inventory's
+     * interlaced screen mode, while the mouse still turned the camera behind
+     * it. Characters draw from inside their own updates, so skipping the draw
+     * call alone would not keep them out; clearing the frame's OTs does. */
+    {
+        extern int  g_PcCoopGame;
+        extern int  g_PcSimOnly;
+        extern int  g_PcWorldDrawnThisFrame, g_PcHorPlusEnabled, g_PcWorldHorPlus;
+        extern u8   g_Player_DisableControl;
+        extern void InGame_SimAndDraw(void);
+        if (g_PcCoopGame &&
+            g_GameWork.gameStateSteps[1] >= 1 && g_GameWork.gameStateSteps[1] <= 16)
+        {
+            u8  savedDisable = g_Player_DisableControl;
+            int savedDrawn   = g_PcWorldDrawnThisFrame;
+            int savedHor     = g_PcHorPlusEnabled;
+            int savedWorldHor = g_PcWorldHorPlus;
+            g_Player_DisableControl = true;
+            g_PcSimOnly             = 1;
+            InGame_SimAndDraw();
+            g_PcSimOnly             = 0;
+            g_Player_DisableControl = savedDisable;
+            GsClearOt(0, 0, &g_OrderingTable0[g_ActiveBufferIdx]);
+            GsClearOt(0, 0, &g_OrderingTable2[g_ActiveBufferIdx]);
+            /* The sim's camera (vcExecCamera) replaced what the inventory pins
+             * ONCE at step 0 and never re-asserts: the item projection
+             * (func_8004BFE8), the carousel's reference view (ItemScreen_CamSet
+             * -> vbSetRefView; D_800C3B48 is written only at step 0, so this
+             * is that exact view) and the flat white ambient the item models
+             * are lit with (the chara draws set the room's). Without these the
+             * carousel projects through the gameplay camera, off screen, and
+             * whatever shows is lit by a dark room. */
+            if (g_GameWork.gameStateSteps[1] >= 1)
+            {
+                GsSetProjection(1000);
+                vbSetRefView(&D_800C3B48);
+                GsSetAmbient(1024, 1024, 1024);
+            }
+            g_PcWorldDrawnThisFrame = savedDrawn;
+            g_PcHorPlusEnabled      = savedHor;
+            g_PcWorldHorPlus        = savedWorldHor;
+        }
+    }
+#endif
 
     // Update timer if current screen is inventory.
     if (g_GameWork.gameStateSteps[1] < 21)

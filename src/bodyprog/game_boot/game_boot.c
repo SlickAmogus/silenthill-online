@@ -98,6 +98,14 @@ static int Pc_SavegameInventoryIsEmpty(void)
 void GameBoot_MapLoad(s32 mapIdx) // 0x8003521C
 {
 #ifdef SH_PC_PORT
+    /* The index selects g_FileTable[FILE_VIN_MAP0_S00_BIN + mapIdx] below; a bad
+     * one (a corrupt save, or a co-op peer's map request) would stream an
+     * unrelated file into the overlay region. */
+    if (mapIdx < 0 || mapIdx > MapIdx_MAPX_S00)
+    {
+        SH_WARN("[MAPLOAD] refusing map index %d", (int)mapIdx);
+        return;
+    }
     /* fflush after every SH_DBG in this function. The death-transition
      * crash (mapIdx=1 from end-of-alley sequence) blows up somewhere
      * inside this function but the 64KB _IOLBF buffer + missing

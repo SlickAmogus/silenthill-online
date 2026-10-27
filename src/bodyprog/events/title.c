@@ -9,6 +9,9 @@
 #include "lang_text.h" /* menu translations + width for recentred entries */
 #include "pc_title_style.h"
 #include "pc_ach_screen.h"
+#include "pc_coop_menu.h" /* co-op front end (Multiplayer row) */
+#include "pc_coop_screen.h"
+#include "pc_coop_save.h" /* co-op save load for the host "Start Game" boot */
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu_draw.h"
 #include "pc_retroachievements.h"
@@ -65,8 +68,11 @@ void MainMenu_FogUpdate(void);
 static s32 g_MainMenuState              = 0;
 static s32 g_MainMenu_SelectedEntry     = MainMenuEntry_Start;
 #ifdef SH_PC_PORT
-/* The port adds an Exit row, always available alongside Option. */
-#define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Option) | (1 << MainMenuEntry_Exit))
+/* The port adds a Multiplayer row and an Exit row, always available alongside
+ * Option. Multiplayer must be in the base set: the "selected row went hidden"
+ * reselect below runs before anything else could add it, and would push the
+ * cursor off the row every frame. */
+#define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Multiplayer) |                                    (1 << MainMenuEntry_Option) | (1 << MainMenuEntry_Exit))
 #else
 #define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Option))
 #endif
@@ -159,6 +165,9 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
         GameState_LoadSavegameScreen,
         GameState_AutoLoadSavegame,
         GameState_MovieOpening,
+#ifdef SH_PC_PORT
+        GameState_MainMenu, /* Multiplayer: opens its overlay in place, never handed off. */
+#endif
         GameState_OptionScreen,
 #ifdef SH_PC_PORT
         GameState_MainMenu, /* Achievements: handled in MenuState_Achievements, never handed off. */
@@ -182,6 +191,10 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
      * the hand-off past the opening movie. Consumed at hand-off so a later warm
      * boot back to the title behaves normally. */
     static s32  skipToGameStep = 0;
+    /* A co-op guest boots a fresh game into the host's map; -1 means "not a guest
+     * boot", any other value overrides the New Game start map below. */
+    static s32  coopGuestMap = -1;
+    bool        coopMenuOpen = false;
 
     if (skipToGameStep == 0 && g_PcConfig.skipIntros >= 2)
     {
@@ -204,8 +217,15 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
      * can be turned off without a rebuild. */
     /* Neither the gameplay demo nor the intro FMV may take the screen while the
      * achievements screen is up -- the player is reading, not idle. */
-    playInGameDemo = g_PcConfig.attractDemos && g_MainMenuState != MenuState_Achievements &&
-                     (((g_Demo_ReproducedCount + 1) % 3) != 0);
+    /* A guest waiting in a co-op room (menu open or just in a session) must stay
+     * on the main menu: the host's world-boot request is consumed ONLY here, so
+     * an attract demo/FMV pulling the guest off the menu makes it miss Start. */
+    {
+        extern int ShSession_Active(void);
+        int coopHoldsTitle = (Pc_CoopMenu_IsOpen() || ShSession_Active());
+        playInGameDemo = g_PcConfig.attractDemos && g_MainMenuState != MenuState_Achievements &&
+                         !coopHoldsTitle && (((g_Demo_ReproducedCount + 1) % 3) != 0);
+    }
 #else
     playInGameDemo = ((g_Demo_ReproducedCount + 1) % 3) != 0;
 #endif
@@ -317,7 +337,95 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
             }
 #endif
 
+#ifdef SH_PC_PORT
+            /* The Multiplayer row is always shown (it is in the base flags); the
+             * gamemode is a runtime choice made inside it. g_PcCoopGame is cleared
+             * here each menu frame and set only when the co-op boot below runs,
+             * so a normal New Game / Continue is single-player. */
+            g_PcCoopGame = 0;
+#endif
+
             g_MainMenu_VisibleEntryFlags |= g_MainMenu_VisibleEntryFlags << MainMenuEntry_Count;
+
+#ifdef SH_PC_PORT
+            /* Co-op host pressed "Start Game" in the lobby: boot the shared game.
+             * Reuse the proven paths rather than hand-rolling a boot -- a fresh
+             * game goes through the New Game skip, a loaded save through Continue
+             * (the save is read into g_GameWork.savegame, copied to autosave so
+             * Continue's health>0 branch boots that map). */
+            {
+                char coopSave[COOP_SAVE_NAME_MAX];
+                int  coopReq = Pc_CoopMenu_TakeStartRequest(coopSave, sizeof(coopSave));
+                extern int ShSession_TakeWorldRequest(void);
+                int  guestMap = ShSession_TakeWorldRequest();
+                if (coopReq == 1)
+                {
+                    g_PcCoopGame   = 1; /* this game is multiplayer */
+                    skipToGameStep = 1;
+                }
+                else if (coopReq == 2)
+                {
+                    if (Pc_CoopSave_Load(coopSave))
+                    {
+                        g_PcCoopGame                    = 1;
+                        g_GameWork.autosave             = g_GameWork.savegame;
+                        g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
+                        g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
+                    }
+                    else
+                    {
+                        g_PcCoopGame   = 1;
+                        skipToGameStep = 1; /* load failed -> fresh game */
+                    }
+                }
+                else if (coopReq == 3)
+                {
+                    /* Guest moving to the host's map (Teleport to Host, Bring
+                     * Here): the autosave already holds our game with the
+                     * destination written in; boot it as a Continue and snap
+                     * beside the host once his pose is heard. */
+                    extern int g_PcCoopGuestSpawn;
+                    g_PcCoopGame                    = 1;
+                    g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
+                    g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
+                    g_PcCoopGuestSpawn              = 1;
+                }
+                else if (guestMap >= 0 && guestMap <= MapIdx_MAPX_S00)
+                {
+                    /* Guest: the host is in this map -- boot a fresh game into it
+                     * (coopGuestMap overrides the New Game start map). Flag that
+                     * we should be placed next to the host once his position is
+                     * known, so a mid-game joiner does not land at the New Game
+                     * spawn across the map from everyone. */
+                    extern int g_PcCoopGuestSpawn;
+                    g_PcCoopGame     = 1;
+                    coopGuestMap     = guestMap;
+                    skipToGameStep   = 1;
+                    g_PcCoopGuestSpawn = 1;
+                    Pc_CoopMenu_Close(); /* the Join page is likely still up */
+                }
+            }
+
+            /* The co-op menu owns the pad while it is up; the title stays behind
+             * it, and the row hit-test and keyboard scroll below are skipped. */
+            if (Pc_CoopMenu_IsOpen())
+            {
+                /* The overlay handles the mouse itself (hover + click), so drop
+                 * mouse-bound pad bits here or a click confirms twice. */
+                unsigned int clk = g_Controller0->clickedBtnFlags & ~Pc_MouseCursor_BoundPadBits();
+                Pc_CoopMenu_Update(
+                    (clk & g_GameWorkPtr->config.controllerConfig.cancel) != 0,
+                    (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickUp) != 0,
+                    (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickDown) != 0,
+                    (clk & (g_GameWorkPtr->config.controllerConfig.enter |
+                            g_GameWorkPtr->config.controllerConfig.action)) != 0);
+                g_Controller0->clickedBtnFlags   = 0;
+                g_Controller0->pulsedBtnFlags    = 0;
+                g_Controller0->releasedBtnFlags  = 0;
+                g_Controller0->pulsedGuiBtnFlags = 0;
+                coopMenuOpen = true;
+            }
+#endif
 
             if (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickUp | ControllerFlag_LStickDown))
             {
@@ -350,6 +458,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
              * to scroll. Rows are hit-tested where MainMenu_MainTextDraw puts them
              * after scrolling, so slot -> compact index -> entry id. */
             MainMenu_LayoutSync();
+            if (!coopMenuOpen)
             {
                 s32 mx, my;
                 s32 rowY  = MainMenu_RowY();
@@ -412,6 +521,23 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
             }
 #endif
 
+#ifdef SH_PC_PORT
+            /* The Multiplayer row opens the co-op overlay in place -- no game
+             * start, no state transition. Consume the press so the generic
+             * start/transition block below stays inert for this row. */
+            if ((g_Controller0->clickedBtnFlags &
+                 (g_GameWorkPtr->config.controllerConfig.enter |
+                  g_GameWorkPtr->config.controllerConfig.action)) &&
+                g_MainMenu_SelectedEntry == MainMenuEntry_Multiplayer)
+            {
+                Pc_CoopMenu_Open();
+                SD_Call(Sfx_MenuConfirm);
+                g_Controller0->clickedBtnFlags &=
+                    ~(g_GameWorkPtr->config.controllerConfig.enter |
+                      g_GameWorkPtr->config.controllerConfig.action);
+            }
+#endif
+
             if (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.enter)
             {
                 g_GameWork.gameState = GameState_MainMenu;
@@ -468,6 +594,12 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                     case MainMenuEntry_Achievements:
                         g_MainMenuState = MenuState_Achievements;
                         achStep         = 0;
+                        break;
+
+                    /* Handled before this block (the overlay opens in place and
+                     * the press is consumed), so this is only a safety net. */
+                    case MainMenuEntry_Multiplayer:
+                        Pc_CoopMenu_Open();
                         break;
 
                     /* Retail leaves the Extra slot dead (never made visible,
@@ -604,6 +736,8 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                 {
                     int mapId = MapRegistry_FindByName(g_PcConfig.mapName);
                     if (mapId < 0) mapId = 0;
+                    /* A co-op guest starts in the host's map, not the config map. */
+                    if (coopGuestMap >= 0) { mapId = coopGuestMap; coopGuestMap = -1; }
                     GameBoot_SavegameInitialize(mapId, newGameSelectedDifficultyIdx - 1);
 
                     /* Randomizer: start the run here, after the savegame wipe and
@@ -763,6 +897,16 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
             g_SysWork.counters_1C[1] = 0;
         }
     }
+    /* Same for the multiplayer front end and a room being waited in: the
+     * timer would cut to the intro movie under a lobby (and a guest pulled
+     * off the menu misses the host's start). The title music plays on. */
+    {
+        extern int ShSession_Active(void);
+        if (Pc_CoopMenu_IsOpen() || ShSession_Active())
+        {
+            g_SysWork.counters_1C[1] = 0;
+        }
+    }
 #endif
 
     if (!playInGameDemo)
@@ -809,6 +953,13 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
         {
             Pc_AchScreen_Draw();
             Pc_MouseCursor_Show();
+            return;
+        }
+        /* The co-op front end takes the screen the same way (black
+         * background, the game's font, the inventory's blue frame). */
+        if (Pc_CoopMenu_IsOpen())
+        {
+            Pc_CoopScreen_Draw();
             return;
         }
 #endif
@@ -873,6 +1024,9 @@ static void MainMenu_MainTextDraw(void) // 0x8003B568
         "LOAD",
         "CONTINUE",
         "START",
+#ifdef SH_PC_PORT
+        "MULTIPLAYER", /* co-op; opens the co-op overlay in place */
+#endif
         "OPTION",
 #ifdef SH_PC_PORT
         "ACHIEVEMENTS",
@@ -881,7 +1035,13 @@ static void MainMenu_MainTextDraw(void) // 0x8003B568
         "EXTRA" /** @unused See `e_MainMenuEntry`. */
 #endif
     };
+#ifdef SH_PC_PORT
+    /* Hand-measured centres for the retail rows at their PC indices (Option is
+     * index 4 with Multiplayer above it); the port's own rows are measured. */
+    static const u8 STR_OFFSETS_X[] = { 29, 50, 32, 0, 39, 0, 0 };
+#else
     static const u8 STR_OFFSETS_X[] = { 29, 50, 32, 39, 33 }; // @unused Element at index 4. See `g_MainMenu_VisibleEntryFlags`.
+#endif
 
     s32 i;
 
@@ -913,7 +1073,8 @@ static void MainMenu_MainTextDraw(void) // 0x8003B568
              * keep using them when the text is untranslated. The port's rows
              * have no authored offset (index 4's was for "EXTRA"), so centre
              * them from the measured width in every language, English included. */
-            s32         offX = (tr == MAIN_MENU_ENTRY_STRINGS[id] && id < MainMenuEntry_Achievements)
+            s32         offX = (tr == MAIN_MENU_ENTRY_STRINGS[id] && id < MainMenuEntry_Achievements &&
+                                id != MainMenuEntry_Multiplayer)
                                    ? STR_OFFSETS_X[id]
                                    : ((Pc_LangMenuTextWidth(tr) +
                                        Pc_LangMenuTextWidth(Pc_LangMenuText("["))) >> 1);

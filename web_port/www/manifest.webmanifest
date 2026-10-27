@@ -1,7 +1,7 @@
 {
-  "name": "Silent Hill",
-  "short_name": "Silent Hill",
-  "description": "The Silent Hill PC Port, in the browser. Bring your own disc image.",
+  "name": "Silent Hill: Online",
+  "short_name": "SH: Online",
+  "description": "Silent Hill: Online, in the browser. Bring your own disc image.",
   "start_url": "./",
   "scope": "./",
   "display": "fullscreen",

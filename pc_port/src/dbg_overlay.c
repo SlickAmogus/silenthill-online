@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "game.h"
+#include "bodyprog/sound/sound_system.h" /* Sd_PlaySfx (was implicitly declared) */
 
 #ifdef SH_PC_PORT
 
@@ -19,6 +20,8 @@
 #include <PsyX/PsyX_backend.h>
 #include "screens/options.h" /* OptionsMenuState_* — Escape backs out of the brightness screen */
 #include "pc_config.h"
+#include "sh_net.h"
+#include "sh_net_chat.h"
 
 #include <PsyX/common/glad.h>
 
@@ -481,6 +484,21 @@ static void push_console(const char* line)
 int Pc_ConsoleIsOpen(void)
 {
     return s_console_open;
+}
+
+/* A text field owns the keyboard: the chat box, the co-op menu's typed
+ * field, the console prompt, the message composer. Readers of raw key state
+ * for actions check this (or read g_PcMoveKeys) so typing never moves Harry
+ * or fires a hotkey. */
+static const unsigned char s_noKeys[SDL_NUM_SCANCODES];
+const unsigned char*       g_PcMoveKeys = s_noKeys;
+
+int Pc_TextInputActive(void)
+{
+    extern int Pc_CoopMenu_Editing(void);
+    extern int ShNetMemo_ComposerActive(void);
+    return ShNetChat_IsOpen() || Pc_CoopMenu_Editing() || g_PcConsoleInputActive ||
+           ShNetMemo_ComposerActive();
 }
 
 /* Text a selection endpoint's line refers to (-1 = the live prompt input). */
@@ -1472,7 +1490,18 @@ void DbgOverlay_Update(void)
      * the physical key, so letting go of Ctrl while the key is still held
      * cannot manufacture a fresh press. */
     const int ctrlHeld = (SDL_GetModState() & KMOD_CTRL) ? 1 : 0;
+    /* Was the chat box open at the START of this pass? The chat handler below
+     * closes it on Esc/Enter, so by the time the Exit-Game (Esc) bind is read
+     * ShNetChat_IsOpen() already reads false and the same Esc would warm-reset.
+     * Latch it here so the exit bind can tell "Esc closed chat" from a real
+     * exit. */
+    const int chatWasOpen = ShNetChat_IsOpen();
+    /* Same latch for every text field: the chat box, the co-op menu's IP /
+     * room-code field, the console line, the message composer. While one
+     * is up, the raw keyboard belongs to it and nothing else. */
+    const int textWasOpen = Pc_TextInputActive();
     if (!ks) return;
+    g_PcMoveKeys = textWasOpen ? s_noKeys : ks;
 
     /* First Update runs inside MainLoop — arm the top-left message toast now so
      * the boot-time init logging (pushed before MainLoop) is never toasted. */
@@ -1497,7 +1526,17 @@ void DbgOverlay_Update(void)
         }
         cur_tilde = ks[s_consoleSc];
     }
-    if (g_PcAllowDebugControls) {
+    if (!g_PcAllowDebugControls && s_console_open) {
+        /* The right to the console went away under it (a co-op host turned
+         * the guest console off): drop it, or the game stays frozen behind
+         * a panel the key can no longer close. */
+        s_console_open          = 0;
+        s_console_dirty         = 1;
+        g_PcConsoleInputActive  = 0;
+        g_PcConsoleSwallowInput = 1;
+        s_console_apply_until   = 0;
+    }
+    if (g_PcAllowDebugControls && !ShNetChat_IsOpen()) {
         if (cur_tilde && !s_prev_tilde) { /* press edge = toggle */
             s_console_open = !s_console_open;
             s_console_dirty = 1;
@@ -1538,7 +1577,7 @@ void DbgOverlay_Update(void)
      * command would fire whatever its letters are bound to. */
     {
         extern int g_PcQuickOptionsActive;
-        if (!s_console_open && !g_PcQuickOptionsActive)
+        if (!s_console_open && !g_PcQuickOptionsActive && !textWasOpen)
             PcBinds_Update(ks);
     }
 
@@ -1879,7 +1918,15 @@ void DbgOverlay_Update(void)
          * recorded input, and the panel reads that same controller, so every
          * playback frame pressed its rows for you. GameState is InGame
          * throughout a demo, so the state test above cannot see it. */
+        /* The quick-options menu is disabled during online play: it is a pause-
+         * style overlay, and a shared/live world should not be halted or fiddled
+         * with mid-session. The graphics options it holds are still reachable
+         * from the launcher and the title-screen Options. */
+        /* Online it opens too, but the world keeps running underneath (the
+         * clock freeze in game_main.c is off while a live world is up) and
+         * the cheat pages are the host's to allow (pc_quick_options.c). */
         if (((curQuick && !s_prevQuick && !ctrlHeld) || padQuick) && !g_PcConsoleInputActive &&
+            !textWasOpen &&
             g_GameWork.gameState == GameState_InGame &&
             !(g_SysWork.sysFlags & SysFlag_DemoActive)) {
             extern void Pc_QuickOptions_Toggle(void);
@@ -1888,13 +1935,131 @@ void DbgOverlay_Update(void)
         s_prevQuick = curQuick;
     }
 
+    /* Online: key_online_players (default F11) opens the who-is-online panel,
+     * key_online_memo (default M) opens the message composer. Both are
+     * player-facing like the quick options above, so neither is gated on
+     * g_PcAllowDebugControls; both are dormant unless online_enabled is set,
+     * which the toggles check for themselves. */
+    {
+        static SDL_Scancode s_scList = SDL_SCANCODE_UNKNOWN;
+        static SDL_Scancode s_scMemo = SDL_SCANCODE_UNKNOWN;
+        static int          s_netRes  = 0;
+        static int          s_prevList = 0;
+        static int          s_prevMemo = 0;
+        int curList, curMemo;
+
+        if (!s_netRes) {
+            s_scList = SDL_GetScancodeFromName(g_PcConfig.keyOnlinePlayers);
+            s_scMemo = SDL_GetScancodeFromName(g_PcConfig.keyOnlineMemo);
+            s_netRes = 1;
+        }
+        curList = (s_scList != SDL_SCANCODE_UNKNOWN) ? ks[s_scList] : 0;
+        curMemo = (s_scMemo != SDL_SCANCODE_UNKNOWN) ? ks[s_scMemo] : 0;
+
+        /* The vocalize wheel: held, not pressed. Nothing while a text field
+         * has the keyboard or the console is up. */
+        {
+            static SDL_Scancode s_scVoice = SDL_SCANCODE_UNKNOWN;
+            static int          s_voiceRes = 0;
+            extern void         ShNetVoice_KeyHeld(int held);
+            if (!s_voiceRes) {
+                s_scVoice  = g_PcConfig.keyVocalize[0] ? SDL_GetScancodeFromName(g_PcConfig.keyVocalize) : SDL_SCANCODE_B;
+                s_voiceRes = 1;
+            }
+            ShNetVoice_KeyHeld(s_scVoice != SDL_SCANCODE_UNKNOWN && ks[s_scVoice] && !textWasOpen &&
+                               !g_PcConsoleInputActive && !ctrlHeld);
+        }
+
+        if (curList && !s_prevList && !ctrlHeld && !g_PcConsoleInputActive &&
+            !ShNetChat_IsOpen()) {
+            extern void ShNetUi_TogglePlayerList(void);
+            ShNetUi_TogglePlayerList();
+        }
+        /* The memo key is a LETTER by default, so it must never fire while the
+         * console has the keyboard or the game would open a composer every
+         * time someone typed an "m" into a command. */
+        if (curMemo && !s_prevMemo && !ctrlHeld && !g_PcConsoleInputActive &&
+            !ShNetChat_IsOpen() &&
+            g_GameWork.gameState == GameState_InGame &&
+            !(g_SysWork.sysFlags & SysFlag_DemoActive)) {
+            /* In a co-op game, M is the multiplayer menu (Resume / players /
+             * save / leave) -- a floating overlay that never pauses the session.
+             * In the living world it is the memo composer. In plain
+             * single-player it does nothing, so the key is inert there. */
+            extern int g_PcCoopGame;
+            if (g_PcCoopGame) {
+                extern int  Pc_CoopMenu_IsOpen(void);
+                extern void Pc_CoopMenu_OpenInGame(void);
+                extern void Pc_CoopMenu_Close(void);
+                if (Pc_CoopMenu_IsOpen()) Pc_CoopMenu_Close();
+                else                      Pc_CoopMenu_OpenInGame();
+            } else if (g_PcConfig.onlineEnabled) {
+                extern void ShNetMemo_ComposerToggle(void);
+                ShNetMemo_ComposerToggle();
+            }
+        }
+        s_prevList = curList;
+        s_prevMemo = curMemo;
+    }
+
+    /* Co-op menu text field (Join by IP / room code): while a field is open it
+     * owns the keyboard, exactly like the chat box below, and it is reached from
+     * the title-screen Join page so it must work with no world loaded. */
+    {
+        extern int  Pc_CoopMenu_Editing(void);
+        extern void Pc_CoopMenu_FeedKeys(const unsigned char* ks);
+        if (Pc_CoopMenu_Editing())
+        {
+            Pc_CoopMenu_FeedKeys(ks);
+        }
+    }
+
+    /* Chat: key_chat_game (default Y) opens the box to type; key_chat_cycle
+     * (default U) picks the channel. While the box is open its own handler
+     * (ShNetChat_FeedKeys) owns the whole keyboard -- typing, backspace,
+     * Enter to send, Esc to cancel, Tab to switch channel -- so the open/cycle
+     * edges below are only read while it is closed. Only meaningful online, so
+     * the box will not open on a purely offline build. */
+    {
+        extern int  ShNetChat_IsOpen(void);
+        extern void ShNetChat_FeedKeys(const unsigned char* ks);
+        extern void ShNetChat_Open(void);
+        extern void ShNetChat_CycleScope(void);
+        static SDL_Scancode s_scChatG = SDL_SCANCODE_UNKNOWN;
+        static SDL_Scancode s_scChatC = SDL_SCANCODE_UNKNOWN;
+        static int          s_chatRes  = 0;
+        static int          s_prevChatG = 0, s_prevChatC = 0;
+        int online = g_PcConfig.onlineEnabled || g_PcConfig.onlineSteam;
+        int inWorld = g_GameWork.gameState == GameState_InGame &&
+                      !(g_SysWork.sysFlags & SysFlag_DemoActive);
+
+        if (!s_chatRes) {
+            s_scChatG = SDL_GetScancodeFromName(g_PcConfig.keyChatGame);
+            s_scChatC = SDL_GetScancodeFromName(g_PcConfig.keyChatCycle);
+            s_chatRes = 1;
+        }
+
+        if (ShNetChat_IsOpen()) {
+            ShNetChat_FeedKeys(ks);
+        } else if (online && inWorld && !g_PcConsoleInputActive && !ctrlHeld) {
+            int curG = (s_scChatG != SDL_SCANCODE_UNKNOWN) ? ks[s_scChatG] : 0;
+            int curC = (s_scChatC != SDL_SCANCODE_UNKNOWN) ? ks[s_scChatC] : 0;
+            if (curG && !s_prevChatG) { ShNetChat_Open(); }
+            else if (curC && !s_prevChatC) { ShNetChat_CycleScope(); }
+            s_prevChatG = curG;
+            s_prevChatC = curC;
+        } else {
+            s_prevChatG = s_prevChatC = 0;
+        }
+    }
+
     /* F2 cycles the full-screen post-process look (0=Off..8). Like F1/PGXP this
      * is a user-facing graphics option, not a debug feature, so it is NOT gated
      * on g_PcAllowDebugControls. Order must match the post fragment shader. */
     {
         static int s_prev_f2 = 0;
         int cur_f2 = ks[SDL_SCANCODE_F2];
-        if (cur_f2 && !s_prev_f2 && !ctrlHeld) {
+        if (cur_f2 && !s_prev_f2 && !ctrlHeld && !textWasOpen) {
             extern int g_cfg_postProcess;
             static const char* const s_postNames[] = {
                 "Off", "CRT", "Scanlines", "Vignette", "Color Grade",
@@ -1916,7 +2081,7 @@ void DbgOverlay_Update(void)
     {
         static int s_prev_f3 = 0;
         int cur_f3 = ks[SDL_SCANCODE_F3];
-        if (cur_f3 && !s_prev_f3 && !ctrlHeld) {
+        if (cur_f3 && !s_prev_f3 && !ctrlHeld && !textWasOpen) {
             extern int g_cfg_tonemap;
             static const char* const s_toneNames[] = { "Off", "Reinhard", "ACES", "Filmic" };
             const int count = (int)(sizeof(s_toneNames) / sizeof(s_toneNames[0]));
@@ -1934,7 +2099,7 @@ void DbgOverlay_Update(void)
     {
         static int s_prev_f4 = 0;
         int cur_f4 = ks[SDL_SCANCODE_F4];
-        if (cur_f4 && !s_prev_f4 && !ctrlHeld) {
+        if (cur_f4 && !s_prev_f4 && !ctrlHeld && !textWasOpen) {
             Pc_FlashlightModeApply((g_PcConfig.flashlightMode + 1) & 3, 1);
             SH_DBG_ECHO("F4 Flashlight: %s",
                         Pc_FlashlightModeLabel(g_PcConfig.flashlightMode));
@@ -1954,16 +2119,24 @@ void DbgOverlay_Update(void)
         /* The quick options overlay closes on Escape, the default exit bind:
          * without this gate closing it also warm-reset the game to the title. */
         extern int g_PcQuickOptionsActive;
-        /* The controls panel and screen use Escape to back out and to cancel a
+        /* Esc used to close the chat box must not also warm-reset. chatWasOpen
+         * is sampled before the chat handler above consumes the Esc. The
+         * controls panel and screen use Escape to back out and to cancel a
          * rebind; the Achievements screen uses it to back out, and stays open
-         * through its fade out, so no Escape during it quits from the main menu. */
+         * through its fade out, so no Escape during it quits from the main menu.
+         * The living-world message composer also backs out on Escape. */
         extern int Pc_BindPanel_IsOpen(void);
         extern int Pc_ControlsScreen_IsOpen(void);
         extern int Pc_AchScreen_IsOpen(void);
         extern int Pc_TitleAchievementsActive(void);
+        extern int g_PcCoopGame;
+        extern int ShNetMemo_ComposerActive(void);
+        extern int Pc_CoopMenu_IsOpen(void);
+        extern int Pc_CoopMenu_Editing(void);
+        extern void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm);
         if (cur_exit && !s_prev_exit && !g_PcConsoleInputActive && !g_PcQuickOptionsActive &&
-            !Pc_BindPanel_IsOpen() && !Pc_ControlsScreen_IsOpen() && !Pc_AchScreen_IsOpen() &&
-            !Pc_TitleAchievementsActive()) {
+            !chatWasOpen && !textWasOpen && !Pc_BindPanel_IsOpen() && !ShNetMemo_ComposerActive() &&
+            !Pc_ControlsScreen_IsOpen() && !Pc_AchScreen_IsOpen() && !Pc_TitleAchievementsActive()) {
             /* The brightness screen owns the whole display (its calibration bar is
              * drawn outside the normal menu path), so warm-resetting out of it left
              * the bar on screen over the title. Back out to the options list the
@@ -1976,8 +2149,22 @@ void DbgOverlay_Update(void)
                  * by this key is not silent. */
                 Sd_PlaySfx(Sfx_MenuCancel, 0, Q8(0.25f));
                 g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveBrightness;
+            } else if (Pc_CoopMenu_IsOpen()) {
+                /* The multiplayer menu (title or in game) backs out a page on
+                 * Escape, and closes from its top level, the same as Cancel.
+                 * A field being typed in takes its own Escape (FeedKeys). */
+                if (!Pc_CoopMenu_Editing()) {
+                    Pc_CoopMenu_Update(1, 0, 0, 0);
+                }
             } else if (g_GameWork.gameState == GameState_MainMenu) {
                 exit(0);
+            } else if (g_PcCoopGame) {
+                /* In a co-op GAME only, Escape must not warm-reset (leaving a
+                 * shared world on a stray key is hostile; exit via the M menu).
+                 * Single-player -- even with the living world on -- keeps the
+                 * normal Escape-to-title. The memo box is already excluded above
+                 * and backs out with its own Cancel (X). */
+                SH_DBG_ECHO("Escape: in a co-op game -- leave from the M menu");
             } else {
                 g_SysWork.sysFlags |= SysFlag_DoWarmReset;
                 SH_DBG_ECHO("Exiting to title...");
@@ -2107,6 +2294,11 @@ void DbgOverlay_Render(void)
     /* In-game quick options overlay (F9) -- same self-contained-GL arrangement,
      * translucent so live setting changes show through it. */
     { extern void Pc_QuickOptions_Draw(void); Pc_QuickOptions_Draw(); }
+
+    /* Online client UI: the player list, the message composer, the marker the
+     * player is standing on, and the server feed. Same self-contained-GL
+     * arrangement, and before the modal dialog so a confirm box still wins. */
+    { extern void ShNetUi_Draw(void); ShNetUi_Draw(); }
 
     /* Modal Yes/No message box (options-screen "reset to defaults") — same
      * self-contained-GL arrangement; drawn last so it sits over every panel. */

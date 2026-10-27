@@ -72,7 +72,7 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_SPU,
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
-       QO_X_LINEGAP, QO_X_CHARALIGHT };
+       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -1640,6 +1640,8 @@ int Pc_QuickOptions_ShowsMinimapRows(void)
     return 0;
 }
 
+static int qo_page_hidden(int page);
+
 static void qo_open(void)
 {
     if (s_phase == QO_OPENING || s_phase == QO_SHOWN)
@@ -1647,6 +1649,7 @@ static void qo_open(void)
     s_phase      = QO_OPENING;
     s_phaseStart = SDL_GetTicks();
     s_sel        = 0;
+    if (qo_page_hidden(s_page)) s_page = 0;
     g_PcQuickOptionsActive = 1;
 }
 
@@ -1731,13 +1734,40 @@ static int qo_key_edge(int sc)
     return edge;
 }
 
+/* The cheat and debug pages belong to whoever owns the world: in a co-op
+ * game the host, and the guests the host allowed. Everyone else pages
+ * straight past them. */
+/* Sections, in s_pageTitles order; on a phone a page is a chunk of one. */
+#define QO_SEC_CHEATS 3
+#define QO_SEC_DEBUG  4
+
+static int qo_page_hidden(int page)
+{
+    extern int ShNet_CoopCheatsAllowed(void);
+    int        sec = page;
+#if defined(QO_MOBILE)
+    int        chunk, chunks;
+    qo_locate(page, &sec, &chunk, &chunks);
+#endif
+    return (sec == QO_SEC_CHEATS || sec == QO_SEC_DEBUG) && !ShNet_CoopCheatsAllowed();
+}
+
 static void qo_set_page(int page)
 {
     int n;
     s_ddRow = -1;
     {
         const int nPages = qo_page_count();
-        s_page = ((page % nPages) + nPages) % nPages;
+        int       k;
+        page = ((page % nPages) + nPages) % nPages;
+        if (qo_page_hidden(page))
+        {
+            /* Keep going the way the player was paging, past every hidden page. */
+            const int step = (((page - s_page + nPages) % nPages) <= nPages / 2) ? 1 : nPages - 1;
+            for (k = 0; k < nPages && qo_page_hidden(page); k++)
+                page = (page + step) % nPages;
+        }
+        s_page = page;
     }
     qo_page_rows(s_page, &n);
     if (s_sel >= n) s_sel = n - 1;

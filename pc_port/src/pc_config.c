@@ -29,13 +29,13 @@ s_PcConfig g_PcConfig = {
     .preloadChunks  = 1,
     .vsync          = 0,
     .refreshRate    = 0,
-#if defined(SH_IOS) || defined(__ANDROID__)
-    /* 60 on a phone. 30 is the PSX-accurate gameplay rate and stays the desktop
-     * default, but a phone panel runs at 60 or better and the port paces
-     * everything off g_DeltaTime, so 30 only halves the motion for nothing. */
+#if defined(SH_IOS) || defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    /* 60 on a phone or in a browser: the display runs at 60 or better and the
+     * port paces everything off g_DeltaTime, while uncapped (the desktop
+     * default) only burns battery and the page's main thread. */
     .fpsCap         = 60,
 #else
-    .fpsCap         = 30,
+    .fpsCap         = 0,
 #endif
     .weatherSimHz      = 60,   /* per-frame weather sim; 30 = the console's cadence */
     .cutsceneLineGapMs = 300,
@@ -80,6 +80,40 @@ s_PcConfig g_PcConfig = {
                          * 240Hz menu moved them four times too fast (reported). */
     .lowHealthGlow = 0, /* 1=pulsing red edge glow below 20 hp (SH2 remake style); off by default */
     .bulletDecals = 0, /* 1=bullet-hole decals at player gunshot impacts (gamedata/decal.png); off by default */
+    /* Silent Hill Online. This is the online branch, so the living world is on
+     * by default and points at the community server; a player turns it off in
+     * the launcher to get the stock single-player port. */
+    .onlineEnabled    = 1,
+    .onlineServer     = "server.sh1pc.com",
+    .onlinePort       = 27888,
+    .onlineName       = "Harry",
+    .onlinePassword   = "",
+    .onlineGhosts     = 1,
+    .onlineMemos      = 1,
+    .onlineDeaths     = 1,
+    .onlineGhostStyle = 2, /* SHNET_GS_BOTH: the contour plus a floor ring */
+    .onlineGhostRange = 40,
+    .onlineNameplates = 1, /* names float over other players' heads */
+    .onlineGhostModel = 1, /* living-world players draw as translucent bodies */
+    .onlineEvents     = 1,
+    .onlineUiScale    = 1.0f,
+    .onlineFriendlyFire = 0,
+    .onlineGuestConsole = 0,
+    .onlineCoopLiving   = 0,
+    .onlineHealthBars   = 2,
+    .onlinePvpDamage  = 0.15f,
+    .onlineRespawnSeconds = 7.0f,
+    .onlineSteam           = 0,
+    .onlineSteamAppId      = 480, /* Spacewar; see sh_net_steam.h */
+    .onlineSteamMaxPlayers = 4,
+    .onlineSteamPublic     = 0,   /* friends only: an invite is the point */
+    .onlineSteamAutoHost   = 0,
+    .keyOnlinePlayers = "F11",
+    .keyOnlineMemo    = "M",
+    .keyChatGame      = "Y",
+    .keyVocalize      = "B",
+    .voicePack        = "",
+    .keyChatCycle     = "U",
     .gamepadIcons = GLYPH_SET_AUTO,
     .globalCharaPool = 1, /* 1=all chara assets resident PC-side + chara_global.dll AI backfill (SPAWN anything anywhere) */
     .wholeMapExteriors = 2, /* auto: whole town drawn while fog_strength < 1.0, the only time it can be seen */
@@ -107,15 +141,7 @@ s_PcConfig g_PcConfig = {
     .xaVolume             = 1.0f, /* XA cutscene-voice volume, 0..1; 1.0 = unchanged */
     .fmvVolume            = 1.0f, /* FMV movie (SDL PCM) volume, 0..1; 1.0 = unchanged */
     .fmvPsxVolume         = 1,    /* PSX-faithful 80/128 movie-audio attenuation (SsSetSerialVol) */
-    /* ON during the alpha. Off by default meant a device with no config file
-     * never produced a log at all -- which is exactly when one is needed, since
-     * a fresh install on unfamiliar hardware is the case you cannot debug from
-     * here. Worth revisiting before a wider release. */
-    /* Off by default: a log is a diagnostic, and every player was writing one
-     * (and on Android, into the folder their file manager opens) without ever
-     * asking for it. Set enable_debug_log=1 in config.cfg to get it back; the
-     * gate and the post-config open in main_pc.c were already built for this. */
-    .enableDebugLog = 0, /* 0=no SilentHill.log, 1=write SilentHill.log */
+    .enableDebugLog = 1, /* 0=no SilentHill.log, 1=write SilentHill.log (on: a report without a log is a guess) */
     .glVerbose      = 0, /* 1 = log GL/GLSL details + shader info logs on success; failures always log */
     .allowDebugControls = 0, /* 0=off (default), 1=enable dev/cheat keys */
     .controllerMovement = 2, /* 0=analog, 1=dpad, 2=both */
@@ -174,6 +200,8 @@ s_PcConfig g_PcConfig = {
     .minimapShowWithoutMap   = 0, /* no map found: no minimap (1 = empty panel + arrow) */
     .dreamBlur               = 1, /* dream/ghosting screen blur (0 = loading trail only) */
     .charaPerPixelLight      = 1,
+    .perPixelLighting        = 0,
+    .heroLight               = 2,
     .dreamBlurStrength       = 1.0f, /* feedback gain of that blur; 1.0 = hardware */
     .loadScreenMin           = 3.0f, /* seconds the Harry loading screen stays up at least */
     .minimapOpacity          = 100.0f,
@@ -416,6 +444,12 @@ static const struct { const char* key; size_t off; } s_SchemeBinds[] = {
 static const struct { const char* key; size_t off; } s_GlobalBinds[] = {
     { "key_quicksave",     offsetof(s_PcConfig, keyQuickSave)    },
     { "key_quick_options", offsetof(s_PcConfig, keyQuickOptions) },
+    { "key_online_players", offsetof(s_PcConfig, keyOnlinePlayers) },
+    { "key_online_memo",    offsetof(s_PcConfig, keyOnlineMemo)    },
+    { "key_chat_game",      offsetof(s_PcConfig, keyChatGame)      },
+    { "key_vocalize",       offsetof(s_PcConfig, keyVocalize)      },
+    { "voice_pack",         offsetof(s_PcConfig, voicePack)        },
+    { "key_chat_cycle",     offsetof(s_PcConfig, keyChatCycle)     },
     { "pad_quick_options", offsetof(s_PcConfig, padQuickOptions) },
     { "key_quickload",     offsetof(s_PcConfig, keyQuickLoad)    },
     { "key_swap_shoulder", offsetof(s_PcConfig, keySwapShoulder) },
@@ -429,6 +463,8 @@ static const struct { const char* key; size_t off; } s_GlobalBinds[] = {
 
 /* Remembered at load time so PcConfig_SaveMapName writes the same file. */
 static char s_configPath[512] = "config.cfg";
+
+int g_PcConfigReadOnly;
 
 static void TrimWhitespace(char* s)
 {
@@ -814,6 +850,142 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "bullet_decals") == 0)
         {
             g_PcConfig.bulletDecals = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_enabled") == 0)
+        {
+            g_PcConfig.onlineEnabled = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_server") == 0)
+        {
+            strncpy(g_PcConfig.onlineServer, value, sizeof(g_PcConfig.onlineServer) - 1);
+            g_PcConfig.onlineServer[sizeof(g_PcConfig.onlineServer) - 1] = ' ';
+        }
+        else if (strcmp(key, "online_port") == 0)
+        {
+            int v = atoi(value);
+            if (v <= 0 || v > 65535) v = 27888;
+            g_PcConfig.onlinePort = v;
+        }
+        else if (strcmp(key, "online_name") == 0)
+        {
+            strncpy(g_PcConfig.onlineName, value, sizeof(g_PcConfig.onlineName) - 1);
+            g_PcConfig.onlineName[sizeof(g_PcConfig.onlineName) - 1] = ' ';
+        }
+        else if (strcmp(key, "online_password") == 0)
+        {
+            strncpy(g_PcConfig.onlinePassword, value, sizeof(g_PcConfig.onlinePassword) - 1);
+            g_PcConfig.onlinePassword[sizeof(g_PcConfig.onlinePassword) - 1] = ' ';
+        }
+        else if (strcmp(key, "online_uid") == 0)
+        {
+            g_PcConfig.onlineUid = (unsigned int)strtoul(value, NULL, 10);
+        }
+        else if (strcmp(key, "online_ghosts") == 0)
+        {
+            g_PcConfig.onlineGhosts = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_memos") == 0)
+        {
+            g_PcConfig.onlineMemos = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_deaths") == 0)
+        {
+            g_PcConfig.onlineDeaths = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_ghost_style") == 0)
+        {
+            int v = atoi(value);
+            if (v < 0) v = 0;
+            if (v > 2) v = 2;
+            g_PcConfig.onlineGhostStyle = v;
+        }
+        else if (strcmp(key, "online_ghost_range") == 0)
+        {
+            int v = atoi(value);
+            if (v < 5)   v = 5;
+            if (v > 400) v = 400;
+            g_PcConfig.onlineGhostRange = v;
+        }
+        else if (strcmp(key, "online_ghost_model") == 0)
+        {
+            g_PcConfig.onlineGhostModel = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_nameplates") == 0)
+        {
+            g_PcConfig.onlineNameplates = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_events") == 0)
+        {
+            g_PcConfig.onlineEvents = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_ui_scale") == 0)
+        {
+            g_PcConfig.onlineUiScale = (float)atof(value);
+            if (g_PcConfig.onlineUiScale < 0.5f) g_PcConfig.onlineUiScale = 0.5f;
+            if (g_PcConfig.onlineUiScale > 3.0f) g_PcConfig.onlineUiScale = 3.0f;
+        }
+        else if (strcmp(key, "online_friendly_fire") == 0)
+        {
+            g_PcConfig.onlineFriendlyFire = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_guest_console") == 0)
+        {
+            g_PcConfig.onlineGuestConsole = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_coop_living_world") == 0)
+        {
+            g_PcConfig.onlineCoopLiving = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_health_bars") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.onlineHealthBars = (v < 0) ? 0 : (v > 3) ? 3 : v;
+        }
+        else if (strcmp(key, "split_layout") == 0)
+        {
+            g_PcConfig.splitLayout = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "split_p2_audio") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.splitP2Audio = (v < 0) ? 0 : (v > 2) ? 2 : v;
+        }
+        else if (strcmp(key, "online_pvp_damage") == 0)
+        {
+            g_PcConfig.onlinePvpDamage = (float)atof(value);
+            if (g_PcConfig.onlinePvpDamage < 0.01f) g_PcConfig.onlinePvpDamage = 0.01f;
+            if (g_PcConfig.onlinePvpDamage > 5.0f)  g_PcConfig.onlinePvpDamage = 5.0f;
+        }
+        else if (strcmp(key, "online_respawn_seconds") == 0)
+        {
+            g_PcConfig.onlineRespawnSeconds = (float)atof(value);
+            if (g_PcConfig.onlineRespawnSeconds < 2.0f)  g_PcConfig.onlineRespawnSeconds = 2.0f;
+            if (g_PcConfig.onlineRespawnSeconds > 60.0f) g_PcConfig.onlineRespawnSeconds = 60.0f;
+        }
+        else if (strcmp(key, "online_steam") == 0)
+        {
+            g_PcConfig.onlineSteam = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_steam_appid") == 0)
+        {
+            int v = atoi(value);
+            if (v <= 0) v = 480;
+            g_PcConfig.onlineSteamAppId = v;
+        }
+        else if (strcmp(key, "online_steam_max_players") == 0)
+        {
+            int v = atoi(value);
+            if (v < 2) v = 2;
+            if (v > 8) v = 8;
+            g_PcConfig.onlineSteamMaxPlayers = v;
+        }
+        else if (strcmp(key, "online_steam_public") == 0)
+        {
+            g_PcConfig.onlineSteamPublic = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_steam_autohost") == 0)
+        {
+            g_PcConfig.onlineSteamAutoHost = (atoi(value) != 0);
         }
         else if (strcmp(key, "gamepad_icons") == 0)
         {
@@ -1374,6 +1546,16 @@ else if (strcmp(key, "enable_plugins") == 0)
         {
             g_PcConfig.charaPerPixelLight = (atoi(value) != 0);
         }
+        else if (strcmp(key, "per_pixel_lighting") == 0)
+        {
+            g_PcConfig.perPixelLighting = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "hero_light") == 0)
+        {
+            g_PcConfig.heroLight = atoi(value);
+            if (g_PcConfig.heroLight < 0) g_PcConfig.heroLight = 0;
+            if (g_PcConfig.heroLight > 3) g_PcConfig.heroLight = 3;
+        }
         else if (strcmp(key, "dream_blur_strength") == 0)
         {
             extern float g_PsxFeedbackDampBlend;
@@ -1833,6 +2015,8 @@ void PcConfig_SaveKeyValues(const char* const* keys, const char* const* values, 
 
     if (keys == NULL || values == NULL || count <= 0)
         return;
+    if (g_PcConfigReadOnly)
+        return;
     if (count > (int)sizeof(found))
         count = (int)sizeof(found);
     memset(found, 0, (size_t)count);
@@ -1897,6 +2081,8 @@ void PcConfig_SaveKeyValues(const char* const* keys, const char* const* values, 
  * file, pasted into a message, and pasted back. */
 void PcConfig_SaveBindLines(const char* const* lines, int count)
 {
+    if (g_PcConfigReadOnly)
+        return;
     char** buf;
     int    total = 0;
     int    n = 0;
@@ -1973,6 +2159,8 @@ void PcConfig_ApplyXaVolume(float norm)
  * choice persists to the next New Game / launch. */
 void PcConfig_SaveMapName(const char* mapName)
 {
+    if (g_PcConfigReadOnly)
+        return;
     if (mapName == NULL || mapName[0] == '\0')
         return;
     PcConfig_SaveKeyValue("map", mapName);

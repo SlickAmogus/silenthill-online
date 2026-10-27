@@ -533,6 +533,12 @@
 			Module = m;
 			var FS = m.FS;
 			mkdirp(FS, "/game");
+			/* /play (single-player) and /playonline share an origin, and IDBFS
+			 * names its database after the mount point, so both would read one
+			 * config and one set of saves. The remembered disc (DB_NAME) stays
+			 * shared: it is the same disc. */
+			var idbGetDB = m.IDBFS.getDB;
+			m.IDBFS.getDB = function (name, cb) { return idbGetDB.call(m.IDBFS, "sh-online" + name, cb); };
 			FS.mount(m.IDBFS, {}, "/game");
 			return syncFs(true).then(function () {
 				mkdirp(FS, "/game/gamedata/save");
