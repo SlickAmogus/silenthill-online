@@ -1209,6 +1209,20 @@ static void ShSteam_OnSessionRequest(const u8_* p, int cb)
 
 #endif /* _WIN32 */
 
+#if !defined(_WIN32)
+/* No Steam off Windows (the flat API is loaded from steam_api64.dll): the
+ * co-op menu and session still call these, and get "nothing there". */
+void ShSteam_RequestLobbyList(void) {}
+int  ShSteam_OverlayEnabled(void) { return 0; }
+int  ShSteam_LobbyListCount(void) { return 0; }
+int  ShSteam_LobbyListGet(int i, unsigned long long* id, char* host, int hostCap, int* players, int* max, int* map)
+{
+    (void)i; (void)id; (void)host; (void)hostCap; (void)players; (void)max; (void)map;
+    return 0;
+}
+const char* ShSteam_LastError(void) { return ""; }
+#endif
+
 void ShSteam_RunCallbacks(void)
 {
 #if defined(_WIN32)
