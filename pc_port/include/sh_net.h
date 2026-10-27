@@ -117,6 +117,9 @@ void ShNet_Service(void);
 /* Reconnect with the current config (used by the console command and by the
  * player-list panel's Reconnect row). */
 void ShNet_Reconnect(void);
+/* Re-reads online_server / online_port / online_name / online_enabled from
+ * g_PcConfig and reconnects with them (the in-game settings page). */
+void ShNet_ApplySettings(void);
 
 /* ------------------------------------------------------------------ */
 /* Status                                                              */

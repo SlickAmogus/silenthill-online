@@ -43,12 +43,15 @@
 typedef struct { unsigned short xa; const char* label; } VoiceLine;
 typedef struct { int charaId; const char* folder; VoiceLine line[VOICE_SLOTS]; } VoiceSet;
 
-/* Disc lines, short and standalone, by character (speaker attribution from
- * the cutscene scripts; xa indices into g_XaItemData). */
+/* Disc lines, short and standalone, by character (xa indices into
+ * g_XaItemData). The speaker is not the index's neighbourhood: each disc file
+ * sorts its clips by length, so one character's lines are interleaved with
+ * everyone's. Each line here was checked against its scene's dialogue order
+ * and the clip's voice pitch. */
 static const VoiceSet s_sets[VOICE_CHARAS] = {
     { Chara_Harry, "harry", {
-        { 44,  "Harry Mason." },      { 28,  "Yeah. Thanks." },    { 243, "Okay." },        { 43,  "No way!" },
-        { 464, "Wait!" },             { 561, "Damn!" },            { 82,  "Stay back!" },   { 205, "Stop! Don't shoot!" } } },
+        { 44,  "Harry Mason." },      { 28,  "Yeah. Thanks." },    { 243, "Okay." },        { 545, "Where's Cheryl?" },
+        { 464, "Wait!" },             { 561, "Damn!" },            { 42,  "What's that?" },   { 205, "Stop! Don't shoot!" } } },
     { Chara_Cybil, "cybil", {
         { 45,  "Cybil Bennett." },    { 40,  "Glad to hear it." }, { 49,  "Got it?" },      { 249, "Alright." },
         { 209, "I'll cover you." },   { 195, "Be careful." },      { 231, "Harry!" },       { 26,  "It's dangerous out there." } } },
@@ -56,7 +59,7 @@ static const VoiceSet s_sets[VOICE_CHARAS] = {
         { 454, "Give me that!" },     { 463, "Got it?" },          { 430, "None of your business!" }, { 452, "What are you doing?" },
         { 705, "Nobody uses me!" },   { 706, "Did I ask for this!" }, { 704, "You're easy!" }, { 252, "Hold it..." } } },
     { Chara_Lisa, "lisa", {
-        { 365, "Harry!" },            { 354, "Glad you're OK." },  { 353, "Happy to see you." }, { 547, "Harry, listen." },
+        { 365, "Harry!" },            { 159, "Harry, let me help you." },  { 212, "It's awful..." }, { 547, "Harry, listen." },
         { 355, "Harry, don't go!" },  { 221, "I'm sorry." },       { 558, "No." },          { 508, "Harry... help me..." } } },
     { Chara_Dahlia, "dahlia", {
         { 234, "Darkness." },         { 552, "Alessa." },          { 542, "Bad girl." },    { 536, "I was careless." },
