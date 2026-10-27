@@ -52,6 +52,34 @@ Markers are saved to `memos.db` — plain text, one per line, so a bad one can
 be deleted with a text editor. It is written every 30 seconds when something
 changed, and on a clean shutdown (Ctrl-C).
 
+### Running the server: admin commands
+
+While the server runs, open its console from the same machine:
+
+```
+sh_master --console
+sh_master --cmd "players"        # or one command at a time
+```
+
+| command | does |
+|---|---|
+| `players` | who is on, with ids, addresses, rooms and builds |
+| `kick <id or name> [reason]` | removes a player; they can reconnect |
+| `ban <id, name or IP> [minutes] [reason]` | bans by address and by player id; no minutes means forever |
+| `unban <IP or uid>`, `bans` | lift a ban, list them |
+| `memos [name or uid]` | marker counts per player, or one player's markers |
+| `prune old <days>` | deletes markers older than that |
+| `prune user <name or uid>` | deletes every marker a player placed |
+| `prune id <marker id>`, `prune deaths [days]` | one marker, or death markers |
+| `say <text>` | a message to everyone online |
+| `save` | writes the marker store now |
+
+The console listens on 127.0.0.1 port 27891 only (`--admin PORT` moves it,
+`--admin 0` turns it off), so only someone logged in to the server machine
+can use it. Bans are kept in `bans.txt` next to the marker store. Pruned
+markers disappear for players already on that map the next time they change
+map.
+
 ### 2. Point the game at it
 
 In `config.cfg`:
