@@ -17,8 +17,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include <SDL.h>
+#if defined(SH_NO_OPENAL)
+/* No OpenAL in this build (Android, iOS, the browser), so the SDL mixer is the
+ * only way out: with no current context Vc_Ready never picks the OpenAL
+ * backend, and these stand-ins only let its branches compile. */
+typedef unsigned int ALuint;
+typedef int          ALint;
+typedef int          ALenum;
+typedef int          ALsizei;
+enum { AL_NO_ERROR = 0, AL_TRUE = 1, AL_BUFFER, AL_GAIN, AL_PITCH, AL_POSITION, AL_SOURCE_RELATIVE,
+       AL_SOURCE_STATE, AL_PLAYING, AL_PAUSED, AL_STOPPED, AL_SAMPLE_OFFSET, AL_SIZE, AL_BITS,
+       AL_CHANNELS, AL_FORMAT_MONO16, AL_FORMAT_STEREO16 };
+#define alcGetCurrentContext()          ((void*)0)
+#define alGetError()                    AL_NO_ERROR
+#define alGenSources(n, p)              ((void)(n), *(p) = 0)
+#define alGenBuffers(n, p)              ((void)(n), *(p) = 0)
+#define alIsSource(x)                   ((void)(x), 0)
+#define alIsBuffer(x)                   ((void)(x), 0)
+#define alGetSourcei(s, k, v)           ((void)(s), (void)(k), *(v) = AL_STOPPED)
+#define alGetBufferi(b, k, v)           ((void)(b), (void)(k), *(v) = 0)
+#define alSourcei(s, k, v)              ((void)(s), (void)(k), (void)(v))
+#define alSourcef(s, k, v)              ((void)(s), (void)(k), (void)(v))
+#define alSource3f(s, k, x, y, z)       ((void)(s), (void)(k), (void)(x), (void)(y), (void)(z))
+#define alSourcePlay(s)                 ((void)(s))
+#define alSourceStop(s)                 ((void)(s))
+#define alBufferData(b, f, d, n, r)     ((void)(b), (void)(f), (void)(d), (void)(n), (void)(r))
+#else
 #include <AL/al.h>
 #include <AL/alc.h>
+#endif
 
 #include "pc_voice_clip.h"
 #include "sh_log.h"
