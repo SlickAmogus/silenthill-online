@@ -14,6 +14,7 @@
 #include "sh_log.h"
 #include "pc_config.h"
 #include "pc_rando.h"
+#include "pc_coop_save.h"
 
 #include <SDL.h>
 
@@ -76,6 +77,24 @@ void Pc_QuickSave_TouchRequest(int load)
         s_touchReqLoad = 1;
     else
         s_touchReqSave = 1;
+}
+
+/* The same steps the save point (game_sys_states.c) and the inventory save
+ * (item_screens_2.c case 24) take, so the screen's assets are in before the
+ * state switch. Shared with the multiplayer menu's Save row. */
+int Pc_Save_OpenSaveScreen(void)
+{
+    if (g_GameWork.gameState != GameState_InGame || g_SysWork.sysState != SysState_Gameplay ||
+        Pc_Save_BossActive())
+    {
+        return 0;
+    }
+    SysWork_SavegameUpdatePlayer();
+    Screen_Refresh(320, 0);
+    GameFs_SaveLoadBinLoad();
+    Fs_QueueWaitForEmpty();
+    Game_StateSetNext(GameState_SaveScreen);
+    return 1;
 }
 
 void Pc_QuickSaveLoadUpdate(void)
@@ -143,11 +162,7 @@ void Pc_QuickSaveLoadUpdate(void)
         } else if (wantSave) {
             SH_DBG("[QUICK] opening save screen (%s)",
                    touchSave ? "touch" : g_PcConfig.keyQuickSave);
-            SysWork_SavegameUpdatePlayer();
-            Screen_Refresh(320, 0);
-            GameFs_SaveLoadBinLoad();
-            Fs_QueueWaitForEmpty();
-            Game_StateSetNext(GameState_SaveScreen);
+            Pc_Save_OpenSaveScreen();
         } else if (wantLoad) {
             SH_DBG("[QUICK] opening load screen (%s)",
                    touchLoad ? "touch" : g_PcConfig.keyQuickLoad);
