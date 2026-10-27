@@ -110,6 +110,7 @@ static int     s_modCount;
 enum { QM_CLOSED = 0, QM_PROMPT, QM_NOTICE, QM_LOADING, QM_ERROR, QM_LIST, QM_INFO, QM_BUSY, QM_DONE };
 static int    s_mode;
 static Uint32 s_openMs;
+static Uint32 s_closedMs; /* 0 = never closed */
 static int    s_sel;          /* LIST: row index, then the buttons; elsewhere unused */
 static int    s_btnSel;       /* selected button on the button bar */
 static int    s_infoIdx;      /* QM_INFO: which mod */
@@ -683,7 +684,9 @@ static void qm_set_mode(int mode)
 
 static void qm_close(void)
 {
-    s_mode = QM_CLOSED;
+    s_mode     = QM_CLOSED;
+    s_closedMs = SDL_GetTicks();
+    if (!s_closedMs) s_closedMs = 1;
 }
 
 static void qm_open_list_now(void)
@@ -704,9 +707,12 @@ static void qm_open_list_now(void)
     qm_task_start(-1);
 }
 
+/* Still "open" for a moment after it closes: the tap or click that pressed
+ * its last button is read again by the menu underneath in the same frame,
+ * and would pick whatever title row sits behind that button. */
 int Pc_QolMods_IsOpen(void)
 {
-    return s_mode != QM_CLOSED;
+    return s_mode != QM_CLOSED || (s_closedMs && SDL_GetTicks() - s_closedMs < 250u);
 }
 
 void Pc_QolMods_OpenList(void)

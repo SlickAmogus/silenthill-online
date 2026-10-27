@@ -803,6 +803,8 @@ elseif(EMSCRIPTEN)
         "-sALLOW_MEMORY_GROWTH=1" "-sINITIAL_MEMORY=268435456" "-sMAXIMUM_MEMORY=4294967296"
         "-sSTACK_SIZE=8388608"
         "-sFORCE_FILESYSTEM=1" "-lidbfs.js"
+        # Online play: the browser has no UDP, so the client talks WebSocket.
+        "-lwebsocket.js"
         "-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain,ENV,ccall"
         "-sEXPORTED_FUNCTIONS=_main,_malloc,_free"
         "-sINVOKE_RUN=0" "-sEXIT_RUNTIME=0"
