@@ -102,7 +102,7 @@ typedef socklen_t ShSockLen;
 /* Limits                                                              */
 /* ------------------------------------------------------------------ */
 
-#define SRV_MAX_CLIENTS   256
+#define SRV_MAX_CLIENTS   1024
 #define SRV_MAX_MEMOS     20000
 #define SRV_MEMOS_PER_MAP 400
 #define SRV_MEMOS_PER_USER 40
@@ -245,7 +245,7 @@ static unsigned short g_port = SHNET_DEFAULT_PORT;
 static char          g_serverName[SHNET_SERVER_MAX] = "Silent Hill";
 static char          g_motd[SHNET_MOTD_MAX]         = "";
 static char          g_password[256];
-static int           g_maxClients = 64;
+static int           g_maxClients = 512;
 static int           g_maxPerIp   = SRV_MAX_PER_IP_DEFAULT;
 
 static unsigned int  g_rejectWindowMs;
@@ -3355,7 +3355,7 @@ static void SrvUsage(const char* argv0)
     printf("  --builds F   read allowed build ids from file F, one per line\n");
     printf("               (a client's id is logged on every join: \"build ...\")\n");
     printf("  -d FILE      marker store path (default memos.db)\n");
-    printf("  --max N      maximum simultaneous players (default 64)\n");
+    printf("  --max N      maximum simultaneous players (default 512, up to 1024)\n");
     printf("  -i N         maximum players from one IP address (default %d)\n", SRV_MAX_PER_IP_DEFAULT);
     printf("  --no-ghosts  do not fan out positions\n");
     printf("  --no-memos   do not accept or serve messages\n");
