@@ -50,6 +50,10 @@ The launcher's **Online** button opens the online settings. Co-op comes up on it
 
 The default Steam App ID is **480** (Spacewar, Valve's public test app), which every Steam account owns, so the port can use lobbies and invites without an App ID of its own.
 
+## Hosting your own server
+
+The living world and the room list run on a server anyone can host. The [server release](https://github.com/SlickAmogus/silenthill-online/releases/tag/server) always has the current build for Windows and Linux, plus `Redeploy-Server.bat`, which installs or updates it on a Linux machine over ssh as a service that restarts itself, `Server-Console.bat` for the admin console (players, kick, ban, prune, say), and `Start-Server.bat` to run it on a Windows PC. Players reach it through the **Living World IP** field in the Multiplayer menu. Instructions: [online_server/host/README.md](online_server/host/README.md).
+
 ## Building
 
 Same as the base port: MSYS2 / MinGW64, CMake + Ninja, and the PsyCross submodule. See the port's own build steps for the full procedure. The only online-specific note is that the Steam and networking layer come up automatically in this build, and `steam_api64.dll` (Steamworks SDK, `redistributable_bin/win64`) must sit next to the game exe for co-op to work. It fails gracefully without it, and the Multiplayer menu simply reports Steam as unavailable.

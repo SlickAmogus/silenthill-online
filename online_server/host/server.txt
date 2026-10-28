@@ -1,0 +1,15 @@
+# Silent Hill Online server settings. Lines starting with # are ignored.
+#
+# host: the Linux server that Redeploy-Server.bat and Server-Console.bat log
+# in to with ssh, as user@address (root@1.2.3.4). Leave it empty to run the
+# server on this Windows PC instead, with Start-Server.bat.
+host=
+#
+# args: the server's command line (see README.md for every option). On a Linux
+# server this is used when the service is first created; later changes go in
+# ExecStart= of /etc/systemd/system/sh1pc.service.
+args=-n "My Silent Hill server" -m "Welcome"
+#
+# domain: a DNS name that points at the Linux server, so browser players can
+# connect (wss://). Leave it empty if you do not want browser players.
+domain=
