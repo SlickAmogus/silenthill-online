@@ -25,6 +25,10 @@ void ShNetInvite_Tick(void);
 /* The living world is up, we are in a map, and we could take someone in:
  * not in a session, or hosting a server room with a free seat. */
 int  ShNetInvite_CanInvite(void);
+/* In a map but where the game cannot be saved (a boss is alive, or a scene is
+ * playing): the Invite row shows why and does nothing, and invites that
+ * arrive get "busy". */
+int  ShNetInvite_Blocked(void);
 /* The nearest other player on this map who is not already in our game; 0 =
  * nobody. name may be NULL. *outCooldownSec > 0 when they declined us lately. */
 unsigned int ShNetInvite_Nearest(char* name, int cap, int* outCooldownSec);

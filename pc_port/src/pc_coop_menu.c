@@ -547,10 +547,11 @@ void Pc_CoopMenu_InviteJoin(int code)
 void Pc_CoopMenu_RequestHostReboot(void)
 {
     if (g_SavegamePtr == NULL || g_GameWork.gameState != GameState_InGame) return;
-    g_GameWork.autosave                 = *g_SavegamePtr;
-    g_GameWork.autosave.playerPositionX = g_SysWork.playerWork.player.position.vx;
-    g_GameWork.autosave.playerPositionZ = g_SysWork.playerWork.player.position.vz;
-    g_GameWork.autosave.playerRotationY = g_SysWork.playerWork.player.rotation.vy;
+    /* A save made on the spot, the way a save point makes one: the live
+     * player state goes into the savegame first, then into the autosave the
+     * Continue boots. */
+    SysWork_SavegameUpdatePlayer();
+    g_GameWork.autosave = *g_SavegamePtr;
     if (g_GameWork.autosave.playerHealth <= 0)
     {
         g_GameWork.autosave.playerHealth = Q12(100.0f);
@@ -967,8 +968,9 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
             char who[SHNET_NAME_MAX];
             int  cool = 0;
             ShNetInvite_Nearest(who, (int)sizeof(who), &cool);
-            if (cool > 0) snprintf(out, cap, "Invite %s  (declined, %d s)", who, cool);
-            else          snprintf(out, cap, "Invite %s", who);
+            if (ShNetInvite_Blocked()) snprintf(out, cap, "Invite %s  (not during a boss fight)", who);
+            else if (cool > 0)         snprintf(out, cap, "Invite %s  (declined, %d s)", who, cool);
+            else                       snprintf(out, cap, "Invite %s", who);
             break;
         }
         case COOP_IG_INVITE_CANCEL:
@@ -982,7 +984,8 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         {
             char who[SHNET_NAME_MAX];
             int  left = ShNetInvite_Incoming(who, (int)sizeof(who));
-            snprintf(out, cap, "Accept %s's Invite  (%d s)", who, left);
+            if (ShNetInvite_Blocked()) snprintf(out, cap, "Accept %s's Invite  (not during a boss fight)", who);
+            else                       snprintf(out, cap, "Accept %s's Invite  (%d s)", who, left);
             break;
         }
         case COOP_IG_DECLINE:    snprintf(out, cap, "Decline Invite"); break;
@@ -1335,9 +1338,15 @@ static void Coop_Confirm(void)
             break;
         }
         case COOP_IG_PLAYERS: s_page = COOP_PAGE_PLAYERS; s_sel = 0; break;
-        case COOP_IG_INVITE:        ShNetInvite_Send();    Pc_CoopMenu_Close(); break;
+        case COOP_IG_INVITE:
+            ShNetInvite_Send();
+            if (!ShNetInvite_Blocked()) Pc_CoopMenu_Close();
+            break;
         case COOP_IG_INVITE_CANCEL: ShNetInvite_Cancel();  s_sel = 0; break;
-        case COOP_IG_ACCEPT:        ShNetInvite_Accept();  Pc_CoopMenu_Close(); break;
+        case COOP_IG_ACCEPT:
+            ShNetInvite_Accept();
+            if (!ShNetInvite_Blocked()) Pc_CoopMenu_Close();
+            break;
         case COOP_IG_DECLINE:       ShNetInvite_Decline(); s_sel = 0; break;
         default:
             /* Leave to Title without saving. */
