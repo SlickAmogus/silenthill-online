@@ -381,9 +381,9 @@ void Pc_CoopMenu_FeedKeys(const unsigned char* ks)
     }
 }
 
-/* Save picker for the host setup, split screen and a guest's Join page: the
- * player's own single-player saves and which one to start from (-1 = a fresh
- * New Game). */
+/* Save picker for the host setup and split screen: the host's own
+ * single-player saves and which one to start from (-1 = a fresh New Game).
+ * Guests pick nothing: they play the host's game. */
 static CoopSaveEntry s_saves[24];
 static int           s_saveCount;
 static int           s_loadIdx = -1;
@@ -410,12 +410,6 @@ static void Coop_SaveRowText(char* out, int cap)
         snprintf(out, cap, "Start From:  %s", s_saves[s_loadIdx].name);
     else
         snprintf(out, cap, "Start From:  New Game");
-}
-
-/* The save a guest brings into the host's game, or NULL for a fresh one. */
-const char* Pc_CoopMenu_GuestSaveKey(void)
-{
-    return (s_loadIdx >= 0 && s_loadIdx < s_saveCount) ? s_saves[s_loadIdx].key : NULL;
 }
 
 void Pc_CoopMenu_Open(void)
@@ -502,6 +496,23 @@ void Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY)
     g_SysWork.sysFlags |= SysFlag_DoWarmReset;
     Pc_CoopMenu_Close();
     SH_DBG("[COOP] warping to map %d", mapIdx);
+}
+
+/* The host loaded a save: everyone starts from it. The host's savegame
+ * becomes our autosave and the game reboots into it the way a warp does,
+ * landing next to the host at the save point. */
+void Pc_CoopMenu_RequestReboot(const void* savegame)
+{
+    if (!g_PcCoopGame || !ShSession_Active() || g_SavegamePtr == NULL || savegame == NULL) return;
+    g_GameWork.autosave = *(const s_Savegame*)savegame;
+    if (g_GameWork.autosave.playerHealth <= 0)
+    {
+        g_GameWork.autosave.playerHealth = Q12(100.0f);
+    }
+    s_startReq = 3;
+    g_SysWork.sysFlags |= SysFlag_DoWarmReset;
+    Pc_CoopMenu_Close();
+    SH_DBG("[COOP] rebooting into the host's save (map %d)", (int)g_GameWork.autosave.mapIdx);
 }
 
 int Pc_CoopMenu_TakeStartRequest(char* outName, int cap)
@@ -668,8 +679,8 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
-    case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 4 : 5; /* guest: Character, Start From, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
-    case COOP_PAGE_JOIN:       return 6; /* Browse, Join by IP, Enter code, Steam, Start From, Back */
+    case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
+    case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
     case COOP_PAGE_INGAME:     return Coop_PlayersRow() + 2; /* Resume, Message, Save, Character, Nameplates, Health Bars, Friendly Fire, Guest Console, [Teleport to Host,] Players, Leave */
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
@@ -800,8 +811,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         {
             /* Guest lobby: pick a character, wait or leave. */
             if (i == 0)      snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current()));
-            else if (i == 1) Coop_SaveRowText(out, cap);
-            else if (i == 2) snprintf(out, cap, "Leave Room");
+            else if (i == 1) snprintf(out, cap, "Leave Room");
             else             snprintf(out, cap, "Back");
             break;
         }
@@ -875,7 +885,6 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 1) snprintf(out, cap, "Join by IP...");
         else if (i == 2) snprintf(out, cap, "Enter Room Code...");
         else if (i == 3) snprintf(out, cap, "Join a Friend (Steam)");
-        else if (i == 4) Coop_SaveRowText(out, cap);
         else             snprintf(out, cap, "Back");
         break;
 
@@ -1060,7 +1069,7 @@ static void Coop_Confirm(void)
         switch (Coop_RootRow(s_sel))
         {
         case COOP_ROOT_HOST:     Coop_EnterHostSetup(); break;
-        case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshSaves(); Coop_RefreshServerList(); break;
+        case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); break;
         case COOP_ROOT_SPLIT:    Coop_EnterSplit(); break;
         case COOP_ROOT_SETTINGS: s_page = COOP_PAGE_SETTINGS; s_sel = 0; s_msg[0] = '\0'; break;
         default:                 Pc_CoopMenu_Close(); break;
@@ -1131,8 +1140,7 @@ static void Coop_Confirm(void)
         if (ShSession_Active() && !ShSession_IsHost())
         {
             if (s_sel == 0)      { Pc_PlayAs_Cycle(1); break; }           /* Character */
-            else if (s_sel == 1) { Coop_CycleSave(); break; }             /* Start From */
-            else if (s_sel == 2) { ShSession_RequestLeave(); }            /* Leave Room */
+            else if (s_sel == 1) { ShSession_RequestLeave(); }            /* Leave Room */
             s_page = COOP_PAGE_ROOT; s_sel = 0;
             break;
         }
@@ -1288,7 +1296,6 @@ static void Coop_Confirm(void)
                 s_sel  = 0;
             }
         }
-        else if (s_sel == 4) { Coop_CycleSave(); }
         else { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 

@@ -2,7 +2,14 @@
 /*
  * sh_net_respawn.c - co-op respawn. Design in sh_net_respawn.h.
  *
- * Phases:  ALIVE --death anim ends--> HOLD --delay--> BLINK --1.5 s--> SETTLE --> ALIVE
+ * Phases:  ALIVE --death anim ends--> HOLD --delay, a safe partner--> BLINK --1.5 s--> SETTLE --> ALIVE
+ *
+ * The player comes back next to a living partner who is not in combat (no
+ * monster on them, no hit taken for a few seconds, and that for RS_CLEAR_MS,
+ * so a partner who ran through a door is through it). Until there is one the
+ * body waits ("Waiting to respawn"). A partner on another map is reached by
+ * a reboot into it. When nobody is left alive the host gets the game's own
+ * game over and loads a save; the guests wait for that and start from it.
  *
  * HOLD/BLINK: the engine's death handlers call Pc_Respawn_HoldDeath() where they
  * would enter SysState_GameOver and return instead, so the player stays in the
@@ -44,6 +51,8 @@
 #define RS_SETTLE_FRAMES 90          /* ground probe retries after a jump */
 #define RS_POSE_STALE_MS 3000
 #define RS_NO_FLOOR      Q12(8.0f)   /* Collision_SurfaceGet's "no floor here" */
+#define RS_CLEAR_MS      2000        /* a partner is safe this long after their last combat */
+#define RS_ALIVE_MS      20000       /* a pose this old no longer proves a partner alive (a load screen sends none) */
 
 enum { RS_ALIVE = 0, RS_HOLD, RS_BLINK, RS_SETTLE };
 
@@ -59,6 +68,68 @@ static int     s_entryMap, s_entryRoom;
 static VECTOR3 s_entryPos;
 static short   s_entryRot;
 static int     s_lastMap = -1, s_lastRoom = -1;
+
+/* What the dead player is waiting for, for the status line. */
+static int     s_waitWhy;  /* 0 none, 1 everyone in combat, 2 nobody alive */
+
+/* When each partner was last seen in combat (by their pose flag). */
+static struct { unsigned long long id; unsigned int ms; } s_combat[SHSESSION_MAX_MEMBERS];
+
+static void NoteCombat(const ShSessionMember* m, unsigned int now)
+{
+    int i, free = -1;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_combat[i].id == m->steamId) break;
+        if (s_combat[i].id == 0 && free < 0) free = i;
+    }
+    if (i == SHSESSION_MAX_MEMBERS)
+    {
+        if (free < 0) return;
+        i = free;
+        s_combat[i].id = m->steamId;
+        s_combat[i].ms = 0;
+    }
+    if (m->flags & SHNET_PF_COMBAT) s_combat[i].ms = now;
+}
+
+static int CombatClear(const ShSessionMember* m, unsigned int now)
+{
+    int i;
+    if (m->flags & SHNET_PF_COMBAT) return 0;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_combat[i].id == m->steamId)
+        {
+            return s_combat[i].ms == 0 || (int)(now - s_combat[i].ms) >= RS_CLEAR_MS;
+        }
+    }
+    return 1;
+}
+
+static int PartnerAlive(const ShSessionMember* m, unsigned int now)
+{
+    return m != NULL && m->steamId != ShSession_SelfId() && m->poseMs != 0 &&
+           (m->flags & SHNET_PF_ALIVE) && (int)(now - m->poseMs) <= RS_ALIVE_MS;
+}
+
+static int AnyoneElseAlive(void)
+{
+    const unsigned int now = ShNetPlat_Millis();
+    int i, n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        if (PartnerAlive(ShSession_Member(i), now)) return 1;
+    }
+    return 0;
+}
+
+/* The host's death with nobody else alive is the game's own game over: the
+ * host loads a save and everyone starts from it. */
+static int HostGameOver(void)
+{
+    return ShSession_IsHost() && !AnyoneElseAlive();
+}
 
 static q19_12 SecondsQ12(float s)
 {
@@ -132,15 +203,21 @@ static void Abort(void)
 
 int Pc_Respawn_HoldDeath(void)
 {
-    if (!InCoop())
+    if (!InCoop() || HostGameOver())
     {
+        if (s_phase == RS_HOLD || s_phase == RS_BLINK)
+        {
+            SH_DBG("[RESPAWN] nobody is left alive; the host's game over goes ahead");
+            Abort();
+        }
         return 0;
     }
     if (s_phase != RS_HOLD && s_phase != RS_BLINK)
     {
         s_phase   = RS_HOLD;
         s_elapsed = 0;
-        SH_DBG("[RESPAWN] died in co-op; back in %.0f s",
+        s_waitWhy = 0;
+        SH_DBG("[RESPAWN] died in co-op; back in %.0f s next to a partner who is out of combat",
                g_PcConfig.onlineRespawnSeconds + RS_BLINK_SECONDS);
     }
     return 1;
@@ -155,8 +232,8 @@ int Pc_Respawn_Holding(void)
 /* Respawn                                                             */
 /* ------------------------------------------------------------------ */
 
-/* Nearest living co-op partner on this map, same room preferred: a step
- * behind them, facing their way. */
+/* Nearest living co-op partner on this map who is out of combat, same room
+ * preferred: a step behind them, facing their way. */
 static int PickPartner(VECTOR3* pos, short* rot, char* how, int howCap)
 {
     const int              myMap  = (int)g_SavegamePtr->mapIdx;
@@ -177,7 +254,7 @@ static int PickPartner(VECTOR3* pos, short* rot, char* how, int howCap)
         {
             continue;
         }
-        if (!(m->flags & SHNET_PF_ALIVE) || (int)(now - m->poseMs) > RS_POSE_STALE_MS)
+        if (!(m->flags & SHNET_PF_ALIVE) || (int)(now - m->poseMs) > RS_POSE_STALE_MS || !CombatClear(m, now))
         {
             continue;
         }
@@ -222,27 +299,68 @@ static int PickPartner(VECTOR3* pos, short* rot, char* how, int howCap)
     return 1;
 }
 
+/* A living partner out of combat on another map: we go to them by a reboot
+ * into that map (the inventory and flags come along). */
+static const ShSessionMember* PartnerElsewhere(void)
+{
+    const unsigned int now = ShNetPlat_Millis();
+    int i, n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (PartnerAlive(m, now) && m->mapIdx >= 0 && m->mapIdx != (int)g_SavegamePtr->mapIdx &&
+            (int)(now - m->poseMs) <= RS_POSE_STALE_MS && CombatClear(m, now))
+        {
+            return m;
+        }
+    }
+    return NULL;
+}
+
+/* Someone we may come back next to right now? 1 here, 2 on another map
+ * (the reboot was requested), 0 not yet (s_waitWhy says why). */
+static int FindSpot(VECTOR3* pos, short* rot, char* how, int howCap)
+{
+    const ShSessionMember* far;
+    if (PickPartner(pos, rot, how, howCap))
+    {
+        s_waitWhy = 0;
+        return 1;
+    }
+    far = PartnerElsewhere();
+    if (far != NULL)
+    {
+        extern void Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY);
+        SH_DBG("[RESPAWN] no safe partner here; going to %s on map %d", far->name, far->mapIdx);
+        Pc_CoopMenu_RequestWarp(far->mapIdx, far->x, far->z, far->rotY);
+        SetVisible(1);
+        s_phase   = RS_ALIVE; /* the reboot takes it from here */
+        s_waitWhy = 0;
+        return 2;
+    }
+    s_waitWhy = AnyoneElseAlive() ? 1 : 2;
+    return 0;
+}
+
 static void Respawn(void)
 {
     s_SubCharacter* p = &g_SysWork.playerWork.player;
     VECTOR3         pos;
     short           rot;
     char            how[96];
+    int             spot = FindSpot(&pos, &rot, how, (int)sizeof(how));
 
-    if (!PickPartner(&pos, &rot, how, (int)sizeof(how)))
+    if (spot == 2)
     {
-        if (s_entryValid && s_entryMap == (int)g_SavegamePtr->mapIdx && s_entryRoom == (int)g_SavegamePtr->mapRoomIdx)
-        {
-            pos = s_entryPos;
-            rot = s_entryRot;
-            snprintf(how, sizeof(how), "where you entered this room");
-        }
-        else
-        {
-            pos = p->position;
-            rot = p->rotation.vy;
-            snprintf(how, sizeof(how), "where you fell");
-        }
+        return;
+    }
+    if (spot == 0)
+    {
+        /* The partner we were blinking out for stepped into a fight: wait again. */
+        SetVisible(1);
+        s_phase   = RS_HOLD;
+        s_elapsed = SecondsQ12(g_PcConfig.onlineRespawnSeconds);
+        return;
     }
 
     /* Place: what Chara_PositionSet does for a door arrival, minus the map
@@ -312,6 +430,14 @@ void ShNetRespawn_PlaceAt(const void* posv, short rot)
     }
     func_8007E9C4();
     Game_MapRoomIdxUpdate();
+    if (s_phase == RS_HOLD || s_phase == RS_BLINK)
+    {
+        /* A story scene starts and we are dead: everyone is in it, so this
+         * is the respawn, at its start. */
+        p->health = Q12(100.0f);
+        g_MapOverlayHdr.playerControlUnfreeze(true);
+        SH_DBG("[RESPAWN] back on your feet for the scene");
+    }
     Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
     vcSetCameraUseWarp(&p->position, g_SysWork.cameraAngleY);
 
@@ -340,6 +466,16 @@ void ShNetRespawn_Tick(void)
             Abort();
         }
         return;
+    }
+
+    {
+        const unsigned int now = ShNetPlat_Millis();
+        int i, n = ShSession_MemberCount();
+        for (i = 0; i < n; i++)
+        {
+            const ShSessionMember* m = ShSession_Member(i);
+            if (m != NULL && m->poseMs != 0 && m->steamId != ShSession_SelfId()) NoteCombat(m, now);
+        }
     }
 
     /* Remember where this room was entered (first frame standing on a
@@ -383,13 +519,26 @@ void ShNetRespawn_Tick(void)
         {
             return;
         }
+        if (HostGameOver())
+        {
+            SH_DBG("[RESPAWN] nobody is left alive; the host's game over goes ahead");
+            Abort();
+            return;
+        }
         s_elapsed += g_DeltaTime;
         if (s_phase == RS_HOLD)
         {
             if (s_elapsed >= SecondsQ12(g_PcConfig.onlineRespawnSeconds))
             {
-                s_phase   = RS_BLINK;
-                s_elapsed = 0;
+                VECTOR3 pos;
+                short   rot;
+                char    how[96];
+                s_elapsed = SecondsQ12(g_PcConfig.onlineRespawnSeconds); /* the clock is done; now we wait */
+                if (FindSpot(&pos, &rot, how, (int)sizeof(how)) == 1)
+                {
+                    s_phase   = RS_BLINK;
+                    s_elapsed = 0;
+                }
             }
             return;
         }
@@ -428,6 +577,19 @@ void ShNetRespawn_Tick(void)
 int ShNetRespawn_Active(void)
 {
     return s_phase == RS_HOLD || s_phase == RS_BLINK;
+}
+
+const char* ShNetRespawn_Waiting(void)
+{
+    if (s_phase != RS_HOLD || s_elapsed < SecondsQ12(g_PcConfig.onlineRespawnSeconds))
+    {
+        return NULL;
+    }
+    if (s_waitWhy == 2)
+    {
+        return ShSession_IsHost() ? "Waiting for a partner" : "Waiting for the host";
+    }
+    return "Waiting to respawn (players in combat)";
 }
 
 float ShNetRespawn_Remaining(void)
