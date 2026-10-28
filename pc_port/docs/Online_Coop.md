@@ -37,9 +37,13 @@ is one playthrough, the host's, and guests follow it.
 **Invite someone you meet.** In the living world, `M` opens the same menu
 over a single-player game, with **Invite <name>** for the nearest other
 player on your map. They get a note and **Accept** / **Decline** rows in
-their own `M` menu. On Accept a private room opens on the server, you
-continue where you stand as the host, and they boot into your game beside
-you, the same as any guest. An invite lasts 30 seconds (**Cancel Invite**
+their own `M` menu. On Accept a private room opens on the server, your game
+is saved on the spot (the save that a Continue boots, not a slot on your
+memory card), you continue from it where you stand as the host, and they
+boot into it beside you, the same as any guest. Their own game ends there
+without a save, so they should save first if they want to come back to it.
+Inviting and accepting are refused wherever the quick save is: a boss alive
+on the map, or a scene playing. An invite lasts 30 seconds (**Cancel Invite**
 withdraws it sooner); a player weighing one is busy to everyone else; and
 after a decline the asker waits two minutes before asking that player again.
 A host whose room has a free seat can invite the same way from inside a
