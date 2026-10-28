@@ -67,14 +67,22 @@ jobs:
           set -euo pipefail
           S="$RUNNER_TEMP/SHOnline-server/sh_master-linux-x64"
           "$S" --help >/dev/null
-          "$S" -p 27899 --ws 27900 --admin 27898 -d "$RUNNER_TEMP/selftest.db" -i 100 --max 128 > "$RUNNER_TEMP/server.log" 2>&1 &
-          SRV=$!
-          sleep 1
-          "$RUNNER_TEMP/shnet_selftest" 127.0.0.1 27899
-          "$RUNNER_TEMP/shnet_selftest" --ws 27900 127.0.0.1 27899
-          "$S" --admin 27898 --cmd players
-          kill $SRV; wait $SRV || true
-          tail -5 "$RUNNER_TEMP/server.log"
+          # Each pass gets a fresh server and marker store: the test inspects the
+          # first marker on a map and expects its own.
+          for MODE in udp ws; do
+            rm -f "$RUNNER_TEMP/selftest.db"
+            "$S" -p 27899 --ws 27900 --admin 27898 -d "$RUNNER_TEMP/selftest.db" -i 100 --max 128 > "$RUNNER_TEMP/server-$MODE.log" 2>&1 &
+            SRV=$!
+            sleep 1
+            if [ "$MODE" = udp ]; then
+              "$RUNNER_TEMP/shnet_selftest" 127.0.0.1 27899
+            else
+              "$RUNNER_TEMP/shnet_selftest" --ws 27900 127.0.0.1 27899
+            fi
+            "$S" --admin 27898 --cmd players
+            kill $SRV; wait $SRV || true
+            tail -3 "$RUNNER_TEMP/server-$MODE.log"
+          done
 
       - name: Zip
         run: |
