@@ -73,6 +73,7 @@ static int Tp_Recv(unsigned long long* from, shn_u8* buf, int cap)
 #define SESSION_DELAY_MAX 200  /* adapts to each member's send interval and jitter */
 #define SESSION_EXTRAP_MS 100  /* past the newest sample, coast this long, then hold */
 #define SESSION_WORLD_MS  1000 /* host re-tells guests to boot, until they arrive */
+#define SESSION_WORLD_SAVE_MAX 704 /* room for an s_Savegame (636) in an S_WORLD datagram */
 
 /* Requests, and the published copy. Both under s_lock. */
 static SDL_mutex* s_lock;
@@ -97,6 +98,8 @@ static struct
     unsigned int       poseSeq;     /* bumps once per published game frame */
 
     int                wantWorldMap; /* host: send S_WORLD(map) to guests; -1 none */
+    unsigned char      worldSave[SESSION_WORLD_SAVE_MAX]; /* host: its savegame, for S_WORLD */
+    int                worldSaveLen;
 
     int                hostGuestDebug; /* host: allow joined players debug controls (0 default) */
 
@@ -125,6 +128,8 @@ static struct
     char               status[128];
     int                worldReq;
     int                worldFlags;    /* guest: a map the host said to boot into, -1 none */
+    unsigned char      worldSave[SESSION_WORLD_SAVE_MAX]; /* guest: the host's savegame with it */
+    int                worldSaveLen;  /* 0 = none came */
     int                guestDebug;  /* host granted joined players debug controls */
 
     /* Open server rooms from the last list request, for the Join browser. */
@@ -143,6 +148,10 @@ static unsigned int    s_lastPosMs;   /* last co-op pose broadcast */
 static unsigned int    s_lastPosSeq;  /* the published frame it carried */
 static int             s_worldReqIn = -1; /* a map the host told us to boot into */
 static int             s_worldFlagsIn = 0; /* and what else it said about the game */
+static unsigned char   s_worldSaveIn[SESSION_WORLD_SAVE_MAX]; /* the host's savegame that came with it */
+static int             s_worldSaveInLen = 0;
+static unsigned char   s_worldSaveOut[SESSION_WORLD_SAVE_MAX]; /* host: worker's copy of s_req.worldSave */
+static int             s_worldSaveOutLen = 0;
 static int             s_worldFlagsOut = 0; /* host: what we say (game thread writes, worker reads) */
 static int             s_declineWorld = 0; /* guest chose to leave: ignore the host's
                                             * resent S_WORLD so it cannot drag them back,
@@ -564,6 +573,30 @@ void ShSession_RequestWorld(int mapIdx)
     SDL_UnlockMutex(s_lock);
 }
 
+void ShSession_PublishWorldSave(const void* save, int len)
+{
+    if (!s_lock || save == NULL || len <= 0 || len > SESSION_WORLD_SAVE_MAX) return;
+    SDL_LockMutex(s_lock);
+    memcpy(s_req.worldSave, save, (size_t)len);
+    s_req.worldSaveLen = len;
+    SDL_UnlockMutex(s_lock);
+}
+
+int ShSession_TakeWorldSave(void* out, int len)
+{
+    int got = 0;
+    if (!s_lock || out == NULL || len <= 0) return 0;
+    SDL_LockMutex(s_lock);
+    if (s_pub.worldSaveLen == len)
+    {
+        memcpy(out, s_pub.worldSave, (size_t)len);
+        got = 1;
+    }
+    s_pub.worldSaveLen = 0;
+    SDL_UnlockMutex(s_lock);
+    return got;
+}
+
 void ShSession_RequestWorldFlags(int flags)
 {
     s_worldFlagsOut = flags;
@@ -976,7 +1009,7 @@ static void ShSession_Receive(unsigned int now)
             const shn_u8* p = buf + SHNET_HDR_SIZE;
             int           o = 0;
             int           m;
-            if (payLen < 22)
+            if (payLen < 23)
             {
                 break;
             }
@@ -988,7 +1021,7 @@ static void ShSession_Receive(unsigned int now)
             }
             s_members[idx].mapIdx  = (m == 0xFF) ? -1 : m;
             s_members[idx].charaId = (int)ShnGetU8(p, &o);
-            s_members[idx].flags   = (int)ShnGetU8(p, &o);
+            s_members[idx].flags   = (int)ShnGetU16(p, &o);
             {
                 /* paperMapIdx + 1; was a zero pad, so 0 = a build that does
                  * not say which floor it is on. */
@@ -1174,6 +1207,16 @@ static void ShSession_Receive(unsigned int now)
                 break;
             }
             if (payLen >= 2) s_worldFlagsIn = (int)ShnGetU8(p, &o);
+            s_worldSaveInLen = 0;
+            if (payLen >= 4)
+            {
+                int n = (int)ShnGetU16(p, &o);
+                if (n > 0 && n <= SESSION_WORLD_SAVE_MAX && 4 + n <= payLen)
+                {
+                    memcpy(s_worldSaveIn, p + 4, (size_t)n);
+                    s_worldSaveInLen = n;
+                }
+            }
             if (!s_declineWorld)
             {
                 s_worldReqIn = m;
@@ -1322,6 +1365,8 @@ static void ShSession_Publish(void)
     {
         s_pub.worldReq = s_worldReqIn;
         s_worldReqIn   = -1;
+        s_pub.worldSaveLen = s_worldSaveInLen;
+        if (s_worldSaveInLen > 0) memcpy(s_pub.worldSave, s_worldSaveIn, (size_t)s_worldSaveInLen);
     }
     s_pub.worldFlags = Tp_IsHost() ? s_worldFlagsOut : s_worldFlagsIn;
     /* The host's debug-grant, read off the Steam lobby data (host reads back its
@@ -1440,6 +1485,11 @@ void ShSession_Tick(unsigned int nowMs)
     pose      = s_req.pose;
     poseSeq   = s_req.poseSeq;
     wantWorldMap        = s_req.wantWorldMap;
+    if (s_req.worldSaveLen > 0)
+    {
+        memcpy(s_worldSaveOut, s_req.worldSave, (size_t)s_req.worldSaveLen);
+        s_worldSaveOutLen = s_req.worldSaveLen;
+    }
     hostGuestDebug      = s_req.hostGuestDebug; /* persistent: snapshot, do not reset */
     SDL_strlcpy(coopHost, s_req.coopHost, sizeof(coopHost));
     coopPort        = s_req.coopPort;
@@ -1698,7 +1748,7 @@ void ShSession_Tick(unsigned int nowMs)
         s_lastWorldSendMs = nowMs;
         for (i = 0; i < s_memberCount; i++)
         {
-            shn_u8 buf[SHNET_HDR_SIZE + 4];
+            shn_u8 buf[SHNET_HDR_SIZE + 4 + SESSION_WORLD_SAVE_MAX];
             int    off = SHNET_HDR_SIZE;
             if (s_members[i].steamId == Tp_SelfId() || s_members[i].mapIdx == s_worldMapCur)
             {
@@ -1706,7 +1756,14 @@ void ShSession_Tick(unsigned int nowMs)
             }
             ShnPutU8(buf, &off, (shn_u8)((s_worldMapCur > 255) ? 0xFF : s_worldMapCur));
             ShnPutU8(buf, &off, (shn_u8)s_worldFlagsOut);
-            ShnPutU16(buf, &off, 0);
+            /* The game as it stands, so the guest plays the same playthrough
+             * (their inventory and progress are the host's from the start). */
+            ShnPutU16(buf, &off, (shn_u16)s_worldSaveOutLen);
+            if (s_worldSaveOutLen > 0)
+            {
+                memcpy(buf + off, s_worldSaveOut, (size_t)s_worldSaveOutLen);
+                off += s_worldSaveOutLen;
+            }
             ShnPutHeader(buf, SHNET_MSG_S_WORLD, (shn_u16)(off - SHNET_HDR_SIZE), 0);
             Tp_Send(s_members[i].steamId, buf, off, 1);
             SH_DBG("[SESSION] world (map %d) -> %s (they report map %d)",
@@ -1730,7 +1787,7 @@ void ShSession_Tick(unsigned int nowMs)
             }
             ShnPutU8(buf, &off, (shn_u8)((poseMap > 255) ? 0xFF : poseMap));
             ShnPutU8(buf, &off, (shn_u8)poseChara);
-            ShnPutU8(buf, &off, (shn_u8)poseFlags);
+            ShnPutU16(buf, &off, (shn_u16)poseFlags);
             ShnPutU8(buf, &off, pose.paperMap);
             ShnPutS32(buf, &off, pose.x);
             ShnPutS32(buf, &off, pose.y);

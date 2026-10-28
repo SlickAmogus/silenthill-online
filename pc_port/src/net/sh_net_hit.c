@@ -42,6 +42,7 @@ static int                s_proxyCount;
 
 static short s_pendYaw;
 static int   s_pendYawSet;
+static int   s_friendlyPending; /* the pending damage is a partner's, not a monster's */
 
 int Pc_NetHit_ProxyCount(void)
 {
@@ -306,6 +307,7 @@ void Pc_NetHit_ApplyIncoming(void)
         me->damage.position.vz += kbz;
         me->attackReceived      = (s8)reaction;
         me->field_40            = NO_VALUE;
+        s_friendlyPending       = 1;
         s_pendYaw    = yaw;
         s_pendYawSet = 1;
 
@@ -324,6 +326,13 @@ void Pc_NetHit_ApplyIncoming(void)
             func_8005F6B0(me, (VECTOR*)&at, D_800AD4C8[weapon].field_12, 1);
         }
     }
+}
+
+int Pc_NetHit_TakeFriendly(void)
+{
+    int v = s_friendlyPending;
+    s_friendlyPending = 0;
+    return v;
 }
 
 int Pc_NetHit_TakePendingYaw(short* yaw)
