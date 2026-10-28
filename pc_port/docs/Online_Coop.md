@@ -40,8 +40,11 @@ player on your map. They get a note and **Accept** / **Decline** rows in
 their own `M` menu. On Accept a private room opens on the server, your game
 is saved on the spot (the save that a Continue boots, not a slot on your
 memory card), you continue from it where you stand as the host, and they
-boot into it beside you, the same as any guest. Their own game ends there
-without a save, so they should save first if they want to come back to it.
+boot into it beside you, the same as any guest. Their own game ends there,
+so Accept asks **Save First** or **Join Without Saving**: Save First opens the
+usual save screen, and the accept goes out when it closes. While they save
+you see "saving" on your Cancel Invite row and may still cancel, which never
+interrupts their save but does cost you the two-minute wait a decline would.
 Inviting and accepting are refused wherever the quick save is: a boss alive
 on the map, or a scene playing. An invite lasts 30 seconds (**Cancel Invite**
 withdraws it sooner); a player weighing one is busy to everyone else; and

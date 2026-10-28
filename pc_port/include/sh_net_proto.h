@@ -181,7 +181,8 @@ enum
     SHNET_INV_DECLINE = 4, /* no */
     SHNET_INV_BUSY    = 5, /* already in a game or weighing another invite */
     SHNET_INV_JOIN    = 6, /* the room is open: join code `code` */
-    SHNET_INV_GONE    = 7  /* server: that player is no longer here */
+    SHNET_INV_GONE    = 7, /* server: that player is no longer here */
+    SHNET_INV_SAVING  = 8  /* yes, but saving my own game first: keep the invite open */
 };
 
 /* Marker kinds. */
