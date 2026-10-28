@@ -16,7 +16,7 @@ Open **Multiplayer** on the title screen.
 
 | Host on | How friends join | Needs |
 |---|---|---|
-| This PC | your IP address (Join by IP) | UDP port 27888 forwarded |
+| This PC | your IP address (Join by IP) | UDP port 27888 forwarded, and allowed through the firewall when the system asks |
 | Server | they browse the room list, or enter the 4-digit room code | nothing |
 | Steam | a Steam invite from the overlay | Steam running on both PCs |
 
@@ -59,12 +59,16 @@ your **Character** (any of the fourteen playable characters; the body swaps
 in place and everyone sees the new one), toggle nameplates and **Health
 Bars** (yours, your partners', both or none; neither shows during a scene),
 see the players (with pings), leave. A guest also has **Teleport to Host**.
-The host can also turn **Friendly Fire** on or off for everyone, allow
-**Guest Cheats** for all guests (the quick menu's cheat and debug pages, the
-console and binds are off for guests otherwise), and from the Players list
-allow cheats for one guest, bring them to where the host stands, or remove
-them. The lobby has the Character row too, so you can pick before the game
-starts.
+The host's menu has two more rows a guest's does not: **Friendly Fire** on
+or off for everyone, and **Guest Cheats** for all guests (the quick menu's
+cheat and debug pages, the console and binds are off for guests otherwise);
+from the Players list the host can allow cheats for one guest, bring them to
+where the host stands, or remove them. The lobby has the Character row too,
+so you can pick before the game starts.
+
+On a phone the menu is the two-heads button at the top of the screen, and
+the speech-bubble button beside it is the voice wheel: tap a line to say it,
+or the centre to put it away. Long lists scroll with a finger: hold and drag.
 
 **Pausing** is the host's: the host's pause pauses everyone, and a guest's
 pause button asks the host instead. Reading a note, a locked door message or

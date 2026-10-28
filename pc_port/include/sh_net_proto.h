@@ -77,6 +77,12 @@ typedef char shn_static_assert_widths[
 
 #define SHNET_NAME_MAX     24   /* including the NUL */
 #define SHNET_BUILD_MAX    24
+/* The build id players must share to be in one room (server rooms, Steam
+ * lobbies, Join by IP). One tag for every platform of a release, so a phone
+ * can join a PC: the executable's hash differed per platform, and on Android
+ * was the system's own app_process. Bump it whenever the co-op wire format or
+ * the shared game logic changes in a way the previous build cannot follow. */
+#define SHNET_COOP_BUILD   "coop-2026-10-28"
 #define SHNET_SERVER_MAX   32
 #define SHNET_MOTD_MAX     128
 #define SHNET_REJECT_MAX   96

@@ -14,6 +14,10 @@ extern "C" {
 void        ShNetVoice_KeyHeld(int held);
 /* Once a frame from ShNet_GameTick. */
 void        ShNetVoice_Tick(void);
+/* A touch button: opens the wheel for a tap to pick a line (a tap in the
+ * centre or off the wheel cancels), or closes it. */
+void        ShNetVoice_TouchToggle(void);
+int         ShNetVoice_MenuTapMode(void);
 /* SHNET_CTRL_VOICE from the room. */
 void        ShNetVoice_CtrlIn(unsigned long long from, const unsigned char* p, int len);
 

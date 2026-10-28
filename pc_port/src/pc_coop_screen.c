@@ -52,7 +52,9 @@
 #define CS_OT_LINE  6  /* with the rules */
 #define CS_OT_SHADE 9  /* with the highlight's shade */
 
-static int s_top; /* first row drawn */
+static int s_top;       /* first row drawn */
+static int s_shownPrev; /* rows that fit last frame */
+static int s_dragOn, s_dragLastY, s_dragAcc;
 
 static int cs_interlaced(void)
 {
@@ -214,7 +216,7 @@ void Pc_CoopScreen_Draw(void)
     const int small   = cs_interlaced() ? NM_TEXT_SMALL : NM_TEXT_TALL;
     int       rowY[CS_MAX_ROWS], rowH[CS_MAX_ROWS];
     int       listY   = CS_LIST_Y + (table ? 16 : 0);
-    int       shown, y, i, hover = -1;
+    int       shown, y, i, hover = -1, dragged;
     char      text[NM_LINE_MAX], clean[NM_LINE_MAX];
     NmInput   in;
 
@@ -223,8 +225,47 @@ void Pc_CoopScreen_Draw(void)
         return;
     }
 
+    NmInput_FromGame(&in);
+
+    /* A held pointer dragged up or down scrolls the list a row per row of
+     * travel: the phone gesture (the synthetic mouse a finger drives). The
+     * press it began with is cancelled so the release picks nothing. */
+    dragged = 0;
+    if (in.mouseOk && !editing && Pc_MouseCursor_LeftHeld())
+    {
+        if (!s_dragOn)
+        {
+            s_dragOn    = 1;
+            s_dragLastY = in.mouseY;
+            s_dragAcc   = 0;
+        }
+        else
+        {
+            s_dragAcc  += in.mouseY - s_dragLastY;
+            s_dragLastY = in.mouseY;
+            while (s_dragAcc >= CS_PITCH)
+            {
+                s_dragAcc -= CS_PITCH;
+                if (s_top > 0) s_top--;
+                dragged = 1;
+            }
+            while (s_dragAcc <= -CS_PITCH)
+            {
+                s_dragAcc += CS_PITCH;
+                if (s_top + s_shownPrev < n) s_top++;
+                dragged = 1;
+            }
+            if (dragged) Pc_CoopMenu_CancelPress();
+        }
+    }
+    else
+    {
+        s_dragOn = 0;
+    }
+
     /* Lay out from s_top until the list area is full; keep the selection in
-     * the window (rows have different heights, so this is iterative). */
+     * the window (rows have different heights, so this is iterative). A drag
+     * moves the window instead, and the selection follows the finger below. */
     for (;;)
     {
         y = listY;
@@ -238,11 +279,17 @@ void Pc_CoopScreen_Draw(void)
             y += h;
             shown++;
         }
+        if (dragged) break;
         if (sel < s_top && s_top > 0) { s_top = sel; continue; }
         if (sel >= s_top + shown && shown > 0 && s_top + shown < n) { s_top++; continue; }
         break;
     }
     if (s_top < 0) s_top = 0;
+    s_shownPrev = shown;
+    if (dragged && shown > 0 && (sel < s_top || sel >= s_top + shown))
+    {
+        Pc_CoopMenu_SetSelected(sel < s_top ? s_top : s_top + shown - 1);
+    }
 
     if (inGame)
     {
@@ -259,7 +306,6 @@ void Pc_CoopScreen_Draw(void)
 
     /* The pointer: a row under it is the selected row (the model confirms on
      * click through Pc_MouseCursor_LeftHeld). */
-    NmInput_FromGame(&in);
     if (in.mouseOk && !editing)
     {
         for (i = 0; i < shown; i++)
@@ -398,8 +444,26 @@ void Pc_CoopScreen_Draw(void)
     {
         cs_clean(text, clean, sizeof(clean));
         if (editing)
-            cs_text_tail(CS_X0 + 8, CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0), CS_X1 - CS_X0 - 16, small,
-                         StringColorId_Gold, clean);
+        {
+            /* "Label:  typed_": the label stays put and only the typed text
+             * is trimmed to keep its end, where the cursor is, in view. */
+            char      label[NM_LINE_MAX], value[NM_LINE_MAX];
+            const int sx = CS_X0 + 8, sy = CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0);
+            int       lw = 0;
+            if (!cs_split(text, label, sizeof(label), value, sizeof(value)))
+            {
+                label[0] = '\0';
+                snprintf(value, sizeof(value), "%s", text);
+            }
+            if (label[0])
+            {
+                cs_clean(label, clean, sizeof(clean));
+                Nm_TextDrawVerbatim(sx, sy, small, StringColorId_LightGrey, clean);
+                lw = cs_w(clean) + 8;
+            }
+            cs_clean(value, clean, sizeof(clean));
+            cs_text_tail(sx + lw, sy, CS_X1 - 8 - (sx + lw), small, StringColorId_Gold, clean);
+        }
         else
             cs_text_box(CS_X0 + 8, CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0), CS_X1 - CS_X0 - 16, small,
                         StringColorId_LightGrey, clean);
