@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           S="$RUNNER_TEMP/SHOnline-server/sh_master-linux-x64"
-          "$S" --help | head -1
+          "$S" --help >/dev/null
           "$S" -p 27899 --ws 27900 --admin 27898 -d "$RUNNER_TEMP/selftest.db" -i 100 --max 128 > "$RUNNER_TEMP/server.log" 2>&1 &
           SRV=$!
           sleep 1
