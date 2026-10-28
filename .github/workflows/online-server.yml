@@ -96,18 +96,18 @@ jobs:
           DATE="$(date -u '+%Y-%m-%d %H:%M')"
           PROTO="$(sed -n 's/^#define SHNET_PROTO_VER *\([0-9]*\).*/\1/p' pc_port/include/sh_net_proto.h)"
           NOTES="$(cat <<EOF
-The Silent Hill Online living world server, for anyone who wants to run their own: outlines, markers, messages and the room list. Rebuilt here whenever the server changes, so these files are always current.
+          The Silent Hill Online living world server, for anyone who wants to run their own: outlines, markers, messages and the room list. Rebuilt here whenever the server changes, so these files are always current.
 
-**Newest server: \`$SHORT\`, $DATE UTC, protocol v$PROTO**
+          **Newest server: \`$SHORT\`, $DATE UTC, protocol v$PROTO**
 
-- **SHOnline-server.zip**: everything below plus the scripts. Unzip it, fill in \`server.txt\`, then double-click **Redeploy-Server.bat** to install or update the server on a Linux machine over ssh, **Server-Console.bat** for its admin console (players, kick, ban, prune, say), or **Start-Server.bat** to run it on this Windows PC. Full instructions in the zip's README, also [here](https://github.com/$GITHUB_REPOSITORY/blob/main/online_server/host/README.md).
-- \`sh_master-linux-x64\`, \`sh_master-linux-arm64\`: the server for Linux, static, no dependencies.
-- \`sh_master.exe\`: the server for Windows.
-- \`install-server.sh\`: run it on the Linux machine itself if you are not on Windows (\`sudo bash install-server.sh --args '-n "Fog"'\`).
+          - **SHOnline-server.zip**: everything below plus the scripts. Unzip it, fill in \`server.txt\`, then double-click **Redeploy-Server.bat** to install or update the server on a Linux machine over ssh, **Server-Console.bat** for its admin console (players, kick, ban, prune, say), or **Start-Server.bat** to run it on this Windows PC. Full instructions in the zip's README, also [here](https://github.com/$GITHUB_REPOSITORY/blob/main/online_server/host/README.md).
+          - \`sh_master-linux-x64\`, \`sh_master-linux-arm64\`: the server for Linux, static, no dependencies.
+          - \`sh_master.exe\`: the server for Windows.
+          - \`install-server.sh\`: run it on the Linux machine itself if you are not on Windows (\`sudo bash install-server.sh --args '-n "Fog"'\`).
 
-Players reach your server by typing its address as the **Living World IP** in the Multiplayer menu. It takes 512 players by default (\`--max\`, up to 1024). Updating it drops the co-op rooms in progress, so pick a quiet hour; the game only has to match the server when the protocol version above changes.
-EOF
-)"
+          Players reach your server by typing its address as the **Living World IP** in the Multiplayer menu. It takes 512 players by default (\`--max\`, up to 1024). Updating it drops the co-op rooms in progress, so pick a quiet hour; the game only has to match the server when the protocol version above changes.
+          EOF
+          )"
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
               --target "$GITHUB_SHA" --title "Silent Hill Online: server (host your own)" --notes "$NOTES"
