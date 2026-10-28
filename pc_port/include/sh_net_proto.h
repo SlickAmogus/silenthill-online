@@ -164,7 +164,24 @@ enum
     SHNET_MSG_ROOM_REJECT   = 0x66, /* S->C  create/join refused (reason) */
     SHNET_MSG_ROOM_LIST     = 0x67, /* S->C  one page of open rooms */
     SHNET_MSG_COOP_RELAY    = 0x68, /* C->S fromMe / S->C fromPeer: (u32 peerId, S_* payload) */
-    SHNET_MSG_ROOM_KICK     = 0x69  /* C->S  room host removes a member (u32 playerId) */
+    SHNET_MSG_ROOM_KICK     = 0x69, /* C->S  room host removes a member (u32 playerId) */
+    /* Living world invites: one player asks another, met as a ghost, into a
+     * co-op room. C->S (u32 toId, u8 action, u8 pad, u16 code); the server
+     * forwards it as S->C (u32 fromId, u8 action, u8 pad, u16 code, name).
+     * An unknown toId comes back to the sender as SHNET_INV_GONE. */
+    SHNET_MSG_INVITE        = 0x6A
+};
+
+/* SHNET_MSG_INVITE actions. */
+enum
+{
+    SHNET_INV_INVITE  = 1, /* come and play with me */
+    SHNET_INV_CANCEL  = 2, /* never mind (withdrawn, or expired on either side) */
+    SHNET_INV_ACCEPT  = 3, /* yes: open a room and tell me its code */
+    SHNET_INV_DECLINE = 4, /* no */
+    SHNET_INV_BUSY    = 5, /* already in a game or weighing another invite */
+    SHNET_INV_JOIN    = 6, /* the room is open: join code `code` */
+    SHNET_INV_GONE    = 7  /* server: that player is no longer here */
 };
 
 /* Marker kinds. */

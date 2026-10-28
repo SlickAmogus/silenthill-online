@@ -61,6 +61,7 @@ the commands:
 | `unban <IP or uid>`, `bans` | lift a ban, list them |
 | `memos [name or uid]` | marker counts per player, or one player's markers |
 | `prune old <days>`, `prune user <name>`, `prune id <id>`, `prune deaths [days]` | delete markers |
+| `prune all` | delete every marker: a clean world |
 | `say <text>` | a message to everyone online |
 | `save` | write the marker store now |
 

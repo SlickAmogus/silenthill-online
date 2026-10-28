@@ -1532,7 +1532,10 @@ static const char* Nu_RowHint(const char* row)
     return NULL;
 }
 
-#define NU_COOP_MAX_ROWS 48
+#define NU_COOP_MAX_ROWS 260 /* the room list can run to a few pages */
+/* Body rows that do not fit the panel scroll: the window's first row, and how
+ * many rows lie outside it either way (for the header's "N-M of T"). */
+static int s_bodyTop, s_bodyAbove, s_bodyBelow;
 
 static void Nu_DrawCoopMenu(int px)
 {
@@ -1558,6 +1561,7 @@ static void Nu_DrawCoopMenu(int px)
     float       bodyY, x0, x1, y;
     int         i;
 
+    memset(rect, 0, sizeof(rect)); /* rows scrolled out of the window have no rectangle */
     for (i = 0; i < n; i++)
     {
         Pc_CoopMenu_RowText(i, rowText[i], (int)sizeof(rowText[i]));
@@ -1572,16 +1576,57 @@ static void Nu_DrawCoopMenu(int px)
     if (panelW < 440.0f) panelW = (s_vpW - 32.0f < 440.0f) ? s_vpW - 32.0f : 440.0f;
     if (panelW > 980.0f) panelW = 980.0f;
     headerH = pad * 0.8f + Nu_TextH(pxSmall) + (float)pxTitle * 1.15f + pad * 0.35f;
-    bodyH   = rowH * (float)(bodyN > 0 ? bodyN : 0);
-    if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS)
-    {
-        float minRows = 6.0f;
-        bodyH += rowH * 0.9f; /* column header */
-        if (bodyH < rowH * minRows) bodyH = rowH * minRows;
-    }
     statusH = (status[0] || editing) ? (editing ? Nu_TextH(pxSmall) + rowH * 1.25f : Nu_TextH(pxSmall) + pad * 0.7f) : 0.0f;
     footerH = footN ? btnH + pad * 0.8f : 0.0f;
     hintH   = Nu_TextH(pxSmall) + pad * 0.7f;
+    /* More body rows than the screen holds (a long room list): a window of
+     * them that follows the selection, or the mouse wheel, with the selection
+     * then following the window. The rows outside it keep no rectangle. */
+    {
+        const int   table   = (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS);
+        const float colH    = table ? rowH * 0.9f : 0.0f;
+        const float avail   = (s_vpH - 24.0f) - (headerH + pad * 0.5f + colH + pad * 0.5f + statusH + footerH + hintH);
+        int         maxBody = (int)(avail / rowH);
+        if (maxBody < 3) maxBody = 3;
+        s_bodyAbove = s_bodyBelow = 0;
+        if (bodyN > maxBody)
+        {
+            const int notches = editing ? 0 : Pc_MouseCursor_WheelNotches();
+            int       selPos  = -1, k;
+            for (k = 0; k < bodyN; k++)
+            {
+                if (bodyIdx[k] == sel) selPos = k;
+            }
+            if (notches)
+            {
+                s_bodyTop -= notches;
+            }
+            else if (selPos >= 0)
+            {
+                if (selPos < s_bodyTop)            s_bodyTop = selPos;
+                if (selPos >= s_bodyTop + maxBody) s_bodyTop = selPos - maxBody + 1;
+            }
+            if (s_bodyTop > bodyN - maxBody) s_bodyTop = bodyN - maxBody;
+            if (s_bodyTop < 0)               s_bodyTop = 0;
+            if (notches && selPos >= 0 && (selPos < s_bodyTop || selPos >= s_bodyTop + maxBody))
+            {
+                Pc_CoopMenu_SetSelected(bodyIdx[selPos < s_bodyTop ? s_bodyTop : s_bodyTop + maxBody - 1]);
+            }
+            s_bodyAbove = s_bodyTop;
+            s_bodyBelow = bodyN - s_bodyTop - maxBody;
+            for (k = 0; k < maxBody; k++)
+            {
+                bodyIdx[k] = bodyIdx[k + s_bodyTop];
+            }
+            bodyN = maxBody;
+        }
+        else
+        {
+            s_bodyTop = 0;
+        }
+        bodyH = rowH * (float)bodyN + colH;
+        if (table && bodyH < rowH * 6.0f) bodyH = rowH * 6.0f;
+    }
     panelH  = headerH + pad * 0.5f + bodyH + pad * 0.5f + statusH + footerH + hintH;
     if (panelH > s_vpH - 24.0f) panelH = s_vpH - 24.0f;
     panelX = (s_vpW - panelW) * 0.5f;
@@ -1648,6 +1693,14 @@ static void Nu_DrawCoopMenu(int px)
         Nu_DrawText(Pc_CoopMenu_IsTopLevel() ? "SILENT HILL  ONLINE" : "MULTIPLAYER", x0, hy, pxSmall,
                     0.55f, 0.60f, 1.00f, 0.95f);
         Nu_DrawText(title, x0, hy + Nu_TextH(pxSmall), pxTitle, 0.92f, 0.91f, 0.88f, 1.0f);
+        if (s_bodyAbove || s_bodyBelow)
+        {
+            char scroll[48];
+            const int total = s_bodyAbove + bodyN + s_bodyBelow;
+            snprintf(scroll, sizeof(scroll), "%d-%d of %d", s_bodyAbove + 1, s_bodyAbove + bodyN, total);
+            Nu_DrawTextRight(scroll, x1, hy + Nu_TextH(pxSmall) + ((float)pxTitle - Nu_TextH(pxSmall)) * 0.5f,
+                             pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+        }
         Nu_LinePx(x0, panelY + headerH, x1 - x0, t, NU_SH_BLUE_HI_R, NU_SH_BLUE_HI_G, 1.0f, 0.9f);
         Nu_LinePx(x0, panelY + headerH + 2.0f * t, (x1 - x0) * 0.6f, t, NU_SH_BLUE_LO_R, NU_SH_BLUE_LO_G, 1.0f, 0.9f);
     }

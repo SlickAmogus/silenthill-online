@@ -171,6 +171,11 @@ unsigned int ShNet_WorldSelfId(void);
 unsigned int ShNet_WorldSession(void);
 void         ShNet_WorldSendCoop(const unsigned char* buf, int len);
 
+/* Living-world invites (SHNET_MSG_INVITE), game thread. Send queues one for
+ * the worker; Take pops the oldest received one, 0 when none is waiting. */
+int          ShNet_SendInvite(unsigned int toId, int action, int code);
+int          ShNet_TakeInvite(unsigned int* outFromId, int* outAction, int* outCode, char* outName, int nameCap);
+
 /* ------------------------------------------------------------------ */
 /* Ghosts — the other players in THIS map, already filtered by the server      */
 /* ------------------------------------------------------------------ */

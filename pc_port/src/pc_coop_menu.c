@@ -20,6 +20,7 @@
 #include "pc_mouse_cursor.h" /* hover/click hit-test in Update, like the other windows */
 #include "sh_net.h"
 #include "sh_net_session.h"
+#include "sh_net_invite.h" /* the Invite / Accept / Decline rows */
 #include "sh_net_proto.h" /* SHNET_PERM_* */
 #include "sh_net_steam.h"
 #include "sh_log.h"
@@ -516,6 +517,51 @@ void Pc_CoopMenu_RequestReboot(const void* savegame)
     SH_DBG("[COOP] rebooting into the host's save (map %d)", (int)g_GameWork.autosave.mapIdx);
 }
 
+/* A living-world player accepted our invite: a private room on the living
+ * world server, which the connection we already have carries. Their invite
+ * came through the living world, so the shared game stays part of it. */
+int Pc_CoopMenu_InviteHost(void)
+{
+    int max = g_PcConfig.onlineSteamMaxPlayers;
+    if (!g_PcConfig.onlineServer[0] || (ShSession_Active() && !ShSession_IsHost())) return 0;
+    if (max < 2) max = 2;
+    if (max > 4) max = 4;
+    g_PcConfig.onlineCoopLiving = 1;
+    PcConfig_SaveKeyValue("online_coop_living_world", "1");
+    s_hostMode = COOP_HOST_SERVER;
+    ShSession_RequestHostServer(Coop_ServerIp(), Coop_ServerPort(), max, 1, 1);
+    SH_DBG("[COOP] invite: opening a private room for %d players", max);
+    return 1;
+}
+
+void Pc_CoopMenu_InviteJoin(int code)
+{
+    if (!g_PcConfig.onlineServer[0] || ShSession_Active()) return;
+    ShSession_RequestJoinServer(Coop_ServerIp(), Coop_ServerPort(), code, 1);
+}
+
+/* Our running single-player game continues as the co-op host game: the live
+ * savegame, with where we stand written in, boots as a Continue (start
+ * request 4) exactly the way a warp does, and comes back with g_PcCoopGame
+ * set so every co-op hook starts the way it does from the lobby. */
+void Pc_CoopMenu_RequestHostReboot(void)
+{
+    if (g_SavegamePtr == NULL || g_GameWork.gameState != GameState_InGame) return;
+    g_GameWork.autosave                 = *g_SavegamePtr;
+    g_GameWork.autosave.playerPositionX = g_SysWork.playerWork.player.position.vx;
+    g_GameWork.autosave.playerPositionZ = g_SysWork.playerWork.player.position.vz;
+    g_GameWork.autosave.playerRotationY = g_SysWork.playerWork.player.rotation.vy;
+    if (g_GameWork.autosave.playerHealth <= 0)
+    {
+        g_GameWork.autosave.playerHealth = Q12(100.0f);
+    }
+    g_PcCoopGame = 1;
+    s_startReq   = 4;
+    g_SysWork.sysFlags |= SysFlag_DoWarmReset;
+    Pc_CoopMenu_Close();
+    SH_DBG("[COOP] invite accepted: rebooting as the co-op host (map %d)", (int)g_GameWork.autosave.mapIdx);
+}
+
 int Pc_CoopMenu_TakeStartRequest(char* outName, int cap)
 {
     int req = s_startReq;
@@ -668,9 +714,10 @@ void Pc_CoopMenu_OpenSplitGuest(void)
 enum
 {
     COOP_IG_RESUME = 0, COOP_IG_MESSAGE, COOP_IG_SAVE, COOP_IG_CHARACTER, COOP_IG_NAMEPLATES,
-    COOP_IG_HEALTHBARS, COOP_IG_FRIENDLY, COOP_IG_CHEATS, COOP_IG_TELEPORT, COOP_IG_PLAYERS, COOP_IG_LEAVE
+    COOP_IG_HEALTHBARS, COOP_IG_FRIENDLY, COOP_IG_CHEATS, COOP_IG_TELEPORT, COOP_IG_PLAYERS, COOP_IG_LEAVE,
+    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE
 };
-#define COOP_IG_MAX 12
+#define COOP_IG_MAX 16
 
 static int Coop_InGameRows(int* rows)
 {
@@ -678,6 +725,26 @@ static int Coop_InGameRows(int* rows)
     int n = 0;
     rows[n++] = COOP_IG_RESUME;
     rows[n++] = COOP_IG_MESSAGE;
+    /* Living-world invites: an answer owed, an invite out, or someone to ask. */
+    if (ShNetInvite_Incoming(NULL, 0))
+    {
+        rows[n++] = COOP_IG_ACCEPT;
+        rows[n++] = COOP_IG_DECLINE;
+    }
+    else if (ShNetInvite_Outgoing(NULL, 0))
+    {
+        rows[n++] = COOP_IG_INVITE_CANCEL;
+    }
+    else if (ShNetInvite_CanInvite() && ShNetInvite_Nearest(NULL, 0, NULL))
+    {
+        rows[n++] = COOP_IG_INVITE;
+    }
+    /* Outside a co-op game (the living world alone) that is the whole menu:
+     * the rest belongs to a shared game. */
+    if (!g_PcCoopGame)
+    {
+        return n;
+    }
     rows[n++] = COOP_IG_SAVE;
     rows[n++] = COOP_IG_CHARACTER;
     rows[n++] = COOP_IG_NAMEPLATES;
@@ -895,6 +962,30 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_IG_CHEATS:     snprintf(out, cap, "Guest Cheats:  %s", ShNet_CoopGuestConsole() ? "On" : "Off"); break;
         case COOP_IG_TELEPORT:   snprintf(out, cap, "Teleport to Host"); break;
         case COOP_IG_PLAYERS:    snprintf(out, cap, "Players"); break;
+        case COOP_IG_INVITE:
+        {
+            char who[SHNET_NAME_MAX];
+            int  cool = 0;
+            ShNetInvite_Nearest(who, (int)sizeof(who), &cool);
+            if (cool > 0) snprintf(out, cap, "Invite %s  (declined, %d s)", who, cool);
+            else          snprintf(out, cap, "Invite %s", who);
+            break;
+        }
+        case COOP_IG_INVITE_CANCEL:
+        {
+            char who[SHNET_NAME_MAX];
+            int  left = ShNetInvite_Outgoing(who, (int)sizeof(who));
+            snprintf(out, cap, "Cancel Invite to %s  (%d s)", who, left);
+            break;
+        }
+        case COOP_IG_ACCEPT:
+        {
+            char who[SHNET_NAME_MAX];
+            int  left = ShNetInvite_Incoming(who, (int)sizeof(who));
+            snprintf(out, cap, "Accept %s's Invite  (%d s)", who, left);
+            break;
+        }
+        case COOP_IG_DECLINE:    snprintf(out, cap, "Decline Invite"); break;
         default:                 snprintf(out, cap, "Leave to Title"); break;
         }
         break;
@@ -1059,8 +1150,9 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         break;
 
     case COOP_PAGE_INGAME:
-        if (s_msg[0]) { snprintf(out, cap, "%s", s_msg); }
-        else          { ShSession_StatusLine(out, cap); }
+        if (s_msg[0])            { snprintf(out, cap, "%s", s_msg); }
+        else if (!g_PcCoopGame)  { snprintf(out, cap, "Living world:  %s", ShNet_StatusText()); }
+        else                     { ShSession_StatusLine(out, cap); }
         break;
 
     case COOP_PAGE_HOST_SETUP:
@@ -1243,6 +1335,10 @@ static void Coop_Confirm(void)
             break;
         }
         case COOP_IG_PLAYERS: s_page = COOP_PAGE_PLAYERS; s_sel = 0; break;
+        case COOP_IG_INVITE:        ShNetInvite_Send();    Pc_CoopMenu_Close(); break;
+        case COOP_IG_INVITE_CANCEL: ShNetInvite_Cancel();  s_sel = 0; break;
+        case COOP_IG_ACCEPT:        ShNetInvite_Accept();  Pc_CoopMenu_Close(); break;
+        case COOP_IG_DECLINE:       ShNetInvite_Decline(); s_sel = 0; break;
         default:
             /* Leave to Title without saving. */
             ShSession_RequestLeave();
