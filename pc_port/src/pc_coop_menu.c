@@ -49,6 +49,7 @@ typedef enum
     COOP_PAGE_INGAME,       /* in-game M menu: Resume / prefs / players / leave */
     COOP_PAGE_PLAYERS,      /* member list (in-game) */
     COOP_PAGE_PLAYER,       /* one member: allow cheats / remove (host) */
+    COOP_PAGE_INVITE,       /* accepting an invite: save first, or go */
     COOP_PAGE_SETTINGS      /* phones and the browser: server, living world, name */
 } CoopPage;
 
@@ -799,6 +800,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_INGAME:     { int r[COOP_IG_MAX]; return Coop_InGameRows(r); }
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
     case COOP_PAGE_PLAYER:     return 4; /* Allow Cheats, Bring Here, Remove, Back */
+    case COOP_PAGE_INVITE:     return 3; /* Save First, Join Without Saving, Back */
     default:                   return 1;
     }
 }
@@ -811,6 +813,7 @@ int Pc_CoopMenu_View(void)
     case COOP_PAGE_SPLIT:      return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_SPLIT_ONLINE: return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_INVITE:     return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_SETTINGS:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
@@ -841,6 +844,7 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_INGAME:     return "MULTIPLAYER";
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
     case COOP_PAGE_PLAYER:     return s_playerName;
+    case COOP_PAGE_INVITE:     return "ACCEPT INVITE";
     case COOP_PAGE_SETTINGS:   return "MULTIPLAYER SETTINGS";
     default:                   return "MULTIPLAYER";
     }
@@ -977,7 +981,8 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         {
             char who[SHNET_NAME_MAX];
             int  left = ShNetInvite_Outgoing(who, (int)sizeof(who));
-            snprintf(out, cap, "Cancel Invite to %s  (%d s)", who, left);
+            if (ShNetInvite_OutgoingSaving()) snprintf(out, cap, "Cancel Invite to %s  (saving)", who);
+            else                              snprintf(out, cap, "Cancel Invite to %s  (%d s)", who, left);
             break;
         }
         case COOP_IG_ACCEPT:
@@ -1010,6 +1015,12 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         break;
     }
+
+    case COOP_PAGE_INVITE:
+        if (i == 0)      snprintf(out, cap, "Save First");
+        else if (i == 1) snprintf(out, cap, "Join Without Saving");
+        else             snprintf(out, cap, "Back");
+        break;
 
     case COOP_PAGE_PLAYER:
         if (i == 0)      snprintf(out, cap, "Allow Cheats:  %s", (ShNet_CoopPermGet(s_playerId) & SHNET_PERM_CHEATS) ? "Yes" : "No");
@@ -1157,6 +1168,16 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         else if (!g_PcCoopGame)  { snprintf(out, cap, "Living world:  %s", ShNet_StatusText()); }
         else                     { ShSession_StatusLine(out, cap); }
         break;
+
+    case COOP_PAGE_INVITE:
+    {
+        char who[SHNET_NAME_MAX];
+        int  left = ShNetInvite_Incoming(who, (int)sizeof(who));
+        if (s_msg[0])  snprintf(out, cap, "%s", s_msg);
+        else if (left) snprintf(out, cap, "Your own game ends when you join %s. Save it first?  (%d s)", who, left);
+        else           snprintf(out, cap, "The invite is no longer open.");
+        break;
+    }
 
     case COOP_PAGE_HOST_SETUP:
         if (s_hostMode == COOP_HOST_THISPC)
@@ -1344,8 +1365,8 @@ static void Coop_Confirm(void)
             break;
         case COOP_IG_INVITE_CANCEL: ShNetInvite_Cancel();  s_sel = 0; break;
         case COOP_IG_ACCEPT:
-            ShNetInvite_Accept();
-            if (!ShNetInvite_Blocked()) Pc_CoopMenu_Close();
+            if (ShNetInvite_Blocked()) ShNetInvite_Accept(); /* says why */
+            else { s_page = COOP_PAGE_INVITE; s_sel = 0; s_msg[0] = '\0'; }
             break;
         case COOP_IG_DECLINE:       ShNetInvite_Decline(); s_sel = 0; break;
         default:
@@ -1377,6 +1398,30 @@ static void Coop_Confirm(void)
         s_page = COOP_PAGE_INGAME;
         s_sel  = Coop_PlayersRow();
         s_msg[0] = '\0';
+        break;
+
+    case COOP_PAGE_INVITE:
+        if (!ShNetInvite_Incoming(NULL, 0) || s_sel == 2)
+        {
+            s_page = COOP_PAGE_INGAME;
+            s_sel  = 0;
+            s_msg[0] = '\0';
+        }
+        else if (s_sel == 0)
+        {
+            Pc_CoopMenu_Close();
+            if (!ShNetInvite_AcceptAfterSave())
+            {
+                Pc_CoopMenu_OpenInGame();
+                s_page = COOP_PAGE_INVITE;
+                snprintf(s_msg, sizeof(s_msg), "Can't save right now");
+            }
+        }
+        else
+        {
+            ShNetInvite_Accept();
+            if (!ShNetInvite_Blocked()) Pc_CoopMenu_Close();
+        }
         break;
 
     case COOP_PAGE_PLAYER:
