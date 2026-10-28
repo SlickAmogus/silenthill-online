@@ -89,5 +89,7 @@
 		<integer>1</integer>
 		<integer>2</integer>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Hosting or joining a multiplayer game by IP address on your local network.</string>
 </dict>
 </plist>
