@@ -41,7 +41,7 @@ enum { TR_NONE = 0, TR_MOVE, TR_LOOK, TR_BUTTON, TR_ADVANCE,
 enum { TB_AIM = 0, TB_ITEM, TB_MAP, TB_START, TB_RUN, TB_BACK, TB_FIRE, TB_MENU,
        TB_SKIP,
        TB_LIGHT, TB_VIEW, TB_CAM, TB_QSAVE, TB_QLOAD, TB_BONUS, TB_CLICK,
-       TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP,
+       TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP, TB_VOICE,
        TB_COUNT };
 
 typedef struct
@@ -139,6 +139,8 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
     /* The multiplayer menu, in a co-op game only: what M opens on a keyboard.
      * Top centre, between the quick save pair, clear of both thumbs. */
     [TB_COOP] = { 0.500f, 0.068f, 0.055f, 0 },
+    /* The voice wheel (what holding B opens on a keyboard), beside it. */
+    [TB_VOICE] = { 0.590f, 0.068f, 0.055f, 0 },
 };
 
 typedef struct
@@ -367,6 +369,14 @@ static int Tc_Mode(void)
         extern int Pc_CoopMenu_IsOpen(void);
         extern int Pc_CoopMenu_InGame(void);
         if (Pc_CoopMenu_IsOpen() && Pc_CoopMenu_InGame())
+            return TC_MODE_OFF;
+    }
+
+    /* The voice wheel in tap mode: the next tap picks a line, so no thumb
+     * control may take it. */
+    {
+        extern int ShNetVoice_MenuOpen(void);
+        if (ShNetVoice_MenuOpen())
             return TC_MODE_OFF;
     }
 
@@ -1073,7 +1083,7 @@ static int Tc_HitButton(float x, float y, float aspect)
             continue;
         if ((i == TB_QSAVE || i == TB_QLOAD) && !Tc_QuickButtonsOn())
             continue;
-        if (i == TB_COOP && !Tc_CoopButtonOn())
+        if ((i == TB_COOP || i == TB_VOICE) && !Tc_CoopButtonOn())
             continue;
 
         float dx = (x - s_Buttons[i].cx) * aspect;
@@ -2034,6 +2044,20 @@ void Pc_Touch_Update(void)
             s_coopWas = coopNow;
         }
 
+        /* The voice wheel: a tap opens it for a tap to pick a line, a second
+         * tap on the button puts it away. */
+        {
+            static int s_voiceWas;
+            const int  voiceNow = (s_Buttons[TB_VOICE].holdFrames > 0);
+
+            if (voiceNow && !s_voiceWas && Tc_CoopButtonOn())
+            {
+                extern void ShNetVoice_TouchToggle(void);
+                ShNetVoice_TouchToggle();
+            }
+            s_voiceWas = voiceNow;
+        }
+
         /* Quick Save / Quick Load, edge-triggered on the latch for the same
          * reason as Menu. Gamepad style handles its own pair above. */
         {
@@ -2665,7 +2689,7 @@ void Pc_Touch_Draw(void)
         if ((i == TB_MENU || i == TB_CAM) && !Tc_MenuAllowed())
             continue;
 
-        if (i == TB_COOP && (mode != TC_MODE_GAMEPLAY || !Tc_CoopButtonOn()))
+        if ((i == TB_COOP || i == TB_VOICE) && (mode != TC_MODE_GAMEPLAY || !Tc_CoopButtonOn()))
             continue;
 
         /* Quick Save / Quick Load: only with the option on, and only in play. */
@@ -2827,6 +2851,17 @@ void Pc_Touch_Draw(void)
 
                 Tc_Ring(&batch, cx - g, cy, hr, (hr * 55) / 100, lum);
                 Tc_Ring(&batch, cx + g, cy, hr, (hr * 55) / 100, lum);
+                break;
+            }
+            case TB_VOICE:
+            {
+                /* A speech bubble: a ring with a tail to the lower left. */
+                int br = (r * 34) / 100, t = (r * 8) / 100;
+                int tx = cx - (br * 55) / 100, ty = cy + (br * 75) / 100;
+
+                Tc_Ring(&batch, cx, cy - (r * 6) / 100, br, br - t - t, lum);
+                Tc_Quad(&batch, tx - t, ty - t, tx + t + t, ty - t - t,
+                                tx - t - t, ty + br / 2, tx, ty + br / 2, lum);
                 break;
             }
             case TB_MENU:
