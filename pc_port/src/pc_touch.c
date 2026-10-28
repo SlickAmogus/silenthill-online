@@ -339,7 +339,17 @@ static int Tc_MenuAllowed(void)
     return !(g_SysWork.sysFlags & SysFlag_DemoActive);
 }
 
+/* The two-heads button opens the M menu: in a co-op game, and in the living
+ * world (Leave a Message, Invite the nearest player). The voice wheel is
+ * co-op only. */
 static int Tc_CoopButtonOn(void)
+{
+    extern int g_PcCoopGame;
+    extern int ShNet_WorldConnected(void);
+    return (g_PcCoopGame || ShNet_WorldConnected()) && Tc_MenuAllowed();
+}
+
+static int Tc_VoiceButtonOn(void)
 {
     extern int g_PcCoopGame;
     return g_PcCoopGame && Tc_MenuAllowed();
@@ -1083,7 +1093,7 @@ static int Tc_HitButton(float x, float y, float aspect)
             continue;
         if ((i == TB_QSAVE || i == TB_QLOAD) && !Tc_QuickButtonsOn())
             continue;
-        if ((i == TB_COOP || i == TB_VOICE) && !Tc_CoopButtonOn())
+        if ((i == TB_COOP && !Tc_CoopButtonOn()) || (i == TB_VOICE && !Tc_VoiceButtonOn()))
             continue;
 
         float dx = (x - s_Buttons[i].cx) * aspect;
@@ -2050,7 +2060,7 @@ void Pc_Touch_Update(void)
             static int s_voiceWas;
             const int  voiceNow = (s_Buttons[TB_VOICE].holdFrames > 0);
 
-            if (voiceNow && !s_voiceWas && Tc_CoopButtonOn())
+            if (voiceNow && !s_voiceWas && Tc_VoiceButtonOn())
             {
                 extern void ShNetVoice_TouchToggle(void);
                 ShNetVoice_TouchToggle();
@@ -2689,7 +2699,8 @@ void Pc_Touch_Draw(void)
         if ((i == TB_MENU || i == TB_CAM) && !Tc_MenuAllowed())
             continue;
 
-        if ((i == TB_COOP || i == TB_VOICE) && (mode != TC_MODE_GAMEPLAY || !Tc_CoopButtonOn()))
+        if ((i == TB_COOP || i == TB_VOICE) &&
+            (mode != TC_MODE_GAMEPLAY || (i == TB_COOP ? !Tc_CoopButtonOn() : !Tc_VoiceButtonOn())))
             continue;
 
         /* Quick Save / Quick Load: only with the option on, and only in play. */
