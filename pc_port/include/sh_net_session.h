@@ -231,6 +231,8 @@ int  ShSession_MemberTakeSfx(int i, unsigned int* serial, ShSessionSfxEv* out, i
 /* Host -> guests: everyone boot into this map for a co-op game. Sent when the
  * host presses Start Game. */
 void ShSession_RequestWorld(int mapIdx);
+/* Host, every game frame: the savegame guests boot from (sent with S_WORLD). */
+void ShSession_PublishWorldSave(const void* save, int len);
 
 /* Host: remove a member from the game. The relay drops them from the room
  * and refuses their address; on Steam they are told to leave and are
@@ -248,6 +250,9 @@ int  ShSession_TakeGame(int* type, unsigned long long* from, void* buf, int cap)
 /* Guest poll: a map the host told us to boot into since the last call, or -1.
  * Clears the request. The game thread consumes this to launch the co-op game. */
 int  ShSession_TakeWorldRequest(void);
+/* The host's savegame that came with the last world request: 1 and a copy
+ * in `out` when one arrived (len must match what the host sent). */
+int  ShSession_TakeWorldSave(void* out, int len);
 
 /* Co-op shared items. The game thread notices a local pickup and queues it here;
  * the worker broadcasts it (reliable) to every other member. On the other end the

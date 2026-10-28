@@ -3,10 +3,11 @@
  * pc_coop_save.h - starting a multiplayer game from a single-player save.
  *
  * Multiplayer has no saves of its own. Every player keeps their normal
- * memory-card saves (gamedata/save/N.MCD), starts a game from any of them,
- * and saves at save points into them like a single-player game. These read
- * the card images directly so the multiplayer menu can list and boot a save
- * without going through the load screen.
+ * memory-card saves (gamedata/save/N.MCD). The host starts a game from any of
+ * them; guests boot from the host's savegame (sent with the world) so one
+ * playthrough is shared, and everyone saves at save points into their own
+ * cards like a single-player game. These read the card images directly so
+ * the multiplayer menu can list and boot a save without the load screen.
  */
 #ifndef PC_COOP_SAVE_H
 #define PC_COOP_SAVE_H
@@ -32,13 +33,6 @@ int Pc_CoopSave_List(CoopSaveEntry* out, int max);
 
 /* Read the save named by `key` into g_SavegamePtr. Returns 1 on a valid save. */
 int Pc_CoopSave_Load(const char* key);
-
-/* A guest boots into the host's map through the New Game path. Stage reads
- * the guest's own save; Apply, run right after that path builds the fresh
- * savegame, puts the save's inventory and progress over it while keeping the
- * fresh map and spawn point. Apply does nothing when nothing is staged. */
-int  Pc_CoopSave_StageGuest(const char* key);
-void Pc_CoopSave_ApplyGuest(void);
 
 /* Open the game's own save screen, as a save point does. Returns 0 (and
  * opens nothing) during a boss fight or outside normal play. Defined in

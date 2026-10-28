@@ -132,7 +132,7 @@ enum
     SHNET_MSG_S_PONG     = 0x52,
     SHNET_MSG_S_BYE      = 0x53,
     SHNET_MSG_S_POS      = 0x54, /* P2P  my position/anim this tick (co-op presence) */
-    SHNET_MSG_S_WORLD    = 0x55, /* P2P  host -> guests: boot into this map */
+    SHNET_MSG_S_WORLD    = 0x55, /* P2P  host -> guests: boot into this map (u8 map, u8 flags, u16 n, n bytes of the host's savegame) */
     SHNET_MSG_S_ITEM     = 0x56, /* P2P  I picked this up; everyone gets it too */
     SHNET_MSG_S_DAMAGE   = 0x57, /* P2P  I hit YOU: apply this damage to yourself (friendly fire) */
     SHNET_MSG_S_KICK     = 0x58, /* P2P  host -> member: you have been removed */
@@ -179,7 +179,8 @@ enum
     SHNET_PF_AIMING     = 1 << 4,
     SHNET_PF_MENU       = 1 << 5,
     SHNET_PF_GCONSOLE   = 1 << 6, /* host only: guests may use the console and debug keys */
-    SHNET_PF_FFIRE      = 1 << 7  /* accepts hits from other players (friendly fire is on) */
+    SHNET_PF_FFIRE      = 1 << 7, /* accepts hits from other players (friendly fire is on) */
+    SHNET_PF_COMBAT     = 1 << 8  /* a monster is on me, or just hit me: not a safe respawn spot */
 };
 
 /* WELCOME feature bits — a server can host ghosts without memos, etc. */
@@ -442,7 +443,9 @@ enum
     SHNET_CTRL_CUTSCENE  = 5, /* member -> all: u8 map, u8 row, s32 x,y,z, s16 rot (repeated while the scene runs) */
     SHNET_CTRL_DIE       = 6, /* member -> all: u8 map; I died in the alley (map0_s00), die with me */
     SHNET_CTRL_GATE      = 7, /* member -> all: u8 map, u8 row, u8 state (1 waiting at a story door, 2 went through, 3 host: come through with me) */
-    SHNET_CTRL_SUMMON    = 8  /* host -> one: u64 target, u8 map, s32 x,y,z, s16 rot; come to me */
+    SHNET_CTRL_SUMMON    = 8, /* host -> one: u64 target, u8 map, s32 x,y,z, s16 rot; come to me */
+    SHNET_CTRL_RESTART   = 9, /* host -> all: u16 gen, u8 map, s_Savegame; I loaded a save, start from it with me */
+    SHNET_CTRL_ITEM_USED = 10 /* member -> all: u8 item, u8 count; I used up this key item, drop yours too */
 };
 #define SHNET_PERM_CHEATS 1    /* this guest may use the console, quick-menu cheats, binds */
 

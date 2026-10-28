@@ -1970,12 +1970,17 @@ void ShNetUi_Draw(void)
     /* Co-op death: no game over, a countdown instead. */
     if (ShNetRespawn_Active())
     {
-        const float rem = ShNetRespawn_Remaining();
-        const int   big = (int)((float)px * 1.6f);
-        char        line[48];
+        const float rem  = ShNetRespawn_Remaining();
+        const int   big  = (int)((float)px * 1.6f);
+        const char* wait = ShNetRespawn_Waiting();
+        char        line[64];
         Nu_DrawTextCentered("YOU DIED", s_vpW * 0.5f, s_vpH * 0.38f, big,
                             0.80f, 0.42f, 0.40f, 1.0f);
-        if (rem > 0.05f)
+        if (wait != NULL)
+        {
+            snprintf(line, sizeof(line), "%s", wait);
+        }
+        else if (rem > 0.05f)
         {
             snprintf(line, sizeof(line), "Respawning in %d", (int)ceilf(rem));
         }

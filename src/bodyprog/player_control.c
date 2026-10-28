@@ -10962,6 +10962,18 @@ void Player_ReceiveDamage(s_SubCharacter* player, s_PlayerExtra* extra) // 0x800
             player->properties.player.field_10C = 0x40;
         }
 
+#ifdef SH_PC_PORT
+        /* Co-op: monsters hit twice as hard, with partners to lean on. A
+         * partner's own bullet (friendly fire) is not a monster's. */
+        {
+            extern int g_PcCoopGame;
+            extern int Pc_NetHit_TakeFriendly(void);
+            const int  friendly = Pc_NetHit_TakeFriendly();
+            if (g_PcCoopGame && !friendly)
+                player->damage.amount *= 2;
+        }
+#endif
+
         if (g_SavegamePtr->mapIdx == MapIdx_MAP0_S00)
         {
             player->health -= player->damage.amount * 2;

@@ -201,6 +201,7 @@ int Pc_NetNpc_PartnerSpawnOk(s32 x, s32 z, int cond)
 
 static u8  s_tracked[NPC_COUNT_MAX];   /* spawned by the table loop on the host */
 static u8  s_trackChara[NPC_COUNT_MAX];
+static u8  s_scaled[NPC_COUNT_MAX]; /* co-op health bonus given */
 static u8  s_gen[NPC_COUNT_MAX];
 static struct { s32 k0, k1, a; } s_pose[NPC_COUNT_MAX];
 static unsigned long long s_target[NPC_COUNT_MAX];   /* 0 = the host itself */
@@ -214,6 +215,7 @@ void Pc_NetNpc_OnSpawn(int slot)
     if (slot < 0 || slot >= NPC_COUNT_MAX) return;
     s_tracked[slot]    = 1;
     s_trackChara[slot] = (u8)g_SysWork.npcs[slot].model.charaId;
+    s_scaled[slot]     = 0;
     s_gen[slot]++;
     s_pose[slot].k0 = s_pose[slot].k1 = s_pose[slot].a = 0;
 }
@@ -1399,6 +1401,21 @@ void Pc_NetNpc_GameTick(void)
 
     if (role == PC_NETNPC_HOST)
     {
+        /* Co-op monsters are tougher: 1.5x health, applied once the monster's
+         * own init has written its health (a frame or more after the spawn),
+         * so the bonus is not overwritten by it. */
+        int k;
+        for (k = 0; k < NPC_COUNT_MAX; k++)
+        {
+            s_SubCharacter* npc = &g_SysWork.npcs[k];
+            if (!s_tracked[k] || s_scaled[k] || npc->health <= 0 ||
+                npc->model.charaId != (e_CharaId)s_trackChara[k])
+            {
+                continue;
+            }
+            npc->health += npc->health >> 1;
+            s_scaled[k]  = 1;
+        }
         Npc_HostSend();
     }
     if (role != PC_NETNPC_NONE)
