@@ -11,7 +11,11 @@
  *
  * Rules: an invite lasts 30 seconds on both ends; the invited player can hold
  * only one at a time (others get "busy"); a declined inviter waits two
- * minutes before asking that player again. Game thread only.
+ * minutes before asking that player again. Accepting ends the invited
+ * player's own game, so they may save first: the invite then stays open
+ * while they are in the save screen (the inviter sees "saving" and may still
+ * cancel, which also costs the two minutes; the save itself is never
+ * interrupted) and the accept goes out when they are back. Game thread only.
  */
 #ifndef SH_NET_INVITE_H
 #define SH_NET_INVITE_H
@@ -36,10 +40,15 @@ unsigned int ShNetInvite_Nearest(char* name, int cap, int* outCooldownSec);
  * 0 when there is none. name may be NULL. */
 int  ShNetInvite_Outgoing(char* name, int cap);
 int  ShNetInvite_Incoming(char* name, int cap);
+/* The player we invited is in their save screen before joining. */
+int  ShNetInvite_OutgoingSaving(void);
 
 void ShNetInvite_Send(void);    /* to the nearest player */
 void ShNetInvite_Cancel(void);
 void ShNetInvite_Accept(void);
+/* Accept, but open the save screen first; the accept goes out when it closes.
+ * Returns 0 (nothing happens, the invite stays) when the screen will not open. */
+int  ShNetInvite_AcceptAfterSave(void);
 void ShNetInvite_Decline(void);
 
 #ifdef __cplusplus

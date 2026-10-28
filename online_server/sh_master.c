@@ -2093,7 +2093,7 @@ static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
     action = (int)ShnGetU8(p, &off);
     (void)ShnGetU8(p, &off);
     code   = ShnGetU16(p, &off);
-    if (action < SHNET_INV_INVITE || action > SHNET_INV_JOIN || to == c->playerId) return;
+    if (action < SHNET_INV_INVITE || action > SHNET_INV_SAVING || action == SHNET_INV_GONE || to == c->playerId) return;
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
         if (g_clients[i].used && g_clients[i].playerId == to) { t = &g_clients[i]; break; }
