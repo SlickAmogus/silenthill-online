@@ -383,6 +383,14 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                     g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
                     g_PcCoopGuestSpawn              = 1;
                 }
+                else if (coopReq == 4)
+                {
+                    /* A living-world player accepted our invite: our own game,
+                     * where we stood, continues as the co-op host game. */
+                    g_PcCoopGame                    = 1;
+                    g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
+                    g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
+                }
                 else if (guestMap >= 0 && guestMap <= MapIdx_MAPX_S00)
                 {
                     /* Guest: the host is in this map -- boot a fresh game into it

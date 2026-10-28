@@ -115,6 +115,10 @@ static struct
              char text[SHNET_CHAT_MAX]; } chatIn[SHNET_CHAT_RING];
     int          chatInHead, chatInTail;
 
+    /* Living-world invites in (SHNET_MSG_INVITE), drained by sh_net_invite.c. */
+    struct { unsigned int fromId; int action; int code; char name[SHNET_NAME_MAX]; } invIn[8];
+    int          invInHead, invInTail;
+
     int          localValid;
     int          localMap;
     int          localChara;
@@ -379,6 +383,13 @@ static void ShNetW_SendCmd(ShNetWorker* w, const ShNetCmd* c)
         ShnPutU8(buf, &off, (shn_u8)(signed char)c->a);
         ShnPutU8(buf, &off, 0);
         ShnPutU16(buf, &off, 0);
+        break;
+
+    case SHNET_MSG_INVITE:
+        ShnPutU32(buf, &off, c->u0);                /* to */
+        ShnPutU8(buf, &off, (shn_u8)c->a);          /* SHNET_INV_* */
+        ShnPutU8(buf, &off, 0);
+        ShnPutU16(buf, &off, c->w0);                /* room code (JOIN) */
         break;
 
     default:
@@ -890,6 +901,24 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
             break;
         case SHNET_MSG_EVENT:
             ShNetW_HandleEvent(pay, (int)payLen);
+            break;
+        case SHNET_MSG_INVITE:
+            if (payLen >= 8 + SHNET_NAME_MAX)
+            {
+                int off  = 0;
+                int next = (s_sh.invInHead + 1) % 8;
+                if (next == s_sh.invInTail)
+                {
+                    s_sh.invInTail = (s_sh.invInTail + 1) % 8;
+                }
+                s_sh.invIn[s_sh.invInHead].fromId = ShnGetU32(pay, &off);
+                s_sh.invIn[s_sh.invInHead].action = (int)ShnGetU8(pay, &off);
+                (void)ShnGetU8(pay, &off);
+                s_sh.invIn[s_sh.invInHead].code   = (int)ShnGetU16(pay, &off);
+                ShnGetStr(pay, &off, SHNET_NAME_MAX, s_sh.invIn[s_sh.invInHead].name, SHNET_NAME_MAX);
+                ShNet_SanitizeName(s_sh.invIn[s_sh.invInHead].name);
+                s_sh.invInHead = next;
+            }
             break;
         case SHNET_MSG_CHAT_MSG:
             if (payLen >= 8 + SHNET_NAME_MAX + SHNET_CHAT_MAX)
@@ -1840,6 +1869,43 @@ int ShNet_PopChat(int* outScope, unsigned int* outFromId, char* outName, int nam
             SDL_strlcpy(outName, s_sh.chatIn[s_sh.chatInTail].name, (size_t)nameCap);
         SDL_strlcpy(outText, s_sh.chatIn[s_sh.chatInTail].text, (size_t)textCap);
         s_sh.chatInTail = (s_sh.chatInTail + 1) % SHNET_CHAT_RING;
+        got = 1;
+    }
+    SDL_UnlockMutex(s_lock);
+    return got;
+}
+
+int ShNet_SendInvite(unsigned int toId, int action, int code)
+{
+    ShNetCmd c;
+    if (!s_enabled || !s_lock || toId == 0)
+    {
+        return 0;
+    }
+    memset(&c, 0, sizeof(c));
+    c.kind = SHNET_MSG_INVITE;
+    c.u0   = toId;
+    c.a    = action;
+    c.w0   = (unsigned short)code;
+    return ShNet_QueueCmd(&c);
+}
+
+int ShNet_TakeInvite(unsigned int* outFromId, int* outAction, int* outCode, char* outName, int nameCap)
+{
+    int got = 0;
+    if (!s_enabled || !s_lock)
+    {
+        return 0;
+    }
+    SDL_LockMutex(s_lock);
+    if (s_sh.invInTail != s_sh.invInHead)
+    {
+        if (outFromId) *outFromId = s_sh.invIn[s_sh.invInTail].fromId;
+        if (outAction) *outAction = s_sh.invIn[s_sh.invInTail].action;
+        if (outCode)   *outCode   = s_sh.invIn[s_sh.invInTail].code;
+        if (outName && nameCap > 0)
+            SDL_strlcpy(outName, s_sh.invIn[s_sh.invInTail].name, (size_t)nameCap);
+        s_sh.invInTail = (s_sh.invInTail + 1) % 8;
         got = 1;
     }
     SDL_UnlockMutex(s_lock);

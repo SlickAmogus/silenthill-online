@@ -1985,7 +1985,11 @@ void DbgOverlay_Update(void)
              * In the living world it is the memo composer. In plain
              * single-player it does nothing, so the key is inert there. */
             extern int g_PcCoopGame;
-            if (g_PcCoopGame) {
+            extern int ShNet_WorldConnected(void);
+            /* Connected to the living world, M is the menu too (Leave a
+             * Message, invite the nearest player); the composer sits one
+             * row in. */
+            if (g_PcCoopGame || ShNet_WorldConnected()) {
                 extern int  Pc_CoopMenu_IsOpen(void);
                 extern void Pc_CoopMenu_OpenInGame(void);
                 extern void Pc_CoopMenu_Close(void);

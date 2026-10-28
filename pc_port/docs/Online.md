@@ -76,6 +76,7 @@ sh_master --cmd "players"        # or one command at a time
 | `prune old <days>` | deletes markers older than that |
 | `prune user <name or uid>` | deletes every marker a player placed |
 | `prune id <marker id>`, `prune deaths [days]` | one marker, or death markers |
+| `prune all` | every marker: a clean world, for example before a release |
 | `say <text>` | a message to everyone online |
 | `save` | writes the marker store now |
 

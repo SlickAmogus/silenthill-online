@@ -24,7 +24,7 @@
 
 #define COOPUDP_MAX_MEMBERS 8
 #define COOPUDP_RX_RING     64
-#define COOPUDP_MAX_ROOMS   40
+#define COOPUDP_MAX_ROOMS   256 /* the server pages 40 to a datagram; we walk the pages */
 
 #define COOPUDP_HELLO_MS    1000u
 #define COOPUDP_PING_MS     2000u
@@ -206,14 +206,40 @@ static void CoopUdp_OnReject(const shn_u8* p, int len)
     SH_DBG("[COOPUDP] room refused: %s", text);
 }
 
+/* The list request carries the page wanted (u8); an older server ignores it
+ * and answers with its one page. */
+static void CoopUdp_SendRoomListReq(int page)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 1];
+    int    off = SHNET_HDR_SIZE;
+    ShnPutU8(buf, &off, (shn_u8)page);
+    ShnPutHeader(buf, SHNET_MSG_ROOM_LIST_REQ, (shn_u16)(off - SHNET_HDR_SIZE), s_session);
+    CoopUdp_SendRaw(buf, off);
+}
+
 static void CoopUdp_OnRoomList(const shn_u8* p, int len)
 {
-    int off = 0, i, n;
+    int off = 0, i, n, page = 0, more = 0;
     if (len < 1) return;
     n = (int)ShnGetU8(p, &off);
-    if (n > COOPUDP_MAX_ROOMS) n = COOPUDP_MAX_ROOMS;
-    s_roomCount = 0;
-    for (i = 0; i < n; i++)
+    /* Entries first; a server that pages appends (u8 page, u8 more) after them.
+     * Page 0 starts the list over, a later page extends it, and a page that
+     * says more follow is asked for the next one. */
+    {
+        int o2 = off, k, entry = 2 + 1 + 1 + SHNET_NAME_MAX;
+        for (k = 0; k < n && o2 + entry <= len; k++)
+        {
+            o2 += entry;
+            if (o2 < len) o2++; /* the map byte */
+        }
+        if (k == n && o2 + 2 <= len)
+        {
+            page = (int)p[o2];
+            more = (int)p[o2 + 1];
+        }
+    }
+    if (page == 0 || s_roomCount > COOPUDP_MAX_ROOMS) s_roomCount = 0;
+    for (i = 0; i < n && s_roomCount < COOPUDP_MAX_ROOMS; i++)
     {
         if (off + 2 + 1 + 1 + SHNET_NAME_MAX > len) break;
         s_rooms[s_roomCount].code    = ShnGetU16(p, &off);
@@ -224,6 +250,10 @@ static void CoopUdp_OnRoomList(const shn_u8* p, int len)
         /* The host's map, from a server that sends it. */
         s_rooms[s_roomCount].map = (off < len) ? ShnGetU8(p, &off) : 0xFF;
         s_roomCount++;
+    }
+    if (more && page < 255 && s_roomCount < COOPUDP_MAX_ROOMS && s_connected)
+    {
+        CoopUdp_SendRoomListReq(page + 1);
     }
 }
 

@@ -919,6 +919,7 @@ static void ShSession_Receive(unsigned int now)
             continue;
         }
         s_lastSeenMs[idx]    = now;
+        if (!s_members[idx].linked) s_members[idx].worldSent = 0;
         s_members[idx].linked = 1;
 
         switch (type)
@@ -1750,10 +1751,15 @@ void ShSession_Tick(unsigned int nowMs)
         {
             shn_u8 buf[SHNET_HDR_SIZE + 4 + SESSION_WORLD_SAVE_MAX];
             int    off = SHNET_HDR_SIZE;
-            if (s_members[i].steamId == Tp_SelfId() || s_members[i].mapIdx == s_worldMapCur)
+            /* A member already on the map still gets it once: a living-world
+             * player invited into this game stands on the host's map before
+             * they join, and boots into the host's save from this. */
+            if (s_members[i].steamId == Tp_SelfId() ||
+                (s_members[i].mapIdx == s_worldMapCur && s_members[i].worldSent))
             {
                 continue;
             }
+            s_members[i].worldSent = 1;
             ShnPutU8(buf, &off, (shn_u8)((s_worldMapCur > 255) ? 0xFF : s_worldMapCur));
             ShnPutU8(buf, &off, (shn_u8)s_worldFlagsOut);
             /* The game as it stands, so the guest plays the same playthrough
