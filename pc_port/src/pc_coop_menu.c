@@ -863,10 +863,13 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         if (i == 0)
         {
-            /* A server room has a shareable code; a Steam lobby has an invite. */
+            /* A server room has a shareable code; a Steam lobby has an invite;
+             * a room on this PC (its code is the local relay's, no use to a
+             * friend) is reached by this machine's address. */
             unsigned long long id = ShSession_LobbyId();
-            if (id && id < 100000ull) snprintf(out, cap, "Room Code:  %u", (unsigned)id);
-            else                      snprintf(out, cap, "Invite Friend");
+            if (s_hostMode == COOP_HOST_THISPC) snprintf(out, cap, "Friends join by your IP, UDP %d", Coop_ServerPort());
+            else if (id && id < 100000ull)     snprintf(out, cap, "Room Code:  %u", (unsigned)id);
+            else                               snprintf(out, cap, "Invite Friend");
         }
         else if (i == 1) snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current()));
         else if (i == 2) snprintf(out, cap, "Start Game");
