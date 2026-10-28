@@ -7,6 +7,7 @@
 #include "bodyprog/bodyprog.h"
 #include "pc_config.h"
 #include "pc_coop_menu.h"
+#include "pc_coop_save.h" /* Pc_Save_BossActive */
 #include "sh_net.h"
 #include "sh_net_proto.h"
 #include "sh_net_session.h"
@@ -45,6 +46,14 @@ static struct { unsigned int id; unsigned int untilMs; } s_cool[INV_COOL_MAX];
 static int Inv_InGame(void)
 {
     return g_GameWork.gameState == GameState_InGame && g_SavegamePtr != NULL;
+}
+
+/* Where the game could be saved: accepting makes a save of the host's game on
+ * the spot and drops the guest into it, so neither side may be mid boss
+ * fight, the one place the quick save refuses too. */
+static int Inv_CanSaveHere(void)
+{
+    return Inv_InGame() && g_SysWork.sysState == SysState_Gameplay && !Pc_Save_BossActive();
 }
 
 static void Inv_Toast(const char* fmt, const char* name)
@@ -97,6 +106,11 @@ static int Inv_MaxPlayers(void)
     if (n < 2) n = 2;
     if (n > 4) n = 4;
     return n;
+}
+
+int ShNetInvite_Blocked(void)
+{
+    return Inv_InGame() && !Inv_CanSaveHere();
 }
 
 int ShNetInvite_CanInvite(void)
@@ -181,6 +195,11 @@ void ShNetInvite_Send(void)
     unsigned int       id;
 
     if (s_outPhase || !ShNetInvite_CanInvite()) return;
+    if (ShNetInvite_Blocked())
+    {
+        ShNet_PostLocalEvent("Can't invite during a boss fight");
+        return;
+    }
     id = ShNetInvite_Nearest(name, (int)sizeof(name), &cool);
     if (id == 0) return;
     if (cool > 0)
@@ -209,6 +228,11 @@ void ShNetInvite_Cancel(void)
 void ShNetInvite_Accept(void)
 {
     if (s_inFrom == 0) return;
+    if (!Inv_CanSaveHere())
+    {
+        ShNet_PostLocalEvent("Can't accept during a boss fight");
+        return;
+    }
     s_acceptFrom = s_inFrom;
     s_acceptMs   = SDL_GetTicks();
     snprintf(s_acceptName, sizeof(s_acceptName), "%s", s_inName);
@@ -236,7 +260,7 @@ static void Inv_Handle(unsigned int from, int action, int code, const char* name
             s_inMs = now; /* asked again: the same invite, fresh */
             break;
         }
-        if (ShSession_Active() || s_inFrom || s_outPhase || s_joinPhase || s_acceptFrom || !Inv_InGame())
+        if (ShSession_Active() || s_inFrom || s_outPhase || s_joinPhase || s_acceptFrom || !Inv_CanSaveHere())
         {
             ShNet_SendInvite(from, SHNET_INV_BUSY, 0);
             break;
@@ -265,6 +289,14 @@ static void Inv_Handle(unsigned int from, int action, int code, const char* name
         if (s_outPhase != 1 || s_outTo != from)
         {
             ShNet_SendInvite(from, SHNET_INV_CANCEL, 0); /* too late */
+            break;
+        }
+        if (!Inv_CanSaveHere())
+        {
+            /* The fight started after the invite went out. */
+            ShNet_SendInvite(from, SHNET_INV_CANCEL, 0);
+            Inv_Toast("Can't bring %s in during a boss fight", s_outName);
+            Inv_ClearOut();
             break;
         }
         if (ShSession_Active() && ShSession_IsHost() && ShSession_LobbyId() != 0 && ShSession_LobbyId() < 100000ull)
@@ -352,7 +384,14 @@ void ShNetInvite_Tick(void)
     }
     else if (s_outPhase == 2)
     {
-        if (ShSession_Active() && ShSession_IsHost() && ShSession_LobbyId() != 0 && ShSession_LobbyId() < 100000ull)
+        if (!Inv_CanSaveHere())
+        {
+            ShNet_SendInvite(s_outTo, SHNET_INV_CANCEL, 0);
+            Inv_Toast("Can't bring %s in during a boss fight", s_outName);
+            Inv_ClearOut();
+            if (ShSession_Active() && !g_PcCoopGame) ShSession_RequestLeave();
+        }
+        else if (ShSession_Active() && ShSession_IsHost() && ShSession_LobbyId() != 0 && ShSession_LobbyId() < 100000ull)
         {
             ShNet_SendInvite(s_outTo, SHNET_INV_JOIN, (int)ShSession_LobbyId());
             SH_DBG("[INVITE] room %llu open; code sent to %s", ShSession_LobbyId(), s_outName);
