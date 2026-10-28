@@ -2014,7 +2014,9 @@ void ShNetUi_Draw(void)
             Nu_DrawTextCentered(t, lx, ly - Nu_TextH(px) * 0.5f, px,
                                 on ? 1.0f : 0.80f, on ? 0.96f : 0.80f, on ? 0.70f : 0.86f, 1.0f);
         }
-        Nu_DrawTextCentered("point and release, or press 1-8", cx, cy + rad + (float)px * 1.6f,
+        Nu_DrawTextCentered(ShNetVoice_MenuTapMode() ? "tap a line, or the centre to cancel"
+                                                     : "point and release, or press 1-8",
+                            cx, cy + rad + (float)px * 1.6f,
                             (int)((float)px * 0.8f), 0.62f, 0.72f, 1.0f, 0.9f);
     }
 

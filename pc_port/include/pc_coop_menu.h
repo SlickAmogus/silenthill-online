@@ -57,6 +57,10 @@ enum
 int         Pc_CoopMenu_View(void);
 int         Pc_CoopMenu_IsTopLevel(void); /* root / in-game page: Esc closes */
 
+/* A pointer press confirms its row on release. A renderer that turned the
+ * held pointer into a list drag calls this so the release picks nothing. */
+void        Pc_CoopMenu_CancelPress(void);
+
 /* Mouse: the renderer computes which row is under the pointer (with the exact
  * geometry it draws the rows with, so they can never disagree) and hands that
  * row INDEX over here, -1 for none. Pc_CoopMenu_Update confirms it on the click,
