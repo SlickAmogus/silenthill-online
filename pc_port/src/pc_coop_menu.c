@@ -1246,7 +1246,7 @@ static void Coop_Confirm(void)
             ShNet_ApplySettings();
         }
         else if (s_sel == 2) { Coop_BeginEdit(COOP_EDIT_NAME); }
-        else if (s_sel == 3) { ShNet_ApplySettings(); snprintf(s_msg, sizeof(s_msg), "Reconnecting..."); }
+        else if (s_sel == 3) { ShNet_ApplySettings(); } /* the status line follows the connection from here */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
