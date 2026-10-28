@@ -1882,9 +1882,12 @@ void ShNetUi_Draw(void)
                       SDL_GetTicks() - s_lostSinceMs > NU_LOST_QUIET_MS);
     }
 
+    /* A co-op game always draws: the door and scene waits, the respawn text,
+     * the voice wheel and the health bar below have no flag up here, and a
+     * host who saw none of them at a story door looked frozen. */
     if (!drawList && !drawComposer && !drawStatus && s_eventCount == 0 &&
         ShNetMemo_NearestReadable() < 0 && !ShNetMemo_JustPlaced() &&
-        !ShNetChat_DisplayActive() && !Pc_CoopMenu_IsOpen())
+        !ShNetChat_DisplayActive() && !Pc_CoopMenu_IsOpen() && !g_PcCoopGame)
     {
         return;
     }
