@@ -21,6 +21,8 @@
 #define INV_COOLDOWN_MS  120000u /* after a decline, before asking that player again */
 #define INV_HOST_WAIT_MS 15000u  /* the room has this long to open after an accept */
 #define INV_JOIN_WAIT_MS 45000u  /* the guest has this long to be in the room and hear S_WORLD */
+#define INV_SAVE_WAIT_MS 300000u /* an invite stays open this long while the invited player saves */
+#define INV_SAVE_OPEN_MS 5000u   /* the save screen has this long to come up after we asked for it */
 #define INV_COOL_MAX     8
 
 /* The invite we sent. */
@@ -28,6 +30,7 @@ static unsigned int s_outTo;
 static char         s_outName[SHNET_NAME_MAX];
 static unsigned int s_outMs;
 static int          s_outPhase; /* 0 none, 1 asked, 2 accepted and the room is opening */
+static int          s_outSaving; /* they said yes but are in their save screen first */
 
 /* The invite waiting for our answer, and the one we said yes to. */
 static unsigned int s_inFrom;
@@ -36,6 +39,13 @@ static unsigned int s_inMs;
 static unsigned int s_acceptFrom;
 static char         s_acceptName[SHNET_NAME_MAX];
 static unsigned int s_acceptMs;
+
+/* The invite we are saving our own game for, before accepting it. */
+static unsigned int s_saveFrom;
+static char         s_saveName[SHNET_NAME_MAX];
+static unsigned int s_saveMs;
+static int          s_savePhase;     /* 1 save screen asked for, 2 in it */
+static int          s_saveCancelled; /* the inviter withdrew while we were in there */
 
 /* Guest: joined the inviter's room, waiting for their world to boot into. */
 static int          s_joinPhase;
@@ -163,7 +173,7 @@ int ShNetInvite_Outgoing(char* name, int cap)
     int left;
     if (name && cap > 0) name[0] = '\0';
     if (s_outPhase == 0) return 0;
-    left = (int)(INV_EXPIRE_MS - (now - s_outMs));
+    left = (int)((s_outSaving ? INV_SAVE_WAIT_MS : INV_EXPIRE_MS) - (now - s_outMs));
     if (left < 1000) left = 1000;
     if (name && cap > 0) snprintf(name, (size_t)cap, "%s", s_outName);
     return left / 1000;
@@ -183,8 +193,14 @@ int ShNetInvite_Incoming(char* name, int cap)
 
 static void Inv_ClearOut(void)
 {
-    s_outPhase = 0;
-    s_outTo    = 0;
+    s_outPhase  = 0;
+    s_outTo     = 0;
+    s_outSaving = 0;
+}
+
+int ShNetInvite_OutgoingSaving(void)
+{
+    return s_outPhase == 1 && s_outSaving;
 }
 
 void ShNetInvite_Send(void)
@@ -220,8 +236,11 @@ void ShNetInvite_Cancel(void)
 {
     if (s_outPhase == 0) return;
     ShNet_SendInvite(s_outTo, SHNET_INV_CANCEL, 0);
-    SH_DBG("[INVITE] cancelled the invite to %s", s_outName);
+    SH_DBG("[INVITE] cancelled the invite to %s%s", s_outName, s_outSaving ? " while they were saving" : "");
     Inv_Toast("Invite to %s cancelled", s_outName);
+    /* Pulling out on someone who already said yes costs the same wait as a
+     * decline would, so a cancel cannot be used to hurry them. */
+    if (s_outSaving) Inv_CooldownAdd(s_outTo, SDL_GetTicks());
     Inv_ClearOut();
 }
 
@@ -242,6 +261,45 @@ void ShNetInvite_Accept(void)
     s_inFrom = 0;
 }
 
+int ShNetInvite_AcceptAfterSave(void)
+{
+    if (s_inFrom == 0) return 0;
+    if (!Inv_CanSaveHere())
+    {
+        ShNet_PostLocalEvent("Can't accept during a boss fight");
+        return 0;
+    }
+    if (!Pc_Save_OpenSaveScreen()) return 0;
+    s_saveFrom      = s_inFrom;
+    s_saveMs        = SDL_GetTicks();
+    s_savePhase     = 1;
+    s_saveCancelled = 0;
+    snprintf(s_saveName, sizeof(s_saveName), "%s", s_inName);
+    s_inFrom = 0;
+    ShNet_SendInvite(s_saveFrom, SHNET_INV_SAVING, 0);
+    SH_DBG("[INVITE] saving before accepting %s's invite", s_saveName);
+    return 1;
+}
+
+/* Back from the save screen (saved or not): the accept we put off. */
+static void Inv_SaveDone(unsigned int now)
+{
+    const unsigned int from = s_saveFrom;
+    s_savePhase = 0;
+    s_saveFrom  = 0;
+    if (s_saveCancelled)
+    {
+        Inv_Toast("%s withdrew the invite", s_saveName);
+        return;
+    }
+    s_acceptFrom = from;
+    s_acceptMs   = now;
+    snprintf(s_acceptName, sizeof(s_acceptName), "%s", s_saveName);
+    ShNet_SendInvite(from, SHNET_INV_ACCEPT, 0);
+    SH_DBG("[INVITE] saved; accepted %s's invite", s_saveName);
+    Inv_Toast("Accepted. Waiting for %s's game...", s_saveName);
+}
+
 void ShNetInvite_Decline(void)
 {
     if (s_inFrom == 0) return;
@@ -260,7 +318,7 @@ static void Inv_Handle(unsigned int from, int action, int code, const char* name
             s_inMs = now; /* asked again: the same invite, fresh */
             break;
         }
-        if (ShSession_Active() || s_inFrom || s_outPhase || s_joinPhase || s_acceptFrom || !Inv_CanSaveHere())
+        if (ShSession_Active() || s_inFrom || s_outPhase || s_joinPhase || s_acceptFrom || s_saveFrom || !Inv_CanSaveHere())
         {
             ShNet_SendInvite(from, SHNET_INV_BUSY, 0);
             break;
@@ -282,6 +340,20 @@ static void Inv_Handle(unsigned int from, int action, int code, const char* name
         {
             s_acceptFrom = 0;
             Inv_Toast("%s's invite is no longer open", name[0] ? name : "Their");
+        }
+        else if (s_saveFrom == from)
+        {
+            s_saveCancelled = 1; /* told on the way back; the save goes on */
+        }
+        break;
+
+    case SHNET_INV_SAVING:
+        if (s_outPhase == 1 && s_outTo == from && !s_outSaving)
+        {
+            s_outSaving = 1;
+            s_outMs     = now;
+            SH_DBG("[INVITE] %s is saving before joining", s_outName);
+            Inv_Toast("%s is saving their game first...", s_outName);
         }
         break;
 
@@ -376,10 +448,11 @@ void ShNetInvite_Tick(void)
         Inv_Handle(from, action, code, name, now);
     }
 
-    if (s_outPhase == 1 && now - s_outMs > INV_EXPIRE_MS)
+    if (s_outPhase == 1 && now - s_outMs > (s_outSaving ? INV_SAVE_WAIT_MS : INV_EXPIRE_MS))
     {
         ShNet_SendInvite(s_outTo, SHNET_INV_CANCEL, 0);
         Inv_Toast("No answer from %s", s_outName);
+        if (s_outSaving) Inv_CooldownAdd(s_outTo, now);
         Inv_ClearOut();
     }
     else if (s_outPhase == 2)
@@ -421,6 +494,16 @@ void ShNetInvite_Tick(void)
     if (s_acceptFrom && now - s_acceptMs > INV_EXPIRE_MS)
     {
         s_acceptFrom = 0;
+    }
+
+    if (s_savePhase == 1)
+    {
+        if (g_GameWork.gameState != GameState_InGame) s_savePhase = 2;
+        else if (now - s_saveMs > INV_SAVE_OPEN_MS) Inv_SaveDone(now); /* the screen never came */
+    }
+    else if (s_savePhase == 2)
+    {
+        if (g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay) Inv_SaveDone(now);
     }
 
     if (s_joinPhase)
