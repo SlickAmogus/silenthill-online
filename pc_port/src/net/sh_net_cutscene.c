@@ -1391,7 +1391,18 @@ int ShNetCut_StatusText(char* out, int cap, char* hint, int hintCap)
             if (hint) snprintf(hint, (size_t)hintCap, "Cancel: turn back");
             return 1;
         }
-        snprintf(out, (size_t)cap, "Waiting for other players...");
+        {
+            char who[SHSESSION_NAME_MAX];
+            who[0] = ' ';
+            if (Cut_GateWaitingOn(s_gateMap, s_gateIdx, s_gateKind, who, (int)sizeof(who)) && who[0])
+            {
+                snprintf(out, (size_t)cap, "Waiting for %s at the door...", who);
+            }
+            else
+            {
+                snprintf(out, (size_t)cap, "Waiting for other players...");
+            }
+        }
         if (hint)
         {
             snprintf(hint, (size_t)hintCap, ShSession_IsHost()

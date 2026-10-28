@@ -3436,7 +3436,7 @@ int main(int argc, char** argv)
         else
         {
             SrvUsage(argv[0]);
-            return strcmp(a, "-h") ? 1 : 0;
+            return (strcmp(a, "-h") && strcmp(a, "--help")) ? 1 : 0;
         }
     }
 

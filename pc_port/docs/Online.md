@@ -28,6 +28,11 @@ opens no socket, starts no thread, and behaves exactly like the offline port.
 
 ### 1. Start a master server
 
+Ready-made builds of the server for Windows and Linux, with scripts that
+install it on a VPS as a self-restarting service and open its admin console,
+are on the [server release](https://github.com/SlickAmogus/silenthill-online/releases/tag/server);
+`online_server/host/README.md` walks through them. By hand:
+
 ```
 online_server/sh_master.exe -n "Fog" -m "Welcome to Silent Hill"
 ```
@@ -43,7 +48,7 @@ to the machine running it; on a LAN nothing needs forwarding.
 | `-m TEXT` | message of the day |
 | `-w WORD` | require a password |
 | `-d FILE` | marker store path (default `memos.db`) |
-| `--max N` | player cap (default 64) |
+| `--max N` | player cap (default 512, up to 1024); living world and co-op rooms share it |
 | `-i N` | players allowed from one IP address (default 8; raise it for a LAN party behind one router) |
 | `--no-ghosts` / `--no-memos` / `--no-deaths` | serve a subset |
 | `-v` | log every query |
