@@ -31,16 +31,21 @@ Room** opens it; **Start Game** boots everyone into the host's map.
 where it is, how many are in it), server rooms and Steam lobbies alike; or
 Join by IP, Enter Room Code, or accept a Steam invite (the friends list's
 Join Game works too). A guest who joins a game in progress is placed next to
-the host. The Join page and the lobby have a **Start From** row too: a guest
-can bring one of their own saves (their inventory, health and progress) into
-the host's map instead of starting with nothing.
+the host, with the host's game: the same inventory, health and progress. It
+is one playthrough, the host's, and guests follow it.
 
 **Saves.** Multiplayer uses your normal single-player saves; there are no
-separate multiplayer saves. Everyone saves on their own machine: a save point,
-the quick save key or **Save** in the `M` menu opens the usual save screen and
-writes to your memory card like any other save, host and guests alike. That
-save loads in single player, or starts the next multiplayer game. Saving is
+separate multiplayer saves. The host picks the save to start from (or a New
+Game); guests start from wherever the host is. Everyone saves on their own
+machine: a save point, the quick save key or **Save** in the `M` menu opens
+the usual save screen and writes to your memory card like any other save,
+host and guests alike. A guest's save is the shared game as it stood, so it
+loads in single player and can host the next multiplayer game. Saving is
 refused while a boss is alive, the same as the quick save.
+
+When the host loads a save (after a game over, or from the load screen or the
+quick load key), everyone starts from it: each guest's game restarts at that
+save point beside the host.
 
 **Everyone needs the same build.** A room or Steam lobby only lets in players
 on its host's build; anyone else is told the host is on a different build.
@@ -125,9 +130,25 @@ selection back.
   player, so whoever gets there first, host or guest, moves the story for
   all. The item itself goes into every player's inventory. Puzzles and
   story events inside a room are each player's to do; the result is shared.
+- **Items.** Everyone carries the same things: a guest starts with the host's
+  inventory and every pickup goes to all. Using an item is your own: a health
+  drink heals you, a bullet is yours. Keys and puzzle items are the
+  exception: using one up uses up everyone's copy, and the door it opened is
+  open for all.
+- **Difficulty.** With partners to lean on, monsters have 1.5 times their
+  health and hit twice as hard.
+- **Dying.** A death is not game over while a partner is alive. After the
+  respawn delay you come back next to a living partner who is out of combat:
+  no monster on them and no hit taken for a few seconds, including a couple
+  of seconds after they run through a door. Until there is one the screen
+  says "Waiting to respawn (players in combat)". A partner on another map is
+  reached the same way, by a reboot into their map. A story scene that starts
+  brings a dead player back on their feet in it. When nobody is left alive
+  the host gets the game's own game over and loads a save, and everyone
+  starts from that save point.
 - **Friendly fire.** Off by default. When the host turns it on, a hit from
-  another player's weapon counts (and bleeds where it landed), and a dead
-  player respawns next to a partner after a few seconds.
+  another player's weapon counts (and bleeds where it landed), at its normal
+  strength.
 - **Weapons.** Partners are drawn with the weapon they hold and heard with
   its sounds, whatever you hold yourself.
 - **Cutscenes.** When a player starts a scene, everyone else on the map is

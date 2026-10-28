@@ -28,9 +28,6 @@
 
 extern char* g_Savegame_SaveLocationNames[];
 
-static s_Savegame s_guestSave;
-static int        s_guestStaged;
-
 static FILE* Coop_OpenCard(int card)
 {
     char path[64];
@@ -190,39 +187,4 @@ int Pc_CoopSave_Load(const char* key)
     }
     SH_DBG("[COOPSAVE] loaded save %s (map %d)", key, (int)g_SavegamePtr->mapIdx);
     return 1;
-}
-
-int Pc_CoopSave_StageGuest(const char* key)
-{
-    s_guestStaged = Coop_ReadKey(key, &s_guestSave);
-    return s_guestStaged;
-}
-
-void Pc_CoopSave_ApplyGuest(void)
-{
-    extern int g_PcCoopGame;
-    s_Savegame fresh;
-
-    /* A staged save whose game never started must not land on a later
-     * single-player New Game. */
-    if (!s_guestStaged || !g_PcCoopGame)
-    {
-        s_guestStaged = 0;
-        return;
-    }
-    s_guestStaged = 0;
-    fresh         = *g_SavegamePtr;
-    *g_SavegamePtr = s_guestSave;
-    /* Where to stand is the host's map, not wherever the save was made. */
-    g_SavegamePtr->mapIdx          = fresh.mapIdx;
-    g_SavegamePtr->mapRoomIdx      = fresh.mapRoomIdx;
-    g_SavegamePtr->paperMapIdx     = fresh.paperMapIdx;
-    g_SavegamePtr->playerPositionX = fresh.playerPositionX;
-    g_SavegamePtr->playerPositionZ = fresh.playerPositionZ;
-    g_SavegamePtr->playerRotationY = fresh.playerRotationY;
-    if (g_SavegamePtr->playerHealth <= 0)
-    {
-        g_SavegamePtr->playerHealth = Q12(100.0f);
-    }
-    SH_DBG("[COOPSAVE] guest brought their save into map %d", (int)fresh.mapIdx);
 }

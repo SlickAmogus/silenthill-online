@@ -7,8 +7,10 @@
  * sequence (fade, "Game Over", reload) is held back while a co-op game is
  * running, the body lies there for online_respawn_seconds, blinks out the way
  * old games despawn a defeated character, and the player is put back alive
- * next to a living co-op partner on the same map, or failing that at the
- * point where they entered the map.
+ * next to a living co-op partner who is out of combat, on this map or, by a
+ * reboot, on theirs. Until there is one the body waits. The host's death
+ * with nobody else alive is the real game over: the host loads a save and
+ * everyone starts from it.
  *
  * Game thread only.
  */
@@ -30,6 +32,10 @@ int   ShNetRespawn_Active(void);
 
 /* Seconds until the player is put back, while Active. */
 float ShNetRespawn_Remaining(void);
+
+/* While the countdown is over but nobody is safe to come back next to: what
+ * the player is waiting for, for the overlay. NULL otherwise. */
+const char* ShNetRespawn_Waiting(void);
 
 /* 1 on the frames the body is blinked out (the despawn flicker); the player
  * model draw skips those frames. */

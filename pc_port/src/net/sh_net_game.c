@@ -24,7 +24,8 @@
 #include "sh_net_npc.h"                      /* co-op: host-owned monsters */
 #include "bodyprog/sound/sfx_id_enum.h"
 #include "bodyprog/items.h"        /* INV_ITEM_COUNT_MAX, s_InventoryItem */
-#include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup */
+#include "bodyprog/item_screens.h" /* Inventory_AddSpecialItem: grant a shared pickup; Player_ItemRemove */
+#include "bodyprog/chara/chara.h"   /* the monster ids, for the in-combat test */
 #include "bodyprog/collision/collision.h" /* Collision_SurfaceGet: ground-snap a joining guest */
 #include "sh_net_steam.h"          /* ShSteam_LobbyOwner: identify the host member */
 
@@ -71,6 +72,52 @@ static int ShNetG_LocalChara(void)
     return id;
 }
 
+/* "In combat" for the respawn rule: a dead partner may only come back next
+ * to a player no monster is on. A living monster within COMBAT_RADIUS_M, or
+ * a hit taken in the last COMBAT_HURT_MS, counts. */
+#define COMBAT_RADIUS_M 8.0f
+#define COMBAT_HURT_MS  4000u
+
+static unsigned int s_lastHurtMs;
+
+static void ShNetG_NoteHurt(void)
+{
+    static q19_12 s_prevHealth;
+    const q19_12  hp = g_SysWork.playerWork.player.health;
+    if (hp < s_prevHealth && hp > 0)
+    {
+        s_lastHurtMs = ShNetPlat_Millis();
+    }
+    s_prevHealth = hp;
+}
+
+static int ShNetG_InCombat(void)
+{
+    const s_SubCharacter* me = &g_SysWork.playerWork.player;
+    int                   i;
+
+    if (s_lastHurtMs && ShNetPlat_Millis() - s_lastHurtMs < COMBAT_HURT_MS)
+    {
+        return 1;
+    }
+    for (i = 0; i < NPC_COUNT_MAX; i++)
+    {
+        const s_SubCharacter* n = &g_SysWork.npcs[i];
+        float                 dx, dz;
+        if (n->model.charaId < Chara_AirScreamer || n->model.charaId > Chara_MonsterCybil || n->health <= 0)
+        {
+            continue;
+        }
+        dx = (float)(n->position.vx - me->position.vx) / 4096.0f;
+        dz = (float)(n->position.vz - me->position.vz) / 4096.0f;
+        if (dx * dx + dz * dz < COMBAT_RADIUS_M * COMBAT_RADIUS_M)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int ShNetG_BuildFlags(void)
 {
     int flags = 0;
@@ -103,6 +150,10 @@ static int ShNetG_BuildFlags(void)
     if (ShNet_CoopFriendlyFire())
     {
         flags |= SHNET_PF_FFIRE; /* others may shoot me; I would apply it */
+    }
+    if (ShNetG_InCombat())
+    {
+        flags |= SHNET_PF_COMBAT;
     }
     if (ShSession_Active() && ShSession_IsHost() && g_PcConfig.onlineGuestConsole)
     {
@@ -164,11 +215,56 @@ static int ShNetG_ShareableCount(int id, int cnt)
     return have ? 0 : 1;
 }
 
+static unsigned short s_snap[256]; /* per-id totals last frame */
+static int            s_snapInit;
+
+/* Keys, puzzle pieces and the like: one playthrough's set, so using one up
+ * uses up everyone's copy. Health, ammo and weapons stay each player's own. */
+static int ShNetG_IsKeyItem(int id)
+{
+    return (id >= InvItemId_LobbyKey && id <= InvItemId_ChannelingStone && id != 86) ||
+           (id >= InvItemId_Chemical && id <= InvItemId_DiskOfOuroboros && id != 111);
+}
+
+static void ShNetG_SendItemUsed(int id, int n)
+{
+    unsigned char b[3];
+    b[0] = SHNET_CTRL_ITEM_USED;
+    b[1] = (unsigned char)id;
+    b[2] = (unsigned char)(n > 255 ? 255 : n);
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 3, 0, 1);
+}
+
+/* A partner used this key item up: drop ours, and keep the snapshot in step
+ * so the drop is not read as our own use and sent back. */
+static void ShNetG_ItemUsedIn(int id, int n)
+{
+    int removed = 0;
+    if (!ShNetG_IsKeyItem(id) || n <= 0)
+    {
+        return;
+    }
+    while (n-- > 0 && Player_ItemRemove((u8)id, 1))
+    {
+        removed++;
+    }
+    if (removed > 0)
+    {
+        s_snap[id] = (unsigned short)(s_snap[id] > removed ? s_snap[id] - removed : 0);
+        SH_DBG("[COOP] a partner used key item %d; ours is gone too", id);
+    }
+}
+
+/* Forgotten whenever we are out of the world: a load or a reboot rebuilds
+ * the inventory, and that must not read as pickups and uses. */
+static void ShNetG_ResetItemSnap(void)
+{
+    s_snapInit = 0;
+}
+
 static void ShNetG_SyncItems(void)
 {
     extern int            g_PcCoopGame;
-    static unsigned short s_snap[256];
-    static int            s_snapInit;
     unsigned short        cur[256];
     int                   i, id, cnt;
 
@@ -218,6 +314,11 @@ static void ShNetG_SyncItems(void)
             {
                 ShSession_QueueItem(i, (int)cur[i] - (int)s_snap[i]);
                 SH_DBG("[COOP] shared our pickup item %d x%d", i, (int)cur[i] - (int)s_snap[i]);
+            }
+            else if (cur[i] < s_snap[i] && ShNetG_IsKeyItem(i))
+            {
+                ShNetG_SendItemUsed(i, (int)s_snap[i] - (int)cur[i]);
+                SH_DBG("[COOP] used key item %d; telling the others", i);
             }
         }
     }
@@ -629,6 +730,50 @@ static void ShNetG_CtrlTick(void)
     }
 }
 
+/* The host loaded a save (the load screen, after a game over or by choice):
+ * one playthrough, so everyone starts again from it. Told a few times, the
+ * relay being best-effort, with a generation so a repeat is ignored. */
+static int          s_restartSeenGen = -1;
+static int          s_restartGen;
+static int          s_restartSendsLeft;
+static unsigned int s_restartNextMs;
+static int          s_sawLoadScreen;
+
+static void ShNetG_RestartTick(int inWorld)
+{
+    extern int g_PcCoopGame;
+    if (!g_PcCoopGame || !ShSession_Active() || !ShSession_IsHost())
+    {
+        s_sawLoadScreen    = 0;
+        s_restartSendsLeft = 0;
+        return;
+    }
+    if (g_GameWork.gameState == GameState_LoadSavegameScreen)
+    {
+        s_sawLoadScreen = 1;
+    }
+    if (inWorld && s_sawLoadScreen)
+    {
+        s_sawLoadScreen    = 0;
+        s_restartGen       = (s_restartGen + 1) & 0xFFFF;
+        s_restartSendsLeft = 3;
+        s_restartNextMs    = 0;
+        SH_DBG("[COOP] loaded a save in co-op; everyone starts from it (gen %d)", s_restartGen);
+    }
+    if (s_restartSendsLeft > 0 && inWorld && ShNetPlat_Millis() >= s_restartNextMs)
+    {
+        unsigned char b[4 + sizeof(s_Savegame)];
+        int           o = 1;
+        b[0] = SHNET_CTRL_RESTART;
+        ShnPutU16(b, &o, (shn_u16)s_restartGen);
+        b[o++] = (unsigned char)g_SavegamePtr->mapIdx;
+        memcpy(b + 4, g_SavegamePtr, sizeof(s_Savegame));
+        ShSession_SendGame(SHNET_MSG_S_CTRL, b, (int)sizeof(b), 0, 1);
+        s_restartSendsLeft--;
+        s_restartNextMs = ShNetPlat_Millis() + 400;
+    }
+}
+
 /* A control note from the room (drained with the other game messages). */
 void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
 {
@@ -666,6 +811,25 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
             break;
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);
+            break;
+        case SHNET_CTRL_ITEM_USED:
+            if (len < 3) return;
+            ShNetG_ItemUsedIn(p[1], p[2]);
+            break;
+        case SHNET_CTRL_RESTART:
+            if (!fromHost || ShSession_IsHost() || len < 4 + (int)sizeof(s_Savegame)) return;
+            {
+                extern void Pc_CoopMenu_RequestReboot(const void* savegame);
+                int        o   = 1;
+                int        gen = ShnGetU16(p, &o);
+                s_Savegame sg;
+                if (gen == s_restartSeenGen || g_GameWork.gameState != GameState_InGame) return;
+                s_restartSeenGen = gen;
+                memcpy(&sg, p + 4, sizeof(sg));
+                ShNet_PostLocalEvent("The host loaded a save; starting from there");
+                SH_DBG("[COOP] the host loaded a save (map %d); rebooting into it", (int)sg.mapIdx);
+                Pc_CoopMenu_RequestReboot(&sg);
+            }
             break;
         case SHNET_CTRL_PERM:
             if (!fromHost || len < 2 || ShSession_IsHost()) return;
@@ -1216,6 +1380,20 @@ void ShNet_GameTick(void)
               (g_SavegamePtr != NULL) &&
               !(g_SysWork.sysFlags & SysFlag_DemoActive);
 
+    ShNetG_RestartTick(inWorld);
+    if (!inWorld)
+    {
+        ShNetG_ResetItemSnap();
+    }
+    /* The host's game as it stands, for guests who boot into it. */
+    {
+        extern int g_PcCoopGame;
+        if (inWorld && g_PcCoopGame && ShSession_Active() && ShSession_IsHost())
+        {
+            ShSession_PublishWorldSave(g_SavegamePtr, (int)sizeof(s_Savegame));
+        }
+    }
+
     /* Co-op inventory or save screen: we are still standing in the world, so
      * keep sending where we are (flagged MENU) rather than vanishing from our
      * partners' screens. Items, hits and sounds wait for gameplay. */
@@ -1255,6 +1433,7 @@ void ShNet_GameTick(void)
         ShNet_OnMapChanged(mapIdx);
     }
 
+    ShNetG_NoteHurt();
     flags = ShNetG_BuildFlags();
 
     {

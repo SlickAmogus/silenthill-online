@@ -62,6 +62,9 @@ void* Pc_NetHit_BulletTrace(void* attacker, const void* from, void* offset, void
 /* Victim hook: the attacker's heading for the flinch direction of a pending
  * network hit (there is no NPC to read it from). Consumes it. */
 int   Pc_NetHit_TakePendingYaw(short* yaw);
+/* 1 once if the damage the player is about to take came from a partner
+ * (friendly fire) rather than a monster. Player_ReceiveDamage consumes it. */
+int   Pc_NetHit_TakeFriendly(void);
 
 #ifdef __cplusplus
 }
