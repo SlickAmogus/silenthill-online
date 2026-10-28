@@ -197,6 +197,11 @@ const char* ShBuild_Hash(void)
 
 const char* ShBuild_Short(void)
 {
+    return SHNET_COOP_BUILD;
+}
+
+const char* ShBuild_ExeShort(void)
+{
     ShBuild_Compute();
     return s_short;
 }

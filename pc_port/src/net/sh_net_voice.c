@@ -73,6 +73,8 @@ static VoiceClip s_clips[VOICE_CHARAS][VOICE_SLOTS];
 static int          s_open;        /* the wheel is up */
 static int          s_sel = -1;    /* slot under the pointer, -1 none */
 static int          s_heldPrev;
+static int          s_tapMode;     /* opened by a touch button: a tap picks, not a key release */
+static unsigned int s_tapOpenMs;
 static unsigned int s_lastSentMs;
 static struct { unsigned long long id; unsigned int ms; } s_lastHeard[SHSESSION_MAX_MEMBERS];
 
@@ -163,22 +165,39 @@ static void Voice_Say(int slot)
     }
 }
 
-void ShNetVoice_KeyHeld(int held)
+static int Voice_InGame(void)
 {
     extern int g_PcCoopGame;
-    const unsigned char* ks = SDL_GetKeyboardState(NULL);
-    int inGame = g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
-                 !(g_SysWork.sysFlags & SysFlag_DemoActive);
+    return g_PcCoopGame && g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
+           !(g_SysWork.sysFlags & SysFlag_DemoActive);
+}
 
-    if (!g_PcCoopGame || !inGame)
+/* Slot under a point of the presented picture (0..1), -1 in the dead centre. */
+static int Voice_SlotAt(float nx, float ny)
+{
+    float dx = nx - 0.5f, dy = ny - 0.5f;
+    float a;
+    if (dx * dx + dy * dy <= 0.0025f) return -1;
+    /* Slot 0 at the top, clockwise. */
+    a = (float)atan2((double)dx, (double)-dy); /* 0 = up, +cw */
+    if (a < 0.0f) a += 6.2831853f;
+    return ((int)((a + 6.2831853f / 16.0f) / (6.2831853f / 8.0f))) % VOICE_SLOTS;
+}
+
+void ShNetVoice_KeyHeld(int held)
+{
+    const unsigned char* ks = SDL_GetKeyboardState(NULL);
+
+    if (!Voice_InGame())
     {
-        s_open = 0; s_sel = -1; s_heldPrev = 0;
+        s_open = 0; s_sel = -1; s_heldPrev = 0; s_tapMode = 0;
         return;
     }
     if (held && !s_heldPrev)
     {
-        s_open = 1;
-        s_sel  = -1;
+        s_open    = 1;
+        s_sel     = -1;
+        s_tapMode = 0;
     }
     if (s_open)
     {
@@ -186,14 +205,8 @@ void ShNetVoice_KeyHeld(int held)
         int   k;
         if (Pc_MouseCursor_ViewportPos(&nx, &ny))
         {
-            float dx = nx - 0.5f, dy = ny - 0.5f;
-            if (dx * dx + dy * dy > 0.0025f) /* past the dead centre */
-            {
-                /* Slot 0 at the top, clockwise. */
-                float a = (float)atan2((double)dx, (double)-dy); /* 0 = up, +cw */
-                if (a < 0.0f) a += 6.2831853f;
-                s_sel = ((int)((a + 6.2831853f / 16.0f) / (6.2831853f / 8.0f))) % VOICE_SLOTS;
-            }
+            int at = Voice_SlotAt(nx, ny);
+            if (at >= 0) s_sel = at;
         }
         if (ks)
         {
@@ -203,7 +216,7 @@ void ShNetVoice_KeyHeld(int held)
             }
         }
     }
-    if (!held && s_heldPrev && s_open)
+    if (!held && s_heldPrev && s_open && !s_tapMode)
     {
         s_open = 0;
         if (s_sel >= 0) Voice_Say(s_sel);
@@ -212,9 +225,48 @@ void ShNetVoice_KeyHeld(int held)
     s_heldPrev = held;
 }
 
+void ShNetVoice_TouchToggle(void)
+{
+    if (s_open)
+    {
+        s_open = 0; s_sel = -1; s_tapMode = 0;
+        return;
+    }
+    if (!Voice_InGame()) return;
+    s_open      = 1;
+    s_sel       = -1;
+    s_tapMode   = 1;
+    s_tapOpenMs = SDL_GetTicks();
+}
+
+int ShNetVoice_MenuTapMode(void)
+{
+    return s_open && s_tapMode;
+}
+
 void ShNetVoice_Tick(void)
 {
     Pc_VoiceClip_Tick();
+
+    /* Tap mode: a tap on a line says it, one in the centre or off the wheel
+     * cancels. The tap that opened the wheel is still a click this frame (the
+     * finger's synthetic mouse), so the first moments are not a pick. */
+    if (s_open && s_tapMode)
+    {
+        float nx, ny;
+        if (!Voice_InGame())
+        {
+            s_open = 0; s_sel = -1; s_tapMode = 0;
+        }
+        else if (SDL_GetTicks() - s_tapOpenMs > 300u && Pc_MouseCursor_LeftClicked() &&
+                 Pc_MouseCursor_ViewportPos(&nx, &ny))
+        {
+            float dx = nx - 0.5f, dy = ny - 0.5f;
+            int   at = (dx * dx + dy * dy < 0.2025f) ? Voice_SlotAt(nx, ny) : -1;
+            s_open = 0; s_sel = -1; s_tapMode = 0;
+            if (at >= 0) Voice_Say(at);
+        }
+    }
 }
 
 void ShNetVoice_CtrlIn(unsigned long long from, const unsigned char* p, int len)

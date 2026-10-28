@@ -24,8 +24,13 @@ extern "C" {
  * cached). "unknown" if the file could not be read. */
 const char* ShBuild_Hash(void);
 
-/* The short id sent on the wire: the first SHNET_BUILD_MAX-1 hex chars. */
+/* The id sent on the wire and matched between the players of a room:
+ * SHNET_COOP_BUILD (sh_net_proto.h), the same on every platform of a release.
+ * The exe hash is not it, since a phone's and a PC's never match. */
 const char* ShBuild_Short(void);
+
+/* The first SHNET_BUILD_MAX-1 hex chars of the exe hash, for logs. */
+const char* ShBuild_ExeShort(void);
 
 #ifdef __cplusplus
 }
