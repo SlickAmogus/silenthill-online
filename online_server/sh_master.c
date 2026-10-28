@@ -2038,16 +2038,28 @@ static void SrvHandleRoomKick(Client* c, const shn_u8* p, int len)
     }
 }
 
-static void SrvHandleRoomList(Client* c)
+/* One page of SRV_ROOMS_PER_PAGE listed rooms. The request may carry a page
+ * number (u8; older clients send none, which is page 0); after the entries the
+ * reply says which page this was and whether another follows, so a client can
+ * walk the whole list in as many datagrams as it takes. */
+#define SRV_ROOMS_PER_PAGE 40
+static void SrvHandleRoomList(Client* c, const shn_u8* p, int len)
 {
     shn_u8 buf[SHNET_MTU];
-    int    off = SHNET_HDR_SIZE, cntOff, i, n = 0;
+    int    off = SHNET_HDR_SIZE, cntOff, i, n = 0, skip, more = 0;
+    int    page = (len >= 1) ? (int)p[0] : 0;
+    skip   = page * SRV_ROOMS_PER_PAGE;
     cntOff = off; ShnPutU8(buf, &off, 0);
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
         Client* h = &g_clients[i];
         if (!h->used || !h->roomHost || h->roomHidden) continue;
-        if (off + 2 + 1 + 1 + SHNET_NAME_MAX + 1 > (int)sizeof(buf)) break;
+        if (skip > 0) { skip--; continue; }
+        if (n >= SRV_ROOMS_PER_PAGE || off + 2 + 1 + 1 + SHNET_NAME_MAX + 1 + 2 > (int)sizeof(buf))
+        {
+            more = 1;
+            break;
+        }
         ShnPutU16(buf, &off, h->room);
         ShnPutU8(buf, &off, (shn_u8)SrvRoomCount(h->room));
         ShnPutU8(buf, &off, (shn_u8)h->roomMax);
@@ -2055,10 +2067,58 @@ static void SrvHandleRoomList(Client* c)
         /* The host's map (from its living-world state), so the browser can say
          * where the game is; 0xFF when the host has not reported one. */
         ShnPutU8(buf, &off, (shn_u8)((h->mapIdx < 0) ? 0xFF : h->mapIdx));
-        if (++n >= 40) break;
+        n++;
     }
     buf[cntOff] = (shn_u8)n;
+    ShnPutU8(buf, &off, (shn_u8)page);
+    ShnPutU8(buf, &off, (shn_u8)more);
     SrvSendTo(c, buf, off - SHNET_HDR_SIZE, SHNET_MSG_ROOM_LIST);
+}
+
+/* A living-world invite: forwarded to the named player with the sender's id
+ * and name on it. The clients hold the conversation (expiry, cooldowns); the
+ * server only needs the target to exist, and tells the sender when it does
+ * not. Rate limited like everything else through the per-client budget. */
+static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
+{
+    shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_NAME_MAX];
+    int     off = 0, o = SHNET_HDR_SIZE, i;
+    shn_u32 to;
+    int     action;
+    shn_u16 code;
+    Client* t = NULL;
+
+    if (len < 8) return;
+    to     = ShnGetU32(p, &off);
+    action = (int)ShnGetU8(p, &off);
+    (void)ShnGetU8(p, &off);
+    code   = ShnGetU16(p, &off);
+    if (action < SHNET_INV_INVITE || action > SHNET_INV_JOIN || to == c->playerId) return;
+    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    {
+        if (g_clients[i].used && g_clients[i].playerId == to) { t = &g_clients[i]; break; }
+    }
+    if (t == NULL)
+    {
+        ShnPutU32(buf, &o, to);
+        ShnPutU8(buf, &o, SHNET_INV_GONE);
+        ShnPutU8(buf, &o, 0);
+        ShnPutU16(buf, &o, 0);
+        ShnPutStr(buf, &o, "", SHNET_NAME_MAX);
+        SrvSendTo(c, buf, o - SHNET_HDR_SIZE, SHNET_MSG_INVITE);
+        return;
+    }
+    ShnPutU32(buf, &o, c->playerId);
+    ShnPutU8(buf, &o, (shn_u8)action);
+    ShnPutU8(buf, &o, 0);
+    ShnPutU16(buf, &o, code);
+    ShnPutStr(buf, &o, c->name, SHNET_NAME_MAX);
+    SrvSendTo(t, buf, o - SHNET_HDR_SIZE, SHNET_MSG_INVITE);
+    if (g_verbose || action == SHNET_INV_INVITE || action == SHNET_INV_JOIN)
+    {
+        SrvLog("  invite %s -> %s: action %d%s", c->name, t->name, action,
+               action == SHNET_INV_JOIN ? " (room code sent)" : "");
+    }
 }
 
 /* Forward a member's co-op packet to the rest of its room (target 0) or to one
@@ -2161,9 +2221,10 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     case SHNET_MSG_ROOM_CREATE:   SrvHandleRoomCreate(c, pay, (int)payLen); break;
     case SHNET_MSG_ROOM_JOIN:     SrvHandleRoomJoin(c, pay, (int)payLen);   break;
     case SHNET_MSG_ROOM_LEAVE:    SrvRoomLeave(c, 1);                       break;
-    case SHNET_MSG_ROOM_LIST_REQ: SrvHandleRoomList(c);                     break;
+    case SHNET_MSG_ROOM_LIST_REQ: SrvHandleRoomList(c, pay, (int)payLen);   break;
     case SHNET_MSG_COOP_RELAY:    SrvHandleCoopRelay(c, pay, (int)payLen);  break;
     case SHNET_MSG_ROOM_KICK:     SrvHandleRoomKick(c, pay, (int)payLen);   break;
+    case SHNET_MSG_INVITE:        SrvHandleInvite(c, pay, (int)payLen);     break;
     case SHNET_MSG_BYE:
     {
         char text[SHNET_EVENT_MAX];
@@ -3050,6 +3111,7 @@ static void AdmPrune(int kind, const char* arg, long days)
         int gone = (kind == 0) ? (m->placedUnix && m->placedUnix < cutoff)
                  : (kind == 1) ? AdmMemoOwnedBy(m, arg)
                  : (kind == 2) ? (m->memoId == id)
+                 : (kind == 4) ? 1
                  : ((m->kind & 0x0F) == SHNET_MARK_DEATH && (days <= 0 || (m->placedUnix && m->placedUnix < cutoff)));
         if (gone)
         {
@@ -3081,6 +3143,7 @@ static void AdmHelp(void)
         "prune user <name|uid>        delete every marker by a player\n"
         "prune id <marker id>         delete one marker\n"
         "prune deaths [days]          delete death markers (all, or older than <days>)\n"
+        "prune all                    delete every marker (a clean world before a release)\n"
         "say <text>                   message to everyone online\n"
         "save                         write the marker store now\n");
 }
@@ -3216,7 +3279,8 @@ static void AdmRun(char* line)
         else if (!strcmp(rest, "user") && arg && *arg)          AdmPrune(1, arg, 0);
         else if (!strcmp(rest, "id") && arg && *arg)            AdmPrune(2, arg, 0);
         else if (!strcmp(rest, "deaths"))                       AdmPrune(3, NULL, arg ? atol(arg) : 0);
-        else AdmPrintf("prune old <days> | prune user <name|uid> | prune id <marker id> | prune deaths [days]\n");
+        else if (!strcmp(rest, "all"))                          AdmPrune(4, NULL, 0);
+        else AdmPrintf("prune old <days> | prune user <name|uid> | prune id <marker id> | prune deaths [days] | prune all\n");
     }
     else if (!strcmp(cmd, "say"))
     {

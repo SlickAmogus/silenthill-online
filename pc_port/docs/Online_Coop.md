@@ -34,6 +34,18 @@ Join Game works too). A guest who joins a game in progress is placed next to
 the host, with the host's game: the same inventory, health and progress. It
 is one playthrough, the host's, and guests follow it.
 
+**Invite someone you meet.** In the living world, `M` opens the same menu
+over a single-player game, with **Invite <name>** for the nearest other
+player on your map. They get a note and **Accept** / **Decline** rows in
+their own `M` menu. On Accept a private room opens on the server, you
+continue where you stand as the host, and they boot into your game beside
+you, the same as any guest. An invite lasts 30 seconds (**Cancel Invite**
+withdraws it sooner); a player weighing one is busy to everyone else; and
+after a decline the asker waits two minutes before asking that player again.
+A host whose room has a free seat can invite the same way from inside a
+game. The server's room list pages, so a browser full of games scrolls:
+arrow keys or the mouse wheel on PC, hold and drag on phones.
+
 **Saves.** Multiplayer uses your normal single-player saves; there are no
 separate multiplayer saves. The host picks the save to start from (or a New
 Game); guests start from wherever the host is. Everyone saves on their own

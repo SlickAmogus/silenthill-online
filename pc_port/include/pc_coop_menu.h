@@ -80,6 +80,15 @@ int         Pc_CoopMenu_TakeStartRequest(char* outName, int cap);
 void        Pc_CoopMusic_Tick(void);
 /* Guest: reboot into another map, keeping the game (Teleport to Host / Bring Here). */
 void        Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY);
+/* The host loaded a save (or we just joined their game): reboot into it. */
+void        Pc_CoopMenu_RequestReboot(const void* savegame);
+/* Living-world invites (sh_net_invite.c): open a private room on the living
+ * world server for the guest (0 when no server is configured), join one by
+ * its code, and turn the running single-player game into the co-op host game
+ * by rebooting into it where we stand. */
+int         Pc_CoopMenu_InviteHost(void);
+void        Pc_CoopMenu_InviteJoin(int code);
+void        Pc_CoopMenu_RequestHostReboot(void);
 
 #ifdef __cplusplus
 }

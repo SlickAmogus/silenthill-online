@@ -115,6 +115,7 @@ typedef struct
     int                pingMs;     /* -1 until a pong comes back */
     int                linked;     /* 1 once they have answered us */
     int                mapIdx;     /* -1 unknown */
+    int                worldSent;  /* host: S_WORLD has reached them at least once since they linked */
 
     /* Co-op presence: this member's last reported pose (SHNET_MSG_S_POS). Valid
      * only while poseMs is recent and the member is on our map. */

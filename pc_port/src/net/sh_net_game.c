@@ -34,6 +34,7 @@
 #include "sh_net_chat.h"
 #include "sh_net_session.h"
 #include "sh_net_coop.h"     /* ShNet_SetCoopActive: block pausing in a session */
+#include "sh_net_invite.h"   /* living-world invites into a co-op room */
 #include "sh_net_internal.h"
 #include "sh_net_platform.h" /* ShNetPlat_Millis, for the roster re-request throttle */
 #include "pc_discord.h" /* Pc_MapAreaName, for Steam rich presence */
@@ -1293,6 +1294,7 @@ void ShNet_GameTick(void)
     ShNetRespawn_Tick();
     ShNetCut_Tick();
     ShNetVoice_Tick();
+    ShNetInvite_Tick();
     Pc_CoopMusic_Tick();
     /* The in-game multiplayer menu, drawn with the game's own primitives over
      * the live world (MainLoop runs this after the state update and before
