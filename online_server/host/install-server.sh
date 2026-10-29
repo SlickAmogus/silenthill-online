@@ -22,10 +22,12 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ARGS=""
 DOMAIN=""
+WARN=1
 while [ $# -gt 0 ]; do
     case "$1" in
-        --args)   ARGS="$2"; shift 2 ;;
-        --domain) DOMAIN="$2"; shift 2 ;;
+        --args)    ARGS="$2"; shift 2 ;;
+        --domain)  DOMAIN="$2"; shift 2 ;;
+        --no-warn) WARN=0; shift ;;
         *) echo "unknown option: $1"; exit 2 ;;
     esac
 done
@@ -174,6 +176,27 @@ web_setup() {
 }
 [ -n "$DOMAIN" ] && web_setup
 set -e
+
+# Players online get a toast and a chat line, and half a minute, before the
+# restart drops them (the living world reconnects by itself afterwards).
+warn_players() {
+  set +e
+  ADM=""
+  EXEC="$(systemctl show -p ExecStart --value "$UNIT" 2>/dev/null)"
+  P="$(printf '%s' "$EXEC" | grep -o -- '--admin [0-9]*' | head -1)"
+  [ -n "$P" ] && ADM="$P"
+  N="$("$WARN_BIN" $ADM --cmd players 2>/dev/null | tail -1 | grep -o '^[0-9]*')"
+  if [ -n "$N" ] && [ "$N" -gt 0 ] &&
+     "$WARN_BIN" $ADM --cmd "say The server will restart in 30 seconds." >/dev/null 2>&1; then
+    echo ">> $N player(s) online, warned: the server restarts in 30 seconds"
+    for s in 30 20 10; do echo "   $s ..."; sleep 10; done
+  else
+    echo '>> nobody online (or the server is not answering); restarting now'
+  fi
+  set -e
+}
+WARN_BIN="$BIN"
+[ "$WARN" = 1 ] && systemctl is-active --quiet $UNIT && warn_players
 
 echo ">> starting ..."
 systemctl restart $UNIT
