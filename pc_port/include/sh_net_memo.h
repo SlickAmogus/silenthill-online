@@ -78,6 +78,19 @@ void        ShNetMemo_ComposerPreview(char* out, int cap);
 /* Non-zero for a few seconds after a placement, so the UI can say so. A pure
  * read: the draw path asks more than once a frame. ShNetMemo_Tick, once a
  * frame from the game thread, is what makes it expire. */
+/* The emoji (0..SHNET_EMOJI_COUNT-1, sh_net_memo_text.h) a marker or the
+ * composer carries, or -1 for none. */
+int         ShNetMemo_MemoEmoji(const ShNetMemo* m);
+int         ShNetMemo_ComposerEmoji(void);
+
+/* The pointer's way in (sh_net_ui.c): a column's selection and size, pick or
+ * step an entry (which also focuses that column), leave the message. */
+int         ShNetMemo_ComposerIndex(int col);
+int         ShNetMemo_ComposerCount(int col);
+void        ShNetMemo_ComposerSet(int col, int idx);
+void        ShNetMemo_ComposerStep(int col, int delta);
+void        ShNetMemo_ComposerPlace(void);
+
 int         ShNetMemo_JustPlaced(void);
 void        ShNetMemo_Tick(void);
 

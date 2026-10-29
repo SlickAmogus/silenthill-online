@@ -100,7 +100,7 @@ typedef socklen_t ShSockLen;
 #include "sh_net_memo_text.h" /* a placed marker in words, for the admin feed */
 /* The admin feed: one line to every console in watch mode. Loopback only. */
 static void SrvFeed(const char* fmt, ...);
-static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int map);
+static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map);
 #else
 #define SrvFeed(...)     ((void)0)
 #define SrvFeedMemo(...) ((void)0)
@@ -1587,7 +1587,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
            (m.kind & 0x0F) == SHNET_MARK_DEATH ? "a death marker" :
            (m.kind & 0x0F) == SHNET_MARK_SAVE  ? "a save mark" : "a message",
            m.mapIdx, m.memoId);
-    SrvFeedMemo(c->name, (int)m.kind, (int)m.phraseA, (int)m.wordA, (int)m.mapIdx);
+    SrvFeedMemo(c->name, (int)m.kind, (int)m.phraseA, (int)m.wordA, (int)m.phraseB, (int)m.wordB, (int)m.mapIdx);
 
     if ((m.kind & 0x0F) == SHNET_MARK_DEATH)
     {
@@ -2932,10 +2932,10 @@ static void SrvFeed(const char* fmt, ...)
 
 /* A marker in the words the players see. The substitution is by hand, as in
  * the client: the phrase strings are data, never a printf format. */
-static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int map)
+static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map)
 {
     const int   k  = kind & 0x0F;
-    const int   em = (kind >> 4) & 0x0F;
+    const int   em = ShNetMemo_EmojiOf(kind, phraseB, wordB);
     const char* p;
     const char* w;
     const char* e;
@@ -2946,7 +2946,7 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int map
     if (k == SHNET_MARK_SAVE)  { SrvFeed("~ %s rested on map %d", who, map); return; }
     p = (phrase >= 0 && phrase < (int)(sizeof(s_phrases) / sizeof(s_phrases[0]))) ? s_phrases[phrase] : "?";
     w = (word >= 0 && word < (int)(sizeof(s_words) / sizeof(s_words[0]))) ? s_words[word] : "?";
-    e = (em >= 0 && em < (int)(sizeof(s_emotes) / sizeof(s_emotes[0]))) ? s_emotes[em] : "";
+    e = (em >= 0) ? s_emoji[em] : "";
     while (*p && o < (int)sizeof(body) - 1)
     {
         if (p[0] == '%' && p[1] == 's')
