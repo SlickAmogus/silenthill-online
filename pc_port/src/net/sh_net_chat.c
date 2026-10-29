@@ -298,7 +298,8 @@ static void Chat_FeedTouch(void)
         int  k, m = Web_TextTake(w, (int)sizeof(w));
         for (k = 0; k < m; k++)
         {
-            if (w[k] == '\b') back++;
+            if (w[k] == 27) esc = 1;
+            else if (w[k] == '\b') back++;
             else if (w[k] == '\n') enter = 1;
             else if (n < (int)sizeof(typed)) typed[n++] = w[k];
         }
