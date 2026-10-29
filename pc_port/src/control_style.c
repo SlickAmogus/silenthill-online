@@ -13,6 +13,7 @@
 #include "pc_config.h"
 #include "control_style.h"
 #include <PsyX/PsyX_public.h> /* PsyX_LookupGameControllerMapping / RawControllerBindHeld */
+extern int ShNetMemo_ComposerActive(void); /* the message composer takes the pointer */
 
 #include <SDL.h>
 #include <string.h>
@@ -218,7 +219,7 @@ void Pc_ControlStyleUpdate(void)
         inGameplay = (g_GameWork.gameState == GameState_InGame &&
                       g_SysWork.sysState   == SysState_Gameplay &&
                       !Pc_ConsoleIsOpen() && !g_PcQuickOptionsActive && !Pc_CoopMenu_InGame() &&
-                      !Pc_TextInputActive());
+                      !Pc_TextInputActive() && !ShNetMemo_ComposerActive());
     }
 
     keys   = SDL_GetKeyboardState(NULL);

@@ -45,6 +45,8 @@
 
 #include "sh_net.h"
 #include "sh_net_memo.h"
+#include "stb_image.h"       /* the emoji sheet, decoded once */
+#include "sh_net_emoji_png.h"
 #include "sh_net_chat.h"
 #include "sh_net_session.h"
 #include "sh_net_cutscene.h"
@@ -983,18 +985,126 @@ static void Nu_DrawPlayerList(int px)
 /* Memo composer                                                       */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Emoji                                                               */
+/* ------------------------------------------------------------------ */
+
+static void Nu_FillPx(float x, float y, float w, float h, float r, float g, float b, float a);
+
+static GLuint s_emojiTex;
+static int    s_emojiState; /* 0 not tried, 1 ready, -1 failed */
+
+static int Nu_EmojiReady(void)
+{
+    if (s_emojiState == 0)
+    {
+        int            w = 0, h = 0, n = 0;
+        unsigned char* rgba = stbi_load_from_memory(s_shnetEmojiPng, (int)sizeof(s_shnetEmojiPng), &w, &h, &n, 4);
+        GLint          prevTex = 0;
+        s_emojiState = -1;
+        if (rgba && w == SHNET_EMOJI_TILE * SHNET_EMOJI_COLS && h == SHNET_EMOJI_TILE * SHNET_EMOJI_ROWS)
+        {
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+            glGenTextures(1, &s_emojiTex);
+            glBindTexture(GL_TEXTURE_2D, s_emojiTex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+            glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+            s_emojiState = s_emojiTex ? 1 : -1;
+        }
+        SH_DBG("[NETUI] emoji sheet %s (%dx%d)", s_emojiState == 1 ? "ready" : "FAILED", w, h);
+        if (rgba) stbi_image_free(rgba);
+    }
+    return s_emojiState == 1;
+}
+
+/* One emoji, a size x size square with its top-left at (x, y) in viewport
+ * pixels. */
+static void Nu_DrawEmoji(int e, float x, float y, float size, float a)
+{
+    float v[6][4];
+    float x0, x1, yT, yB, u0, v0, u1, v1;
+    const float tw = (float)(SHNET_EMOJI_TILE * SHNET_EMOJI_COLS);
+    const float th = (float)(SHNET_EMOJI_TILE * SHNET_EMOJI_ROWS);
+    int   col, row;
+
+    if (e < 0 || e >= SHNET_EMOJI_COLS * SHNET_EMOJI_ROWS || !Nu_EmojiReady())
+    {
+        return;
+    }
+    col = e % SHNET_EMOJI_COLS;
+    row = e / SHNET_EMOJI_COLS;
+    u0 = ((float)(col * SHNET_EMOJI_TILE) + 0.5f) / tw;
+    u1 = ((float)((col + 1) * SHNET_EMOJI_TILE) - 0.5f) / tw;
+    v0 = ((float)(row * SHNET_EMOJI_TILE) + 0.5f) / th;
+    v1 = ((float)((row + 1) * SHNET_EMOJI_TILE) - 0.5f) / th;
+    x0 = (x / s_vpW) * 2.0f - 1.0f;
+    x1 = ((x + size) / s_vpW) * 2.0f - 1.0f;
+    yT = 1.0f - (y / s_vpH) * 2.0f;
+    yB = 1.0f - ((y + size) / s_vpH) * 2.0f;
+
+    v[0][0] = x0; v[0][1] = yT; v[0][2] = u0; v[0][3] = v0;
+    v[1][0] = x0; v[1][1] = yB; v[1][2] = u0; v[1][3] = v1;
+    v[2][0] = x1; v[2][1] = yT; v[2][2] = u1; v[2][3] = v0;
+    v[3][0] = x1; v[3][1] = yT; v[3][2] = u1; v[3][3] = v0;
+    v[4][0] = x0; v[4][1] = yB; v[4][2] = u0; v[4][3] = v1;
+    v[5][0] = x1; v[5][1] = yB; v[5][2] = u1; v[5][3] = v1;
+
+    glUniform4f(s_locColor, 1.0f, 1.0f, 1.0f, a);
+    glBindTexture(GL_TEXTURE_2D, s_emojiTex);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+/* Text with an emoji in front of it, the pair centred on cx. */
+static void Nu_DrawEmojiLine(int e, const char* text, float cx, float y, int px, float r, float g, float b)
+{
+    const float size = (float)px * 1.5f;
+    const float gap  = (float)px * 0.5f;
+    const float tw   = Nu_TextWidth(text, px);
+    const float w    = (e >= 0 ? size + gap : 0.0f) + tw;
+    float       x    = cx - w * 0.5f;
+    if (e >= 0)
+    {
+        Nu_DrawEmoji(e, x, y + ((float)px - size) * 0.5f, size, 1.0f);
+        x += size + gap;
+    }
+    Nu_DrawText(text, x, y, px, r, g, b, 1.0f);
+}
+
+/* ------------------------------------------------------------------ */
+/* Composer                                                            */
+/* ------------------------------------------------------------------ */
+
+/* What Nu_DrawComposer laid out, for the pointer (viewport pixels, y down). */
+static struct
+{
+    int   valid;
+    float colX[3], colW[3];
+    float listTop, rowH;
+    int   half;
+    float closeX, closeY, closeS;
+    float leaveX, leaveY, leaveW, leaveH;
+} s_cmp;
+
 static void Nu_DrawComposer(int px)
 {
-    const float pad  = (float)px * 0.9f;
-    const float rowH = (float)px * 1.4f;
-    const float w    = s_vpW * 0.46f < 460.0f ? 460.0f : s_vpW * 0.46f;
-    const float h    = pad * 2.0f + rowH * (float)(NU_COMPOSER_ROWS + 4);
-    const float x    = (s_vpW - w) * 0.5f;
-    const float y    = s_vpH * 0.16f;
-    const int   col  = ShNetMemo_ComposerColumn();
-    /* Three columns: phrase | word | emote. The emote column is narrow. */
+    const float pad   = (float)px * 0.9f;
+    const float rowH  = (float)px * 1.45f;
+    const float w     = s_vpW * 0.58f < 560.0f ? (s_vpW - 32.0f < 560.0f ? s_vpW - 32.0f : 560.0f) : s_vpW * 0.58f;
+    const float h     = pad * 2.0f + rowH * (1.4f + (float)NU_COMPOSER_ROWS + 0.4f + 2.0f + 1.8f + 1.3f);
+    const float x     = (s_vpW - w) * 0.5f;
+    const float y     = s_vpH * 0.10f;
+    const int   col   = ShNetMemo_ComposerColumn();
     const float usable = w - pad * 4.0f;
-    const float colWs[3] = { usable * 0.46f, usable * 0.34f, usable * 0.20f };
+    const float colWs[3] = { usable * 0.40f, usable * 0.33f, usable * 0.27f };
+    const int   half  = NU_COMPOSER_ROWS / 2;
     float       ty;
     int         i;
     char        buf[128];
@@ -1003,30 +1113,42 @@ static void Nu_DrawComposer(int px)
 
     ty = y + pad;
     Nu_DrawText("LEAVE A MESSAGE", x + pad, ty, px, 0.82f, 0.79f, 0.70f, 1.0f);
-    ty += rowH * 1.3f;
+
+    /* Close box, top right: the way out for a pointer or a finger. */
+    s_cmp.closeS = rowH * 1.05f;
+    s_cmp.closeX = x + w - pad * 0.6f - s_cmp.closeS;
+    s_cmp.closeY = y + pad * 0.5f;
+    Nu_FillPx(s_cmp.closeX, s_cmp.closeY, s_cmp.closeS, s_cmp.closeS, 0.30f, 0.08f, 0.07f, 0.85f);
+    Nu_DrawTextCentered("X", s_cmp.closeX + s_cmp.closeS * 0.5f, s_cmp.closeY + (s_cmp.closeS - (float)px) * 0.5f,
+                        px, 0.95f, 0.88f, 0.84f, 1.0f);
+    ty += rowH * 1.4f;
+
+    s_cmp.listTop = ty;
+    s_cmp.rowH    = rowH;
+    s_cmp.half    = half;
 
     for (i = 0; i < 3; i++)
     {
         const int   isPhrase = (i == 0);
         const int   isEmote  = (i == 2);
-        const int   sel      = isPhrase ? ShNetMemo_ComposerPhrase()
-                             : isEmote  ? ShNetMemo_ComposerEmote() : ShNetMemo_ComposerWord();
-        const int   total    = isPhrase ? ShNetMemo_PhraseCount()
-                             : isEmote  ? ShNetMemo_EmoteCount()    : ShNetMemo_WordCount();
+        const int   sel      = ShNetMemo_ComposerIndex(i);
+        const int   total    = ShNetMemo_ComposerCount(i);
         const float colW     = colWs[i];
         const float cx       = x + pad + (i > 0 ? colWs[0] + pad : 0.0f) + (i > 1 ? colWs[1] + pad : 0.0f);
-        const int   half     = NU_COMPOSER_ROWS / 2;
         float       cy       = ty;
         int         k;
 
+        s_cmp.colX[i] = cx - pad * 0.4f;
+        s_cmp.colW[i] = colW + pad * 0.8f;
+
         if (col == i)
         {
-            const float x0 = (cx - pad * 0.4f) / s_vpW * 2.0f - 1.0f;
-            const float x1 = (cx + colW) / s_vpW * 2.0f - 1.0f;
-            const float yT = 1.0f - ((cy - pad * 0.3f) / s_vpH) * 2.0f;
-            const float yB = 1.0f - ((cy + rowH * (float)NU_COMPOSER_ROWS) / s_vpH) * 2.0f;
-            Nu_Fill(x0, yT, x1, yB, 0.16f, 0.16f, 0.14f, 0.55f);
+            Nu_FillPx(cx - pad * 0.4f, cy - pad * 0.3f, colW + pad * 0.8f, rowH * (float)NU_COMPOSER_ROWS + pad * 0.3f,
+                      0.16f, 0.16f, 0.14f, 0.55f);
         }
+        /* The entry a click on its row would take. */
+        Nu_FillPx(cx - pad * 0.4f, cy + rowH * (float)half - rowH * 0.12f, colW + pad * 0.8f, rowH,
+                  0.30f, 0.26f, 0.18f, col == i ? 0.45f : 0.20f);
 
         for (k = -half; k <= half; k++)
         {
@@ -1035,12 +1157,18 @@ static void Nu_DrawComposer(int px)
             int idx = ((sel + k) % total + total) % total;
             int on  = (k == 0);
             const char* label = isPhrase ? ShNetMemo_Phrase(idx)
-                              : isEmote  ? (idx == 0 ? "(no emote)" : ShNetMemo_Emote(idx))
+                              : isEmote  ? (idx == 0 ? "(none)" : ShNetMemo_Emote(idx))
                                          : ShNetMemo_Word(idx);
+            float tx = cx + (on ? (float)px * 0.4f : 0.0f);
 
             if (isEmote)
             {
-                /* plain tags, nothing to substitute or group */
+                if (idx > 0)
+                {
+                    const float isz = rowH * 0.92f;
+                    Nu_DrawEmoji(idx - 1, tx, cy - (isz - (float)px) * 0.5f, isz, on ? 1.0f : 0.55f);
+                    tx += isz + (float)px * 0.35f;
+                }
             }
             else if (isPhrase)
             {
@@ -1071,7 +1199,7 @@ static void Nu_DrawComposer(int px)
                 }
             }
 
-            Nu_DrawText(label, cx + (on ? (float)px * 0.5f : 0.0f), cy, px,
+            Nu_DrawText(label, tx, cy, isEmote ? (int)((float)px * 0.85f) : px,
                         on ? 0.92f : 0.46f,
                         on ? 0.88f : 0.45f,
                         on ? 0.72f : 0.43f, on ? 1.0f : 0.85f);
@@ -1081,14 +1209,132 @@ static void Nu_DrawComposer(int px)
 
     ty += rowH * (float)NU_COMPOSER_ROWS + rowH * 0.4f;
     ShNetMemo_ComposerPreview(buf, (int)sizeof(buf));
-    Nu_DrawTextCentered(buf, x + w * 0.5f, ty, (int)((float)px * 1.3f),
-                        0.88f, 0.84f, 0.62f, 1.0f);
-    ty += rowH * 1.4f;
-    Nu_DrawTextCentered(col == 0 ? "Up/Down choose     Enter next     Cancel (X) close"
-                      : col == 1 ? "Up/Down word     Left/Right column     Enter next     Cancel (X) close"
-                                 : "Up/Down emote     Left back     Enter leave it     Cancel (X) close",
-                        x + w * 0.5f, ty, (int)((float)px * 0.9f),
-                        0.42f, 0.42f, 0.40f, 1.0f);
+    Nu_DrawEmojiLine(ShNetMemo_ComposerEmoji(), buf, x + w * 0.5f, ty + rowH * 0.3f, (int)((float)px * 1.3f),
+                     0.88f, 0.84f, 0.62f);
+    ty += rowH * 2.0f;
+
+    s_cmp.leaveW = w * 0.36f;
+    s_cmp.leaveH = rowH * 1.35f;
+    s_cmp.leaveX = x + (w - s_cmp.leaveW) * 0.5f;
+    s_cmp.leaveY = ty;
+    Nu_FillPx(s_cmp.leaveX, s_cmp.leaveY, s_cmp.leaveW, s_cmp.leaveH, 0.40f, 0.12f, 0.09f, 0.90f);
+    Nu_DrawTextCentered("Leave Message", x + w * 0.5f, s_cmp.leaveY + (s_cmp.leaveH - (float)px) * 0.5f, px,
+                        0.98f, 0.93f, 0.86f, 1.0f);
+    ty += rowH * 1.8f;
+
+    Nu_DrawTextCentered("Click or tap an entry, wheel or drag a column to scroll.  Enter next, Cancel close",
+                        x + w * 0.5f, ty, (int)((float)px * 0.85f), 0.42f, 0.42f, 0.40f, 1.0f);
+    s_cmp.valid = 1;
+}
+
+/* The composer for a mouse or a finger, once a frame from the game while it is
+ * open (the layout is the last frame's). A press inside a column that moves
+ * more than half a row is a drag and scrolls that column a row per row; one
+ * that does not is a tap, acted on at the release: the close box closes, the
+ * button leaves the message, an entry is picked (the one already picked moves
+ * on to the next column, or leaves the message from the last). */
+void ShNetUi_ComposerPointer(void)
+{
+    static int   s_prevHeld, s_dragCol = -1, s_dragApplied, s_dragging, s_pressOk;
+    static float s_pressX, s_pressY;
+    float        nx, ny, mx, my;
+    int          held, pressed, released, have, c, notches;
+
+    if (!ShNetMemo_ComposerActive() || !s_cmp.valid)
+    {
+        s_prevHeld = Pc_MouseCursor_LeftHeld();
+        s_dragCol  = -1;
+        return;
+    }
+    Pc_MouseCursor_Show();
+
+    have     = Pc_MouseCursor_ViewportPos(&nx, &ny);
+    held     = Pc_MouseCursor_LeftHeld();
+    pressed  = Pc_MouseCursor_LeftClicked();
+    released = s_prevHeld && !held;
+    s_prevHeld = held;
+    mx = nx * s_vpW;
+    my = ny * s_vpH;
+
+#define NU_CMP_COL_AT(px_, py_, out_)                                                                          \
+    do {                                                                                                       \
+        int q_;                                                                                                \
+        (out_) = -1;                                                                                           \
+        for (q_ = 0; q_ < 3; q_++)                                                                             \
+            if ((px_) >= s_cmp.colX[q_] && (px_) < s_cmp.colX[q_] + s_cmp.colW[q_] &&                          \
+                (py_) >= s_cmp.listTop && (py_) < s_cmp.listTop + s_cmp.rowH * (float)NU_COMPOSER_ROWS)        \
+                (out_) = q_;                                                                                   \
+    } while (0)
+
+    notches = Pc_MouseCursor_WheelNotches();
+    if (notches && have)
+    {
+        NU_CMP_COL_AT(mx, my, c);
+        ShNetMemo_ComposerStep(c >= 0 ? c : ShNetMemo_ComposerColumn(), -notches);
+    }
+
+    if (pressed && have)
+    {
+        s_pressOk     = 1;
+        s_pressX      = mx;
+        s_pressY      = my;
+        s_dragging    = 0;
+        s_dragApplied = 0;
+        NU_CMP_COL_AT(mx, my, s_dragCol);
+    }
+    if (s_pressOk && held && have && s_dragCol >= 0)
+    {
+        const float dy = s_pressY - my;
+        if (!s_dragging && (dy > s_cmp.rowH * 0.5f || dy < -s_cmp.rowH * 0.5f))
+            s_dragging = 1;
+        if (s_dragging)
+        {
+            const int steps = (int)(dy / s_cmp.rowH + (dy >= 0.0f ? 0.5f : -0.5f));
+            if (steps != s_dragApplied)
+            {
+                ShNetMemo_ComposerStep(s_dragCol, steps - s_dragApplied);
+                s_dragApplied = steps;
+            }
+        }
+    }
+    if (s_pressOk && released)
+    {
+        const float x = have ? mx : s_pressX, y = have ? my : s_pressY;
+        s_pressOk = 0;
+        if (!s_dragging)
+        {
+            if (x >= s_cmp.closeX && x < s_cmp.closeX + s_cmp.closeS && y >= s_cmp.closeY &&
+                y < s_cmp.closeY + s_cmp.closeS)
+            {
+                ShNetMemo_ComposerClose();
+            }
+            else if (x >= s_cmp.leaveX && x < s_cmp.leaveX + s_cmp.leaveW && y >= s_cmp.leaveY &&
+                     y < s_cmp.leaveY + s_cmp.leaveH)
+            {
+                ShNetMemo_ComposerPlace();
+            }
+            else
+            {
+                NU_CMP_COL_AT(x, y, c);
+                if (c >= 0 && c == s_dragCol)
+                {
+                    const int k = (int)((y - s_cmp.listTop) / s_cmp.rowH) - s_cmp.half;
+                    if (k == 0 && ShNetMemo_ComposerColumn() == c)
+                    {
+                        if (c < 2) ShNetMemo_ComposerSet(c + 1, ShNetMemo_ComposerIndex(c + 1));
+                        else       ShNetMemo_ComposerPlace();
+                    }
+                    else
+                    {
+                        ShNetMemo_ComposerSet(c, ShNetMemo_ComposerIndex(c) + k);
+                    }
+                }
+            }
+        }
+        s_dragging = 0;
+        s_dragCol  = -1;
+    }
+#undef NU_CMP_COL_AT
 }
 
 /* ------------------------------------------------------------------ */
@@ -1118,17 +1364,18 @@ static void Nu_DrawNearbyMemo(int px)
     y = s_vpH * 0.80f;
 
     {
-        const float tw = Nu_TextWidth(text, big);
+        const float ew = (ShNetMemo_MemoEmoji(m) >= 0) ? (float)big * 2.0f : 0.0f;
+        const float tw = Nu_TextWidth(text, big) + ew;
         const float bx = (s_vpW - tw) * 0.5f - (float)px;
         Nu_Panel(bx, y - (float)px * 0.5f, tw + (float)px * 2.0f, (float)big * 2.6f, 0.85f);
     }
 
     {
-        const int kind = m->kind & 0x0F; /* high nibble = emote */
-        Nu_DrawTextCentered(text, s_vpW * 0.5f, y, big,
-                            kind == SHNET_MARK_DEATH ? 0.80f : 0.88f,
-                            kind == SHNET_MARK_DEATH ? 0.42f : 0.84f,
-                            kind == SHNET_MARK_DEATH ? 0.40f : 0.62f, 1.0f);
+        const int kind = m->kind & 0x0F;
+        if (kind == SHNET_MARK_DEATH)
+            Nu_DrawTextCentered(text, s_vpW * 0.5f, y, big, 0.80f, 0.42f, 0.40f, 1.0f);
+        else
+            Nu_DrawEmojiLine(ShNetMemo_MemoEmoji(m), text, s_vpW * 0.5f, y, big, 0.88f, 0.84f, 0.62f);
     }
 
     if ((m->kind & 0x0F) == SHNET_MARK_MEMO)
@@ -2172,6 +2419,10 @@ void ShNetUi_Draw(void)
     if (drawComposer)
     {
         Nu_DrawComposer(px);
+    }
+    else
+    {
+        s_cmp.valid = 0;
     }
     /* The co-op menu is drawn by pc_coop_screen.c with the game's own
      * primitives now; the GL drawer below is kept for reference. */

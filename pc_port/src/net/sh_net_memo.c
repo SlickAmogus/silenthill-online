@@ -26,7 +26,7 @@
 
 /* Reading distance. Close enough that you have to walk up to a marker, far
  * enough that you do not have to stand exactly on it. */
-#define MEMO_READ_DIST Q12(1.6f)
+#define MEMO_READ_DIST Q12(0.8f)
 
 /* How long "Message left." stays up after a placement. */
 #define MEMO_PLACED_FRAMES 150
@@ -129,14 +129,9 @@ void ShNetMemo_Text(const ShNetMemo* m, char* out, int cap)
                  m->owner[0] ? m->owner : "Someone");
         return;
     default:
-    {
-        const char* emote = ShNetMemo_Emote((m->kind >> 4) & 0x0F);
-        char        body[96];
-        ShNetMemo_Format((int)m->phraseA, (int)m->wordA, body, (int)sizeof(body));
-        if (emote && emote[0]) snprintf(out, (size_t)cap, "%s  %s", emote, body);
-        else                   snprintf(out, (size_t)cap, "%s", body);
+        /* The emoji is a picture; the overlay draws it beside this text. */
+        ShNetMemo_Format((int)m->phraseA, (int)m->wordA, out, cap);
         return;
-    }
     }
 }
 
@@ -196,13 +191,14 @@ int ShNetMemo_NearestReadable(void)
 /* ------------------------------------------------------------------ */
 
 static int s_active;
+void ShNetMemo_ComposerPlace(void);
 static int s_col;      /* 0 = phrase, 1 = word, 2 = emote */
 static int s_phrase;
 static int s_word;
-static int s_emote;    /* index into s_emotes; 0 = none */
+static int s_emote;    /* 0 = none, else emoji s_emote - 1 */
 static int s_placedTimer;
 
-#define EMOTE_COUNT ((int)(sizeof(s_emotes) / sizeof(s_emotes[0])))
+#define EMOTE_COUNT (SHNET_EMOJI_COUNT + 1)
 
 int ShNetMemo_EmoteCount(void)
 {
@@ -211,7 +207,19 @@ int ShNetMemo_EmoteCount(void)
 
 const char* ShNetMemo_Emote(int i)
 {
-    return (i >= 0 && i < EMOTE_COUNT) ? s_emotes[i] : "";
+    return (i > 0 && i < EMOTE_COUNT) ? s_emoji[i - 1] : "";
+}
+
+int ShNetMemo_ComposerEmoji(void)
+{
+    return s_emote - 1;
+}
+
+int ShNetMemo_MemoEmoji(const ShNetMemo* m)
+{
+    if (!m || (m->kind & 0x0F) != SHNET_MARK_MEMO)
+        return -1;
+    return ShNetMemo_EmojiOf(m->kind, m->phraseB, m->wordB);
 }
 
 int ShNetMemo_ComposerEmote(void)
@@ -279,10 +287,67 @@ int ShNetMemo_ComposerWord(void)
 
 void ShNetMemo_ComposerPreview(char* out, int cap)
 {
-    char body[96];
-    ShNetMemo_Format(s_phrase, s_word, body, (int)sizeof(body));
-    if (s_emote > 0) snprintf(out, (size_t)cap, "%s  %s", s_emotes[s_emote], body);
-    else             snprintf(out, (size_t)cap, "%s", body);
+    ShNetMemo_Format(s_phrase, s_word, out, cap);
+}
+
+static int Memo_ColCount(int col)
+{
+    return col == 0 ? PHRASE_COUNT : col == 1 ? WORD_COUNT : EMOTE_COUNT;
+}
+
+static int* Memo_ColSel(int col)
+{
+    return col == 0 ? &s_phrase : col == 1 ? &s_word : &s_emote;
+}
+
+int ShNetMemo_ComposerIndex(int col)
+{
+    return *Memo_ColSel(col < 0 ? 0 : col > 2 ? 2 : col);
+}
+
+int ShNetMemo_ComposerCount(int col)
+{
+    return Memo_ColCount(col < 0 ? 0 : col > 2 ? 2 : col);
+}
+
+void ShNetMemo_ComposerSet(int col, int idx)
+{
+    int n;
+    if (!s_active || col < 0 || col > 2)
+        return;
+    n = Memo_ColCount(col);
+    s_col = col;
+    *Memo_ColSel(col) = ((idx % n) + n) % n;
+}
+
+void ShNetMemo_ComposerStep(int col, int delta)
+{
+    if (col < 0 || col > 2)
+        return;
+    ShNetMemo_ComposerSet(col, *Memo_ColSel(col) + delta);
+}
+
+void ShNetMemo_ComposerPlace(void)
+{
+    const VECTOR3* p;
+    if (!s_active)
+        return;
+    p = &g_SysWork.playerWork.player.position;
+    if (ShNet_PlaceMarker(SHNET_MARK_MEMO,
+                          (int)p->vx, (int)p->vy, (int)p->vz,
+                          (short)g_SysWork.playerWork.player.rotation.vy,
+                          (unsigned short)s_phrase, (unsigned short)s_word,
+                          SHNET_MEMO_NONE, (unsigned short)(s_emote > 0 ? s_emote - 1 : SHNET_MEMO_NONE)))
+    {
+        char text[96];
+        ShNetMemo_Format(s_phrase, s_word, text, (int)sizeof(text));
+        SH_DBG("[NET] left a message: \"%s\" [%s]", text, s_emote > 0 ? s_emoji[s_emote - 1] : "no emoji");
+        s_placedTimer = MEMO_PLACED_FRAMES;
+        /* The server assigns the id and hands it back in the next marker
+         * list, so ask for one instead of guessing. */
+        ShNet_RequestMemos();
+    }
+    s_active = 0;
 }
 
 int ShNetMemo_JustPlaced(void)
@@ -361,22 +426,7 @@ void ShNetMemo_ComposerInput(int up, int down, int left, int right,
         }
         else
         {
-            const VECTOR3* p = &g_SysWork.playerWork.player.position;
-            if (ShNet_PlaceMarker(SHNET_MARK_MEMO | (s_emote << 4),
-                                  (int)p->vx, (int)p->vy, (int)p->vz,
-                                  (short)g_SysWork.playerWork.player.rotation.vy,
-                                  (unsigned short)s_phrase, (unsigned short)s_word,
-                                  0xFFFF, 0xFFFF))
-            {
-                char text[96];
-                ShNetMemo_Format(s_phrase, s_word, text, (int)sizeof(text));
-                SH_DBG("[NET] left a message: \"%s %s\"", s_emotes[s_emote], text);
-                s_placedTimer = MEMO_PLACED_FRAMES;
-                /* The server assigns the id and hands it back in the next
-                 * marker list, so ask for one instead of guessing. */
-                ShNet_RequestMemos();
-            }
-            s_active = 0;
+            ShNetMemo_ComposerPlace();
         }
     }
 }
