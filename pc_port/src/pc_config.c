@@ -174,7 +174,10 @@ s_PcConfig g_PcConfig = {
     .touchLookSensitivity = 1.0f,
     .renderScale         = 1.0f,
     .lowEndMode          = 0,
-    .oneButtonCombat      = 0, /* off: Aim holds, a separate Fire button shoots */
+    /* On on a phone: Aim also fires. Holding Aim while reaching for a
+     * separate Fire button, and turning the free-aim cameras at the same
+     * time, is near impossible on glass. */
+    .oneButtonCombat      = 1,
     .altButtonSprint     = 0, /* alt cams sprint from the run control only (off = full stick push also sprints) */
     .immersiveFpsHeadTracking = 0, /* FPS view follows head-bone rotation (experiment, off by default) */
     .control2d               = 0, /* 2D screen-relative movement (experiment, off by default) */
