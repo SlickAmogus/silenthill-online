@@ -99,8 +99,10 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #else
 #define COOP_MOBILE 0
 #endif
-/* No launcher on these to set the server and name, so the menu has a page. */
-#define COOP_HAS_SETTINGS (COOP_MOBILE || COOP_WEB)
+/* The server, the living world switch and the name, in the game itself: the
+ * only place to set them on a phone or in a browser, and on PC the same
+ * settings the launcher's Online page writes, changed without leaving. */
+#define COOP_HAS_SETTINGS 1
 
 #define COOP_DEFAULT_SERVER "server.sh1pc.com"
 
