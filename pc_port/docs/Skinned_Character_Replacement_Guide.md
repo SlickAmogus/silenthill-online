@@ -370,6 +370,7 @@ flashlight_x=16
 | `gun_pitch` | Tips the barrel toward the front or back of the hand, in degrees, round the middle of the grip. |
 | `gun_yaw` | Swings the barrel toward or away from the leg, in degrees, round the middle of the grip. |
 | `hand_relax` | How far the fingers close when the hands are empty, as a percent of the fist they make round a weapon (default 0, 0 to 100). Use it on a model whose rest pose has the fingers spread wide. |
+| `voice` | Whose lines the multiplayer voice wheel speaks for this character: `harry`, `cybil`, `kaufmann`, `lisa` or `dahlia`. Left out, a voice of the character's gender (`female`) is picked from the file name, the same one every session. |
 
 The game already moves weapons into the model's own closed fist (the log's
 `right fist offset` line); these settings fine-tune that. Rotations apply
