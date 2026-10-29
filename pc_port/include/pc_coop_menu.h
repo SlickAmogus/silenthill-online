@@ -52,9 +52,13 @@ enum
     PC_COOP_VIEW_MENU = 0,
     PC_COOP_VIEW_SETTINGS,
     PC_COOP_VIEW_ROOMS,
-    PC_COOP_VIEW_PLAYERS
+    PC_COOP_VIEW_PLAYERS,
+    PC_COOP_VIEW_SAVES   /* the Start From list: two-line entries, newest first */
 };
 int         Pc_CoopMenu_View(void);
+/* One entry of the Start From list (row 0 is New Game): where, the time on
+ * the right, and the details line. */
+void        Pc_CoopMenu_SaveEntry(int row, char* line1, int cap1, char* line2, int cap2, char* right, int capR);
 int         Pc_CoopMenu_IsTopLevel(void); /* root / in-game page: Esc closes */
 
 /* A pointer press confirms its row on release. A renderer that turned the
