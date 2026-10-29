@@ -140,5 +140,52 @@ namespace SilentHillPC_Launcher
                 try { Directory.Delete(tmpDir, true); } catch { }
             }
         }
+
+        /// <summary>The Additional Characters mods the Essential list installed whose
+        /// catalog zip has changed since, so a pack that gains characters reaches everyone
+        /// who has it. One installed before the sha256 was kept is taken as current (and
+        /// recorded, so the next change is seen).</summary>
+        public static List<EssentialMod> StaleCharacters(ModManager mgr, EssentialCatalog cat)
+        {
+            var stale = new List<EssentialMod>();
+            bool adopted = false;
+            foreach (var em in cat.Mods.Where(m => m.IsCharacter && !string.IsNullOrEmpty(m.Sha256)))
+            {
+                var inst = mgr.Mods.FirstOrDefault(m => string.Equals(m.EssentialId, em.Id, StringComparison.OrdinalIgnoreCase));
+                if (inst == null) continue;
+                if (string.IsNullOrEmpty(inst.EssentialSha)) { inst.EssentialSha = em.Sha256; adopted = true; }
+                else if (!string.Equals(inst.EssentialSha, em.Sha256, StringComparison.OrdinalIgnoreCase)) stale.Add(em);
+            }
+            if (adopted) mgr.SaveState();
+            return stale;
+        }
+
+        /// <summary>Download those again and deploy them. Returns the names updated; one
+        /// that fails keeps its old sha256, so the next game update tries it again.</summary>
+        public static List<string> UpdateCharacters(ModManager mgr, List<EssentialMod> stale, bool looseFiles,
+                                                    List<string> failures, Action<int, int, string> report,
+                                                    Func<bool> cancelled)
+        {
+            var done = new List<EssentialMod>();
+            foreach (var em in stale)
+            {
+                if (cancelled()) break;
+                try
+                {
+                    if (Install(em, mgr, report, cancelled) != null) done.Add(em);
+                }
+                catch (Exception ex) { failures.Add(em.Name + ": " + ex.Message); }
+            }
+            if (done.Count == 0) return new List<string>();
+            mgr.Scan();
+            foreach (var em in done)
+            {
+                var m = mgr.Mods.FirstOrDefault(x => string.Equals(x.EssentialId, em.Id, StringComparison.OrdinalIgnoreCase));
+                if (m != null) m.EssentialSha = em.Sha256;
+            }
+            mgr.SaveState();
+            mgr.Apply(looseFiles, report, cancelled);
+            return done.Select(em => em.Name).ToList();
+        }
     }
 }
