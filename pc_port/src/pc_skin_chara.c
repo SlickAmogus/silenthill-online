@@ -293,6 +293,8 @@ typedef struct
 static PcSkinChara s_chara[PC_SKIN_MAX_CHARA];
 /* The play-as Harry swap's file base (HERO_CJ), or empty for HERO itself. */
 static char        s_heroFile[32];
+static int         s_drawMode;     /* Pc_SkinChara_SetDrawSkin */
+static char        s_drawFile[32];
 static int         s_charaCount;
 
 /* ---------------------------------------------------------------- math */
@@ -2024,6 +2026,12 @@ void Pc_SkinChara_SetHeroFile(const char* file)
     snprintf(s_heroFile, sizeof(s_heroFile), "%s", file != NULL ? file : "");
 }
 
+void Pc_SkinChara_SetDrawSkin(int mode, const char* file)
+{
+    s_drawMode = mode;
+    snprintf(s_drawFile, sizeof(s_drawFile), "%s", (mode == 1 && file != NULL) ? file : "");
+}
+
 void* Pc_SkinChara_Begin(s_Skeleton* skel, const void* boneCoords)
 {
     const s_ModelHeader* hdr;
@@ -2035,6 +2043,29 @@ void* Pc_SkinChara_Begin(s_Skeleton* skel, const void* boneCoords)
 
     if (!g_PcConfig.allowLooseFiles || skel == NULL || skel->bones_4 == NULL)
         return NULL;
+
+    /* A partner's body (sh_net_ghost.c) is the chara pool's hero copy, which
+     * the model search below does not know: it wears the file the partner
+     * named if this machine has it, or nothing, never the local player's. */
+    if (s_drawMode != 0)
+    {
+        if (s_drawMode == 2 || s_drawFile[0] == '\0')
+            return NULL;
+        for (i = 0; i < (int)(sizeof(s_restDefs) / sizeof(s_restDefs[0])); i++)
+            if (strcmp("HERO", s_restDefs[i].name) == 0)
+                def = &s_restDefs[i];
+        if (def == NULL)
+            return NULL;
+        snprintf(path, sizeof(path), "gamedata/load/CHARA/%s", s_drawFile);
+        ch = Skin_Entry("HERO", s_drawFile, path, def);
+        if (ch == NULL || ch->state != 1 || !Skin_PickInstance(ch, boneCoords))
+            return NULL;
+        memset(ch->have, 0, sizeof(ch->have));
+        memset(ch->lit, 0, sizeof(ch->lit));
+        ch->isPlayer = 0;
+        return ch;
+    }
+
     hdr = skel->bones_4->bone.modelInfo.modelHdr;
     if (hdr == NULL)
         return NULL;

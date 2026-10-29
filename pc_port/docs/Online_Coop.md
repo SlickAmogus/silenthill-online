@@ -174,6 +174,10 @@ selection back.
   strength.
 - **Weapons.** Partners are drawn with the weapon they hold and heard with
   its sounds, whatever you hold yourself.
+- **Character mods.** A partner playing as a modded character (a HERO_*
+  model in load/CHARA, such as the Additional Characters mods) is drawn in
+  it only if you have the same file; otherwise you see them as Harry. The
+  fourteen built-in characters always show as themselves.
 - **Cutscenes.** When a player starts a scene, everyone else on the map is
   brought into it: you are placed where the scene began and it plays for
   you too, once (a scene already played on this map never pulls you back).
