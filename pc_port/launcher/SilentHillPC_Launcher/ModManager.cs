@@ -23,6 +23,7 @@ namespace SilentHillPC_Launcher
         public string     Description;
         public string     ModInfoId;   // "id" from the mod's modinfo.txt, if it ships one
         public string     EssentialId; // catalog id, when the Essential QoL list installed it
+        public string     EssentialSha; // sha256 of the catalog zip it was installed from
         public string     LibraryPath; // current on-disk path (folder / .zip / .rar / .7z; may be *.disabled)
         public bool       IsArchive;   // texture mod backed by a .zip/.rar/.7z (vs a loose folder)
         public bool       IsRar;       // .rar: extracted via UnRAR.dll
@@ -73,6 +74,7 @@ namespace SilentHillPC_Launcher
         [DataMember] public string Author;
         [DataMember] public string Description;
         [DataMember] public string EssentialId;
+        [DataMember] public string EssentialSha;
     }
 
     [DataContract]
@@ -525,7 +527,7 @@ namespace SilentHillPC_Launcher
             if (saved.TryGetValue(name, out s))
             {
                 e.DisplayName = s.DisplayName; e.Author = s.Author; e.Description = s.Description;
-                e.EssentialId = s.EssentialId;
+                e.EssentialId = s.EssentialId; e.EssentialSha = s.EssentialSha;
             }
             return e;
         }
@@ -559,7 +561,7 @@ namespace SilentHillPC_Launcher
             if (saved.TryGetValue(name, out s))
             {
                 e.Enabled = s.Enabled; e.DisplayName = s.DisplayName; e.Author = s.Author; e.Description = s.Description;
-                e.EssentialId = s.EssentialId;
+                e.EssentialId = s.EssentialId; e.EssentialSha = s.EssentialSha;
             }
             return e;
         }
@@ -589,7 +591,7 @@ namespace SilentHillPC_Launcher
                 Mods = Mods.Select(m => new ModStateDto
                 {
                     Name = m.Name, Enabled = m.Enabled, DisplayName = m.DisplayName, Author = m.Author,
-                    Description = m.Description, EssentialId = m.EssentialId
+                    Description = m.Description, EssentialId = m.EssentialId, EssentialSha = m.EssentialSha
                 }).ToList(),
                 DllWarningAck = DllWarningAck
             };

@@ -1872,6 +1872,9 @@ public partial class Form1 : Form
                 SetText(btnUpdate, "Check for Updates");
                 lblUpdateStatus.ForeColor = Color.LightGray;
                 SetText(lblUpdateStatus, "Up to date ({0}).", plan.RemoteVersion);
+                /* The update online players take, before Play: their
+                 * Additional Characters follow it, as after Check for Updates. */
+                await UpdateCharacterModsAsync();
             }
             return true;
         }
@@ -1955,6 +1958,7 @@ public partial class Form1 : Form
                 lblUpdateStatus.ForeColor = Color.LightGray;
                 SetText(lblUpdateStatus, "Up to date ({0}).", plan.RemoteVersion);
                 MessageBox.Show(this, Loc.T("Update complete!"), Loc.T("Update"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                await UpdateCharacterModsAsync();
             }
             else
             {
@@ -2045,6 +2049,7 @@ public partial class Form1 : Form
                 SetText(lblUpdateStatus, "Build {0} installed.", plan.RemoteVersion);
                 MessageBox.Show(this, Loc.F("Build {0} installed!", plan.RemoteVersion), Loc.T("Download Build"),
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
+                await UpdateCharacterModsAsync();
                 SilentAutoCheckForUpdates(); // refresh the update indicator
             }
             else
@@ -2075,6 +2080,45 @@ public partial class Form1 : Form
     // Shared apply: a SEPARATE launcher self-update confirm (only when the
     // incoming launcher is strictly newer), an optional file-list confirm, then
     // the download/install with progress. Returns true if anything was installed.
+    /// <summary>After a build is installed: the Additional Characters packs installed
+    /// from the Essential QoL list whose catalog zip has changed are downloaded again and
+    /// deployed, so a pack that gains characters reaches everyone who has it. Quiet when
+    /// there is nothing to do or the catalog can't be reached.</summary>
+    private async Task UpdateCharacterModsAsync()
+    {
+        try
+        {
+            var mgr = new ModManager(AppDomain.CurrentDomain.BaseDirectory, config);
+            mgr.Scan();
+            if (!mgr.Mods.Any(m => !string.IsNullOrEmpty(m.EssentialId))) return;
+            var cat = await EssentialMods.LoadAsync(mgr.ModsDir, System.Threading.CancellationToken.None);
+            if (cat == null) return;
+            var stale = EssentialMods.StaleCharacters(mgr, cat);
+            if (stale.Count == 0) return;
+
+            var updated = new List<string>();
+            var failures = new List<string>();
+            bool loose = config.Get("allow_loose_files", "0") == "1";
+            ProgressDialog.RunCancellable(this, Loc.T("Updating characters…"),
+                (r, cancelled) => { updated = EssentialMods.UpdateCharacters(mgr, stale, loose, failures, r, cancelled); });
+            if (updated.Count == 0 && failures.Count == 0) return;
+            string msg = updated.Count > 0
+                ? Loc.T("Your Additional Characters were updated:") + "\n\n  " + string.Join("\n  ", updated)
+                : "";
+            if (failures.Count > 0)
+                msg += (msg.Length > 0 ? "\n\n" : "") +
+                       Loc.T("These could not be updated, and will be tried again with the next update:") +
+                       "\n\n  " + string.Join("\n  ", failures);
+            MessageBox.Show(this, msg, Loc.T("Additional Characters"), MessageBoxButtons.OK,
+                failures.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, Loc.F("Updating the Additional Characters failed:\n\n{0}", ex.Message),
+                Loc.T("Additional Characters"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private async Task<bool> RunApplyAsync(string installDir, UpdateChecker.UpdatePlan plan, bool showFileConfirm)
     {
         var launcherEntry = plan.LauncherEntry;
