@@ -247,11 +247,17 @@ static void Coop_BeginEdit(int kind)
     s_editLen      = (int)strlen(s_editBuf);
     s_editKind     = kind;
     s_editHaveKeys = 0; /* swallow the press that opened the field */
-    s_editStartedText = !SDL_IsTextInputActive();
+    /* On a phone, starting text input is also what raises the on-screen
+     * keyboard, and SDL keeps calling text input "active" after the keyboard
+     * was dismissed (the Back key, a tap elsewhere), so skipping the call when
+     * it already counted as active left the field with no keyboard at all. */
+    s_editStartedText = SDL_HasScreenKeyboardSupport() || !SDL_IsTextInputActive();
     if (s_editStartedText)
     {
         SDL_StartTextInput();
     }
+    SH_DBG("[COOP] text field %d opened (screen keyboard %s)", kind,
+           SDL_HasScreenKeyboardSupport() ? "raised" : "not used");
 }
 
 static void Coop_EndEdit(void)
@@ -323,11 +329,24 @@ static void Coop_CommitEdit(void)
         PcConfig_SaveKeyValue("online_server", g_PcConfig.onlineServer);
         ShNet_ApplySettings();
     }
-    else if (s_editKind == COOP_EDIT_NAME && s_editLen > 0)
+    else if (s_editKind == COOP_EDIT_NAME)
     {
-        SDL_strlcpy(g_PcConfig.onlineName, s_editBuf, sizeof(g_PcConfig.onlineName));
-        PcConfig_SaveKeyValue("online_name", g_PcConfig.onlineName);
-        ShNet_ApplySettings();
+        /* Spaces at either end come free with a phone keyboard's word
+         * suggestions; the name is what is between them. */
+        char  name[sizeof(s_editBuf)];
+        char* p = s_editBuf;
+        int   n;
+        while (*p == ' ') p++;
+        SDL_strlcpy(name, p, sizeof(name));
+        n = (int)strlen(name);
+        while (n > 0 && name[n - 1] == ' ') name[--n] = '\0';
+        if (n > 0)
+        {
+            SDL_strlcpy(g_PcConfig.onlineName, name, sizeof(g_PcConfig.onlineName));
+            PcConfig_SaveKeyValue("online_name", g_PcConfig.onlineName);
+            ShNet_ApplySettings();
+            SH_DBG("[COOP] name set to \"%s\"", g_PcConfig.onlineName);
+        }
     }
     Coop_EndEdit();
 }
