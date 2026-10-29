@@ -339,6 +339,40 @@ void GameState_InGame_Update(void) // 0x80038BD4
  * (the co-op inventory): its picture is discarded, so nothing that serves
  * the picture or reads the player's look/aim input should run. */
 int g_PcSimOnly = 0;
+
+/* The co-op rule for a menu over the game (the inventory, the paper map, the
+ * options screen): the world keeps going. One sim-only step with the player's
+ * control held, its picture thrown away (the menu draws its own), the frame's
+ * flags put back. Returns 1 when the player is dead, for the menu to let go of
+ * the screen so the death and the respawn play where they can be seen. */
+int Pc_CoopMenuSim(void)
+{
+    extern int g_PcCoopGame;
+    extern int g_PcWorldDrawnThisFrame, g_PcHorPlusEnabled, g_PcWorldHorPlus;
+    extern u8  g_Player_DisableControl;
+    u8  savedDisable;
+    int savedDrawn, savedHor, savedWorldHor;
+
+    if (!g_PcCoopGame)
+    {
+        return 0;
+    }
+    savedDisable  = g_Player_DisableControl;
+    savedDrawn    = g_PcWorldDrawnThisFrame;
+    savedHor      = g_PcHorPlusEnabled;
+    savedWorldHor = g_PcWorldHorPlus;
+    g_Player_DisableControl = true;
+    g_PcSimOnly             = 1;
+    InGame_SimAndDraw();
+    g_PcSimOnly             = 0;
+    g_Player_DisableControl = savedDisable;
+    GsClearOt(0, 0, &g_OrderingTable0[g_ActiveBufferIdx]);
+    GsClearOt(0, 0, &g_OrderingTable2[g_ActiveBufferIdx]);
+    g_PcWorldDrawnThisFrame = savedDrawn;
+    g_PcHorPlusEnabled      = savedHor;
+    g_PcWorldHorPlus        = savedWorldHor;
+    return g_SysWork.playerWork.player.health <= Q12(0.0f);
+}
 #endif
 
 void InGame_SimAndDraw(void)
