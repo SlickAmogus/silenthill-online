@@ -37,6 +37,11 @@ void ShNetChat_FeedKeys(const unsigned char* ks);
 /* Y / U from the input layer. Open() brings the box up to type; CycleScope()
  * flips GLOBAL<->GAME (and opens the box if it was closed). */
 void ShNetChat_Open(void);
+/* Open for typing on a touchscreen (the touch overlay's chat button): raises
+ * the phone keyboard, or the browser's text box, and takes typing from it. */
+void ShNetChat_OpenTouch(void);
+int  ShNetChat_TouchTyping(void); /* open, from the touch button */
+int  ShNetChat_Available(void);   /* a channel to talk on: the server, or a co-op game */
 void ShNetChat_CycleScope(void);
 void ShNetChat_Close(void);
 int  ShNetChat_IsOpen(void);      /* 1 while composing (input must be swallowed) */
