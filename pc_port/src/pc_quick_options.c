@@ -1429,7 +1429,13 @@ static int qo_page_hidden(int page);
 
 static void qo_open(void)
 {
+    extern int ShNetChat_IsOpen(void);
     if (s_phase == QO_OPENING || s_phase == QO_SHOWN)
+        return;
+    /* Not over a chat line being typed: the box holds the keyboard (and on a
+     * touchscreen the overlay holds every control but its own two), so the
+     * panel would open where nothing could reach it. */
+    if (ShNetChat_IsOpen())
         return;
     s_phase      = QO_OPENING;
     s_phaseStart = SDL_GetTicks();
@@ -1474,6 +1480,16 @@ static float qo_phase_tick(void)
 {
     Uint32 age = SDL_GetTicks() - s_phaseStart;
     float  dim = 1.0f;
+
+    /* Should the panel come up over a chat line anyway, the chat gives way at
+     * once: its text input and the touch chat mode end, and the game is
+     * playable again behind the panel. */
+    {
+        extern int  ShNetChat_IsOpen(void);
+        extern void ShNetChat_Close(void);
+        if (s_phase != QO_CLOSED && ShNetChat_IsOpen())
+            ShNetChat_Close();
+    }
 
     if (s_glReady < 0)
     {
