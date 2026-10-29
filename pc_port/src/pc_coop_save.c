@@ -7,6 +7,7 @@
 #include "bodyprog/savegame.h"
 
 #include "pc_coop_save.h"
+#include "pc_config.h" /* coop_saves_dir */
 #include "sh_log.h"
 
 #include <stdio.h>
@@ -28,10 +29,26 @@
 
 extern char* g_Savegame_SaveLocationNames[];
 
-static FILE* Coop_OpenCard(int card)
+/* Folder 0 is this install's gamedata/save; folder 1 is coop_saves_dir, a
+ * single-player install's saves when the two are separate installs. */
+static const char* Coop_Dir(int dirSel)
 {
-    char path[64];
-    snprintf(path, sizeof(path), "gamedata/save/%d.MCD", card);
+    if (dirSel == 1)
+    {
+        return g_PcConfig.coopSavesDir[0] ? g_PcConfig.coopSavesDir : NULL;
+    }
+    return "gamedata/save";
+}
+
+static FILE* Coop_OpenCard(int dirSel, int card)
+{
+    char        path[320];
+    const char* dir = Coop_Dir(dirSel);
+    if (!dir)
+    {
+        return NULL;
+    }
+    snprintf(path, sizeof(path), "%s/%d.MCD", dir, card);
     return fopen(path, "rb");
 }
 
@@ -83,17 +100,18 @@ static int Coop_NewestFirst(const void* a, const void* b)
 
 int Pc_CoopSave_List(CoopSaveEntry* out, int max)
 {
-    int c, n = 0;
+    int c, n = 0, dirSel;
 
     if (!out || max <= 0)
     {
         return 0;
     }
+    for (dirSel = 0; dirSel < 2; dirSel++)
     for (c = 0; c < 8; c++)
     {
         int   files[CARD_DIR_FILES];
         int   nf, fi;
-        FILE* f = Coop_OpenCard(Coop_CardAt(c));
+        FILE* f = Coop_OpenCard(dirSel, Coop_CardAt(c));
         if (!f)
         {
             continue;
@@ -140,7 +158,7 @@ int Pc_CoopSave_List(CoopSaveEntry* out, int max)
                     char* p;
                     for (p = e->name; *p; p++) if (*p == '_') *p = ' ';
                 }
-                snprintf(e->key, sizeof(e->key), "%d.%d.%d", Coop_CardAt(c), files[fi], slot);
+                snprintf(e->key, sizeof(e->key), "%d.%d.%d.%d", dirSel, Coop_CardAt(c), files[fi], slot);
                 e->mapIdx = sg->mapIdx;
                 e->order  = hdr.saveMetadata[slot].totalSavegameCount;
             }
@@ -153,16 +171,16 @@ int Pc_CoopSave_List(CoopSaveEntry* out, int max)
 
 static int Coop_ReadKey(const char* key, s_Savegame* out)
 {
-    int                  card, dirIdx, slot, ok;
+    int                  dirSel, card, dirIdx, slot, ok;
     s_Savegame_Container sc;
     FILE*                f;
 
-    if (!key || sscanf(key, "%d.%d.%d", &card, &dirIdx, &slot) != 3 ||
+    if (!key || sscanf(key, "%d.%d.%d.%d", &dirSel, &card, &dirIdx, &slot) != 4 || dirSel < 0 || dirSel > 1 ||
         dirIdx < 1 || dirIdx > CARD_DIR_FILES || slot < 0 || slot >= MEMCARD_SAVES_COUNT_MAX)
     {
         return 0;
     }
-    f = Coop_OpenCard(card);
+    f = Coop_OpenCard(dirSel, card);
     if (!f)
     {
         SH_DBG("[COOPSAVE] card %d is gone", card);

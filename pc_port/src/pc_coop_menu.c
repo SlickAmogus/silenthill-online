@@ -412,6 +412,8 @@ static void Coop_SaveRowText(char* out, int cap)
 {
     if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
         snprintf(out, cap, "Start From:  %s", s_saves[s_loadIdx].name);
+    else if (s_saveCount == 0)
+        snprintf(out, cap, "Start From:  New Game  (no saves in gamedata/save)");
     else
         snprintf(out, cap, "Start From:  New Game");
 }
