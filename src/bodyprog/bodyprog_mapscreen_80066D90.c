@@ -215,6 +215,20 @@ void GameState_PaperMapScreen_Update(void) // 0x80066EB0
     func_800363D0();
     Game_TimerUpdate();
 
+#ifdef SH_PC_PORT
+    /* Co-op: the world keeps going under the paper map as under the inventory
+     * (Pc_CoopMenuSim); a death there presses the map closed. */
+    {
+        extern int g_PcCoopGame;
+        extern int Pc_CoopMenuSim(void);
+        if (g_PcCoopGame && g_GameWork.gameStateSteps[0] >= 1 && g_GameWork.gameStateSteps[0] <= 2 &&
+            Pc_CoopMenuSim())
+        {
+            g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.cancel;
+        }
+    }
+#endif
+
     switch (g_GameWork.gameStateSteps[0])
     {
         case 0:

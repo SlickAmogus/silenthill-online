@@ -401,11 +401,20 @@ static void Coop_RefreshSaves(void)
 {
     s_saveCount = Pc_CoopSave_List(s_saves, (int)(sizeof(s_saves) / sizeof(s_saves[0])));
     s_loadIdx   = -1;
+    SH_DBG("[COOPSAVE] %d save(s) offered for Start From", s_saveCount);
+}
+
+/* New Game, then the saves newest first; wraps both ways. */
+static void Coop_StepSave(int dir)
+{
+    s_loadIdx += dir;
+    if (s_loadIdx >= s_saveCount) s_loadIdx = -1;
+    if (s_loadIdx < -1)           s_loadIdx = s_saveCount - 1;
 }
 
 static void Coop_CycleSave(void)
 {
-    s_loadIdx = (s_loadIdx + 1 >= s_saveCount) ? -1 : s_loadIdx + 1;
+    Coop_StepSave(1);
 }
 
 static void Coop_SaveRowText(char* out, int cap)
@@ -413,9 +422,10 @@ static void Coop_SaveRowText(char* out, int cap)
     if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
         snprintf(out, cap, "Start From:  %s", s_saves[s_loadIdx].name);
     else if (s_saveCount == 0)
-        snprintf(out, cap, "Start From:  New Game  (no saves in gamedata/save)");
+        snprintf(out, cap, "Start From:  New Game  (no saves found in gamedata/save)");
     else
-        snprintf(out, cap, "Start From:  New Game");
+        snprintf(out, cap, "Start From:  New Game  (%d save%s: arrows or Enter to pick)", s_saveCount,
+                 s_saveCount == 1 ? "" : "s");
 }
 
 void Pc_CoopMenu_Open(void)
@@ -1554,7 +1564,46 @@ void Pc_CoopMenu_CancelPress(void)
     s_pressRow = -1;
 }
 
-void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
+/* Left/right on a setting row: the same change Enter makes, and the other
+ * way for the rows that have one. 1 when the row took it. */
+static int Coop_Adjust(int dir)
+{
+    switch (s_page)
+    {
+    case COOP_PAGE_HOST_SETUP:
+        switch (s_sel)
+        {
+        case 0: if (!COOP_WEB) s_hostMode = (s_hostMode + 3 + dir) % 3; return 1;
+        case 1: s_setMaxPlayers += dir; if (s_setMaxPlayers > 4) s_setMaxPlayers = 2; if (s_setMaxPlayers < 2) s_setMaxPlayers = 4; return 1;
+        case 2: s_setPublic = !s_setPublic; return 1;
+        case 3: s_setLiving = !s_setLiving; return 1;
+        case 4: s_setFps = (s_setFps == 60) ? 30 : 60; return 1;
+        case 5: Coop_StepSave(dir); return 1;
+        default: return 0;
+        }
+    case COOP_PAGE_SPLIT_ONLINE:
+        switch (s_sel)
+        {
+        case 0: s_setMaxPlayers += dir; if (s_setMaxPlayers > 4) s_setMaxPlayers = 2; if (s_setMaxPlayers < 2) s_setMaxPlayers = 4; return 1;
+        case 1: s_setPublic = !s_setPublic; return 1;
+        case 2: s_setLiving = !s_setLiving; return 1;
+        case 3: s_setFps = (s_setFps == 60) ? 30 : 60; return 1;
+        default: return 0;
+        }
+    case COOP_PAGE_SPLIT:
+        switch (s_sel)
+        {
+        case 0: case 1: case 2: case 3: Coop_Confirm(); return 1; /* the same cycle Enter makes */
+        case 4: Coop_StepSave(dir); return 1;
+        case 5: s_splitOnline = (s_splitOnline + 3 + dir) % 3; return 1;
+        default: return 0;
+        }
+    default:
+        return 0;
+    }
+}
+
+void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int right)
 {
     int rows;
     if (!s_open)
@@ -1640,6 +1689,11 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm)
     {
         s_sel = (s_sel + 1) % rows;
         Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
+    }
+    if ((left || right) && Coop_Adjust(right ? 1 : -1))
+    {
+        Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
+        return;
     }
     if (confirm)
     {

@@ -2289,6 +2289,22 @@ void GameState_Options_Update(void) // 0x801E2D44
         Game_TimerUpdate();
     }
 
+#ifdef SH_PC_PORT
+    /* Co-op: the world keeps going under the options screen opened from the
+     * game, as under the inventory (Pc_CoopMenuSim); a death there backs the
+     * menu out, a level a frame, until it is gone. */
+    {
+        extern int g_PcCoopGame;
+        extern int Pc_CoopMenuSim(void);
+        const s32  st = g_GameWork.gameStateSteps[0];
+        if (g_PcCoopGame && g_GameWork.gameStatePrev == GameState_InGame &&
+            st != OptionsMenuState_EnterMainOptions && st != OptionsMenuState_Leave && Pc_CoopMenuSim())
+        {
+            g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.cancel;
+        }
+    }
+#endif
+
     // Handle options menu state.
     switch (g_GameWork.gameStateSteps[0])
     {

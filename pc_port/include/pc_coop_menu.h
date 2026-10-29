@@ -29,7 +29,7 @@ int  Pc_CoopMenu_IsOpen(void);
 int  Pc_CoopMenu_InGame(void);      /* 1 while the in-game M menu is up */
 
 /* One frame of input, edges already derived by the caller. */
-void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm);
+void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int right);
 
 /* Text entry (Join by IP / room code). The overlay feeds the keyboard state to
  * FeedKeys every frame while Editing() is true; the field commits on Enter. */
