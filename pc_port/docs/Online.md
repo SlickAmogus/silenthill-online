@@ -89,7 +89,10 @@ map.
 
 ### 2. Point the game at it
 
-In `config.cfg`:
+In the game: **Multiplayer**, **Multiplayer Settings** on the title screen sets
+the Living World IP (the server), turns the living world on or off, sets your
+name and restarts the connection; changes apply at once and are saved. On PC
+the launcher's Online page sets the same values. By hand, in `config.cfg`:
 
 ```
 online_enabled = 1
