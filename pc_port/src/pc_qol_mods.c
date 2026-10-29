@@ -11,12 +11,17 @@
  *   - everything else is a load/ overlay, extracted into gamedata/load/
  *     (fsqueue reads loose files only, never from a zip), and loose-file
  *     support is switched on, which the web build defaults off.
- * Installed ids are kept in gamedata/qol_installed.txt. Unticking an
+ * Mods the catalog marks "kind": "character" (the HERO_* swaps) fold into one
+ * row of the list that opens a page of their own, so a long run of them does
+ * not bury the rest. Lists scroll by wheel, keys or drag; a tap or click acts
+ * on release, and not at all if it became a drag.
+ * Installed ids are kept in gamedata/qol_installed.txt, each with the sha256
+ * of the zip it came from. The first time a new build reaches the title, an
+ * installed character mod whose catalog zip has changed is downloaded again,
+ * so a pack that gains characters reaches everyone who has it. Unticking an
  * installed mod removes it: the catalog lists, per mod, the files it puts
  * under gamedata/, so removal needs neither the zip nor a record made at
  * install time (mods installed before removal existed have none).
- * Character mods ("kind": "character" in the catalog, HERO_* swaps under
- * load/CHARA) sit behind one Additional Characters row, on their own page.
  *
  * GL constraints are pc_rando_settings.c's: own program/VAO/textures with full
  * state save+restore, legacy GLSL, all GL work in Draw.
@@ -51,6 +56,7 @@
 #include "pc_mod_registry.h"
 #include "pc_mouse_cursor.h"
 #include "sh_log.h"
+#include "sh_build_info.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -65,6 +71,7 @@
 #define QM_TMP_DIR      "gamedata/.qol"
 #define QM_INSTALLED    "gamedata/qol_installed.txt"
 #define QM_OFFERED_KEY  "qol_mods_offered"
+#define QM_CHECKED_KEY  "qol_mods_checked_build"
 
 #if defined(__ANDROID__)
 #define QM_PLATFORM_OPTIONS "Android Options"
@@ -77,7 +84,7 @@
 #endif
 
 #if defined(__EMSCRIPTEN__)
-#define QM_RESTART_TEXT "They are saved in this browser. Reload the page to use them."
+#define QM_RESTART_TEXT "Reload the page to use them."
 #else
 #define QM_RESTART_TEXT "Restart the game to use them."
 #endif
@@ -86,7 +93,7 @@
 /* Catalog                                                             */
 /* ------------------------------------------------------------------ */
 
-#define QM_MAX_MODS 24
+#define QM_MAX_MODS 32
 
 typedef struct
 {
@@ -96,9 +103,11 @@ typedef struct
     char      desc[600];
     char      file[96];
     char      url[256];
+    char      kind[24];  /* "character" = folded under Additional Characters */
+    char      sha256[72];
+    char      instSha[72]; /* the zip it was installed from; "" if from before that was kept */
     long long size;
     char*     files;     /* '\n'-separated paths under gamedata/, from the catalog */
-    int       kind;      /* 1 = a character mod: listed on the Additional Characters page */
     int       installed;
     int       want;      /* the ticked state: differs from installed = a pending change */
 } s_QmMod;
@@ -110,25 +119,24 @@ static int     s_modCount;
 /* UI state                                                            */
 /* ------------------------------------------------------------------ */
 
-enum { QM_CLOSED = 0, QM_PROMPT, QM_NOTICE, QM_LOADING, QM_ERROR, QM_LIST, QM_INFO, QM_BUSY, QM_DONE, QM_CHARS, QM_SAVING };
+enum { QM_CLOSED = 0, QM_PROMPT, QM_NOTICE, QM_LOADING, QM_ERROR, QM_LIST, QM_INFO, QM_BUSY, QM_DONE, QM_GROUP };
 static int    s_mode;
 static Uint32 s_openMs;
-static Uint32 s_closedMs; /* 0 = never closed */
-static int    s_sel;          /* LIST: row index, then the buttons; elsewhere unused */
+static int    s_sel;          /* LIST/GROUP: view row, then the buttons; elsewhere unused */
+static int    s_scroll;       /* LIST/GROUP: first view row drawn */
+static int    s_infoFrom;     /* QM_INFO returns here: QM_LIST or QM_GROUP */
+static int    s_groupSel;     /* the main list's group row, to come back to */
+static int    s_groupWant[QM_MAX_MODS]; /* ticks on entering the group page, for Cancel */
+
+/* The pointer press being tracked, in viewport px (y up). */
+static int    s_ptrPrimed, s_ptrDown, s_ptrOurs, s_ptrDrag, s_ptrScroll;
+static float  s_ptrX, s_ptrY;
 static int    s_btnSel;       /* selected button on the button bar */
 static int    s_infoIdx;      /* QM_INFO: which mod */
 static int    s_offeredThisRun;
+static int    s_autoTried, s_auto, s_autoNotice, s_autoShown; /* the update after a new build */
 static int    s_titleFrames;
 static char   s_message[512]; /* QM_ERROR / QM_DONE body */
-
-/* The rows of the page on screen: mod indices, or QM_ROW_CHARS for the
- * Additional Characters row that ends the main list. */
-#define QM_ROW_CHARS (-1)
-static int    s_rows[QM_MAX_MODS + 1];
-static int    s_rowCount;
-static float  s_scroll;      /* first row shown, in rows; fractional while a finger drags */
-static int    s_infoFrom;    /* the page QM_INFO goes back to */
-static int    s_geoMaxRows = 6; /* rows the list area holds, published by Draw */
 
 /* Busy sequence: the ticked mods, installed one after another. */
 static int    s_queue[QM_MAX_MODS];
@@ -181,11 +189,14 @@ static void qm_tmp_path(char* out, size_t sz, const char* file)
 
 static void qm_load_installed(void)
 {
-    char  line[128];
+    char  line[160];
     FILE* f = fopen(QM_INSTALLED, "rb");
     int   i;
     for (i = 0; i < s_modCount; i++)
+    {
         s_mods[i].installed = 0;
+        s_mods[i].instSha[0] = '\0';
+    }
     if (f)
     {
         while (fgets(line, sizeof(line), f))
@@ -193,9 +204,15 @@ static void qm_load_installed(void)
             size_t n = strlen(line);
             while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' '))
                 line[--n] = '\0';
+            char* sha = strchr(line, ' ');
+            if (sha)
+                *sha++ = '\0';
             for (i = 0; i < s_modCount; i++)
                 if (n && strcmp(line, s_mods[i].id) == 0)
+                {
                     s_mods[i].installed = 1;
+                    snprintf(s_mods[i].instSha, sizeof(s_mods[i].instSha), "%s", sha ? sha : "");
+                }
         }
         fclose(f);
     }
@@ -203,19 +220,27 @@ static void qm_load_installed(void)
         s_mods[i].want = s_mods[i].installed;
 }
 
-static void qm_mark_installed(const s_QmMod* m)
+static void qm_unmark_installed(const s_QmMod* m);
+
+static void qm_mark_installed(s_QmMod* m)
 {
-    FILE* f = fopen(QM_INSTALLED, "ab");
+    FILE* f;
+    qm_unmark_installed(m);
+    f = fopen(QM_INSTALLED, "ab");
     if (f)
     {
-        fprintf(f, "%s\n", m->id);
+        if (m->sha256[0])
+            fprintf(f, "%s %s\n", m->id, m->sha256);
+        else
+            fprintf(f, "%s\n", m->id);
         fclose(f);
     }
+    snprintf(m->instSha, sizeof(m->instSha), "%s", m->sha256);
 }
 
 static void qm_unmark_installed(const s_QmMod* m)
 {
-    char  line[128], keep[2048];
+    char  line[160], keep[8192];
     size_t used = 0;
     FILE* f = fopen(QM_INSTALLED, "rb");
     keep[0] = '\0';
@@ -226,7 +251,8 @@ static void qm_unmark_installed(const s_QmMod* m)
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' '))
             line[--n] = '\0';
-        if (n && strcmp(line, m->id) != 0 && used + n + 2 < sizeof(keep))
+        size_t idn = strcspn(line, " ");
+        if (n && !(idn == strlen(m->id) && strncmp(line, m->id, idn) == 0) && used + n + 2 < sizeof(keep))
         {
             memcpy(keep + used, line, n);
             used += n;
@@ -364,8 +390,9 @@ static int qm_parse_catalog(const char* json)
             else if (!strcmp(key, "description")) snprintf(m.desc,   sizeof(m.desc),   "%s", val);
             else if (!strcmp(key, "file"))        snprintf(m.file,   sizeof(m.file),   "%s", val);
             else if (!strcmp(key, "url"))         snprintf(m.url,    sizeof(m.url),    "%s", val);
+            else if (!strcmp(key, "kind"))        snprintf(m.kind,   sizeof(m.kind),   "%s", val);
+            else if (!strcmp(key, "sha256"))      snprintf(m.sha256, sizeof(m.sha256), "%s", val);
             else if (!strcmp(key, "size"))        m.size = atoll(val);
-            else if (!strcmp(key, "kind"))        m.kind = !strcmp(val, "character");
         }
         /* The file name becomes a path, so nothing that could leave the tmp dir. */
         if (m.id[0] && m.file[0] && m.url[0] && !strchr(m.file, '/') && !strchr(m.file, '\\') &&
@@ -380,14 +407,6 @@ static int qm_parse_catalog(const char* json)
 /* ------------------------------------------------------------------ */
 /* Install                                                             */
 /* ------------------------------------------------------------------ */
-
-/* A zip made on Windows may name its entries with backslashes. */
-static void qm_slashes(char* s)
-{
-    for (; *s; s++)
-        if (*s == '\\')
-            *s = '/';
-}
 
 static int qm_has_prefix_ci(const char* s, const char* pre)
 {
@@ -430,7 +449,6 @@ static int qm_install_zip(const char* zipPath, const s_QmMod* m, char* err, size
         char name[512];
         const char* base;
         mz_zip_reader_get_filename(&zip, i, name, sizeof(name));
-        qm_slashes(name);
         base = strrchr(name, '/');
         base = base ? base + 1 : name;
         if ((qm_has_prefix_ci(base, "texupload-") || qm_has_prefix_ci(base, "texpage-")))
@@ -460,7 +478,6 @@ static int qm_install_zip(const char* zipPath, const s_QmMod* m, char* err, size
         if (mz_zip_reader_is_file_a_directory(&zip, i))
             continue;
         mz_zip_reader_get_filename(&zip, i, name, sizeof(name));
-        qm_slashes(name);
         rest = qm_after_load(name);
         if (!rest || !rest[0] || strstr(rest, ".."))
             continue;
@@ -562,7 +579,7 @@ static void qm_task_after(int status)
         return;
     }
     {
-        const s_QmMod* m = &s_mods[s_taskMod];
+        s_QmMod* m = &s_mods[s_taskMod];
         long long sz = qm_file_size(s_taskPath);
         if (m->size > 0 && sz != m->size)
         {
@@ -697,106 +714,20 @@ static int qm_task_poll(void)
 /* Modes                                                               */
 /* ------------------------------------------------------------------ */
 
-static int qm_char_stats(int* installed, int* changes)
-{
-    int i, n = 0;
-    *installed = *changes = 0;
-    for (i = 0; i < s_modCount; i++)
-    {
-        if (s_mods[i].kind != 1) continue;
-        n++;
-        if (s_mods[i].installed) (*installed)++;
-        if (s_mods[i].want != s_mods[i].installed) (*changes)++;
-    }
-    return n;
-}
-
-static void qm_build_rows(void)
-{
-    int i, chars = 0;
-    s_rowCount = 0;
-    for (i = 0; i < s_modCount; i++)
-    {
-        if (s_mods[i].kind == 1)
-        {
-            chars++;
-            if (s_mode == QM_CHARS) s_rows[s_rowCount++] = i;
-        }
-        else if (s_mode == QM_LIST)
-            s_rows[s_rowCount++] = i;
-    }
-    if (s_mode == QM_LIST && chars > 0)
-        s_rows[s_rowCount++] = QM_ROW_CHARS;
-    if (s_sel > s_rowCount)
-        s_sel = s_rowCount;
-}
-
-static void qm_clamp_scroll(void)
-{
-    float max = (float)(s_rowCount - s_geoMaxRows);
-    if (max < 0.0f) max = 0.0f;
-    if (s_scroll < 0.0f) s_scroll = 0.0f;
-    if (s_scroll > max) s_scroll = max;
-}
-
-static void qm_scroll_to_sel(void)
-{
-    if (s_sel >= s_rowCount)
-        return;
-    if ((float)s_sel < s_scroll)
-        s_scroll = (float)s_sel;
-    else if ((float)s_sel >= s_scroll + (float)s_geoMaxRows)
-        s_scroll = (float)(s_sel - s_geoMaxRows + 1);
-    qm_clamp_scroll();
-}
-
-/* The row a mod sits on, on the current page; -1 when it is not there. */
-static int qm_row_of(int mod)
-{
-    int i;
-    for (i = 0; i < s_rowCount; i++)
-        if (s_rows[i] == mod)
-            return i;
-    return -1;
-}
-
 static void qm_set_mode(int mode)
 {
     if (s_mode == QM_CLOSED)
+    {
         s_openMs = SDL_GetTicks();
+        s_ptrPrimed = 0;
+    }
     s_mode   = mode;
     s_btnSel = 0;
-    if (mode == QM_LIST || mode == QM_CHARS)
-    {
-        qm_build_rows();
-        s_scroll = 0.0f;
-        qm_scroll_to_sel();
-    }
-}
-
-/* Back from the characters page to its row on the main list. */
-static void qm_leave_chars(void)
-{
-    qm_set_mode(QM_LIST);
-    s_sel = qm_row_of(QM_ROW_CHARS);
-    if (s_sel < 0) s_sel = 0;
-    qm_scroll_to_sel();
-}
-
-static void qm_info_back(void)
-{
-    int from = (s_infoFrom == QM_CHARS) ? QM_CHARS : QM_LIST;
-    qm_set_mode(from);
-    s_sel = qm_row_of(s_infoIdx);
-    if (s_sel < 0) s_sel = 0;
-    qm_scroll_to_sel();
 }
 
 static void qm_close(void)
 {
-    s_mode     = QM_CLOSED;
-    s_closedMs = SDL_GetTicks();
-    if (!s_closedMs) s_closedMs = 1;
+    s_mode = QM_CLOSED;
 }
 
 static void qm_open_list_now(void)
@@ -809,20 +740,18 @@ static void qm_open_list_now(void)
     if (s_modCount > 0)
     {
         qm_load_installed();
-        s_sel = 0;
         qm_set_mode(QM_LIST);
+        s_sel = 0;
+        s_scroll = 0;
         return;
     }
     qm_set_mode(QM_LOADING);
     qm_task_start(-1);
 }
 
-/* Still "open" for a moment after it closes: the tap or click that pressed
- * its last button is read again by the menu underneath in the same frame,
- * and would pick whatever title row sits behind that button. */
 int Pc_QolMods_IsOpen(void)
 {
-    return s_mode != QM_CLOSED || (s_closedMs && SDL_GetTicks() - s_closedMs < 250u);
+    return s_mode != QM_CLOSED;
 }
 
 void Pc_QolMods_OpenList(void)
@@ -839,33 +768,84 @@ static int qm_change_count(void)
     return n;
 }
 
-#if defined(__EMSCRIPTEN__)
-/* The browser keeps the game's files in memory and copies them to IndexedDB
- * on its own clock (shell.js persistNow). A reload before that copy finishes
- * drops whatever it had not reached, which is how an install "sometimes" did
- * not survive one. So an install or removal ends by asking the shell for a
- * copy that starts after it, and waits for that one. */
-EM_JS(void, Qm_WebPersistJs, (int* done), {
-    if (Module["shPersist"]) Module["shPersist"](function () { HEAP32[done >> 2] = 1; });
-    else HEAP32[done >> 2] = 1;
-});
-EM_JS(void, Qm_WebReloadJs, (void), {
-    location.reload();
-});
-static int s_persistDone;
-#endif
+/* The rows a list page shows: mod indices, and QM_ROW_GROUP for the main
+ * list's one row standing for every grouped mod. */
+#define QM_ROW_GROUP (-1)
+#define QM_GROUP_TITLE "Additional Characters"
 
-/* After the files changed: wait for the browser to keep them (QM_SAVING), then
- * report. Elsewhere the files are already on disk. */
-static void qm_done_after_save(void)
+static int qm_grouped(const s_QmMod* m)
 {
-#if defined(__EMSCRIPTEN__)
-    s_persistDone = 0;
-    Qm_WebPersistJs(&s_persistDone);
-    qm_set_mode(QM_SAVING);
-#else
-    qm_set_mode(QM_DONE);
-#endif
+    return strcmp(m->kind, "character") == 0;
+}
+
+static int qm_view(int out[QM_MAX_MODS + 1])
+{
+    int i, n = 0, grouped = 0;
+    for (i = 0; i < s_modCount; i++)
+    {
+        if (qm_grouped(&s_mods[i]) == (s_mode == QM_GROUP))
+            out[n++] = i;
+        else if (qm_grouped(&s_mods[i]))
+            grouped = 1;
+    }
+    if (s_mode != QM_GROUP && grouped)
+        out[n++] = QM_ROW_GROUP;
+    return n;
+}
+
+static int qm_is_list_mode(void)
+{
+    return s_mode == QM_LIST || s_mode == QM_GROUP;
+}
+
+static void qm_open_group(void)
+{
+    int i;
+    for (i = 0; i < s_modCount; i++)
+        s_groupWant[i] = s_mods[i].want;
+    s_groupSel = s_sel;
+    qm_set_mode(QM_GROUP);
+    s_sel = 0;
+    s_scroll = 0;
+}
+
+/* Apply keeps the ticks for the main page's Apply; Cancel puts them back. */
+static void qm_leave_group(int keep)
+{
+    int i;
+    if (!keep)
+        for (i = 0; i < s_modCount; i++)
+            if (qm_grouped(&s_mods[i]))
+                s_mods[i].want = s_groupWant[i];
+    qm_set_mode(QM_LIST);
+    s_sel = s_groupSel;
+    s_scroll = 0;
+}
+
+static void qm_open_info(int modIdx)
+{
+    s_infoFrom = s_mode;
+    s_infoIdx = modIdx;
+    qm_set_mode(QM_INFO);
+}
+
+static void qm_back_from_info(void)
+{
+    int view[QM_MAX_MODS + 1], n, i;
+    qm_set_mode(s_infoFrom == QM_GROUP ? QM_GROUP : QM_LIST);
+    n = qm_view(view);
+    for (i = 0; i < n; i++)
+        if (view[i] == s_infoIdx)
+            s_sel = i;
+}
+
+/* A view row's action: tick a mod, or open the group page. */
+static void qm_activate_row(int item)
+{
+    if (item == QM_ROW_GROUP)
+        qm_open_group();
+    else
+        s_mods[item].want = !s_mods[item].want;
 }
 
 static void qm_finish_message(void)
@@ -913,11 +893,75 @@ static void qm_begin_apply(void)
     if (s_queueLen == 0)
     {
         qm_finish_message();
-        qm_done_after_save();
+        qm_set_mode(QM_DONE);
         return;
     }
     qm_set_mode(QM_BUSY);
     qm_task_start(s_queue[0]);
+}
+
+/* After a new build: download again the character mods whose catalog zip
+ * changed since they were installed. One installed before the sha256 was kept
+ * is taken as current. The build is only marked checked once nothing failed,
+ * so a failed download is tried again next launch. */
+static void qm_auto_queue(void)
+{
+    int i;
+    s_auto = 0;
+    if (!s_taskOk)
+        return;
+    qm_load_installed();
+    s_queueLen = s_queuePos = s_installedNow = s_removedNow = s_failedNow = 0;
+    s_failNames[0] = '\0';
+    for (i = 0; i < s_modCount; i++)
+    {
+        s_QmMod* m = &s_mods[i];
+        if (!m->installed || !qm_grouped(m) || !m->sha256[0])
+            continue;
+        if (!m->instSha[0])
+            qm_mark_installed(m);
+        else if (strcmp(m->instSha, m->sha256) != 0)
+            s_queue[s_queueLen++] = i;
+    }
+    if (s_queueLen == 0)
+    {
+        PcConfig_SaveKeyValue(QM_CHECKED_KEY, SH_BUILD_GIT_HASH);
+        return;
+    }
+    SH_DBG("[QOL] updating %d character mod(s) for build " SH_BUILD_GIT_HASH, s_queueLen);
+    s_auto = 1;
+    qm_task_start(s_queue[0]);
+}
+
+static void qm_auto_show(void)
+{
+    s_autoNotice = 0;
+    s_autoShown = 1;
+    qm_set_mode(QM_DONE);
+}
+
+static void qm_auto_finish(void)
+{
+    s_auto = 0;
+    if (s_failedNow == 0)
+        PcConfig_SaveKeyValue(QM_CHECKED_KEY, SH_BUILD_GIT_HASH);
+    if (s_installedNow == 0)
+    {
+        /* Only failures: nothing to restart for, but a list opened meanwhile
+         * is on the busy screen and needs the result. */
+        if (s_mode == QM_BUSY)
+        {
+            qm_finish_message();
+            qm_auto_show();
+        }
+        return;
+    }
+    snprintf(s_message, sizeof(s_message), "Your Additional Characters were updated (%d mod%s). %s",
+             s_installedNow, s_installedNow == 1 ? "" : "s", QM_RESTART_TEXT);
+    /* Shown at the title, not over the game. */
+    s_autoNotice = 1;
+    if (s_mode == QM_BUSY)
+        qm_auto_show();
 }
 
 /* Button bar per mode. LIST adds "Install (n)" and "Close" after its rows. */
@@ -933,7 +977,7 @@ static int qm_buttons(const char* labels[3])
         case QM_LIST:
             snprintf(installLbl, sizeof(installLbl), "Apply (%d)", qm_change_count());
             labels[0] = installLbl; labels[1] = "Close"; return 2;
-        case QM_CHARS: labels[0] = "Apply"; return 1;
+        case QM_GROUP:  labels[0] = "Apply"; labels[1] = "Cancel"; return 2;
         case QM_INFO:
         {
             const s_QmMod* m = &s_mods[s_infoIdx];
@@ -942,11 +986,7 @@ static int qm_buttons(const char* labels[3])
             labels[1] = "Back";
             return 2;
         }
-#if defined(__EMSCRIPTEN__)
-        case QM_DONE:   labels[0] = "Reload Now"; labels[1] = "Later"; return 2;
-#else
         case QM_DONE:   labels[0] = "OK"; return 1;
-#endif
         default: return 0;
     }
 }
@@ -971,26 +1011,26 @@ static void qm_press_button(int b)
             if (b == 0) qm_begin_apply();
             else        qm_close();
             break;
+        case QM_GROUP:
+            qm_leave_group(b == 0);
+            break;
         case QM_INFO:
             if (b == 0)
                 s_mods[s_infoIdx].want = !s_mods[s_infoIdx].want;
             else
-                qm_info_back();
-            break;
-        case QM_CHARS:
-            qm_leave_chars();
+                qm_back_from_info();
             break;
         case QM_DONE:
-#if defined(__EMSCRIPTEN__)
-            if (b == 0)
+            if (s_autoShown)
             {
-                Qm_WebReloadJs();
+                s_autoShown = 0;
+                qm_close();
                 break;
             }
-#endif
             qm_load_installed();
-            s_sel = 0;
             qm_set_mode(QM_LIST);
+            s_sel = 0;
+            s_scroll = 0;
             break;
         default:
             break;
@@ -1002,10 +1042,9 @@ static void qm_cancel(void)
     switch (s_mode)
     {
         case QM_PROMPT: qm_set_mode(QM_NOTICE); break;
-        case QM_INFO:   qm_info_back(); break;
-        case QM_CHARS:  qm_leave_chars(); break;
-        case QM_DONE:   qm_press_button(1); break;
-        case QM_SAVING: break; /* the copy finishes on its own */
+        case QM_INFO:   qm_back_from_info(); break;
+        case QM_GROUP:  qm_leave_group(0); break;
+        case QM_DONE:   qm_press_button(0); break;
         case QM_BUSY:   break; /* finishes on its own; nothing half-installed is left */
         default:        qm_close(); break;
     }
@@ -1014,22 +1053,25 @@ static void qm_cancel(void)
 /* Advance the background work: catalog fetched, or one mod done. */
 static void qm_step(void)
 {
-#if defined(__EMSCRIPTEN__)
-    if (s_mode == QM_SAVING && s_persistDone)
-        qm_set_mode(QM_DONE);
-#endif
     if (!qm_task_poll())
         return;
 
     if (s_taskMod < 0)
     {
+        if (s_auto && s_mode == QM_CLOSED)
+        {
+            qm_auto_queue();
+            return;
+        }
+        s_auto = 0;
         if (s_mode != QM_LOADING)
             return;
         if (s_taskOk)
         {
             qm_load_installed();
-            s_sel = 0;
             qm_set_mode(QM_LIST);
+            s_sel = 0;
+            s_scroll = 0;
         }
         else
         {
@@ -1060,9 +1102,14 @@ static void qm_step(void)
         return;
     }
 
+    if (s_auto)
+    {
+        qm_auto_finish();
+        return;
+    }
     qm_finish_message();
     if (s_mode == QM_BUSY)
-        qm_done_after_save();
+        qm_set_mode(QM_DONE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1072,53 +1119,28 @@ static void qm_step(void)
 /* Geometry published by Draw for the pointer hit-test (viewport px, y up). */
 static float s_vpW = 1920.0f, s_vpH = 1080.0f;
 static int   s_geoValid;
-static float s_geoRowT, s_geoRowB, s_geoRowPitch, s_geoRowL, s_geoRowR, s_geoCheckR;
-static int   s_geoFirst;
-
-/* Press, drag and release, from the mouse or from the finger itself. */
-static int   s_prevHeld;
-static float s_ptrX, s_ptrY;
-static int   s_dragOn, s_dragMoved, s_dragList, s_dragBtn, s_dragRow;
-static float s_dragY0, s_dragScroll0;
-
-static int qm_pointer(int* pressed, int* down, int* released, float* outX, float* outY)
-{
-    float mx, my;
-    int   ok;
-    if (Pc_MouseCursor_TouchDriving())
-    {
-        int tx, ty;
-        *pressed   = Pc_MouseCursor_TouchPressed();
-        *down      = Pc_MouseCursor_TouchDown(&tx, &ty);
-        *released  = Pc_MouseCursor_TouchReleased(&tx, &ty);
-        ok         = Pc_MouseCursor_TouchViewportPos(&mx, &my);
-        s_prevHeld = 0;
-    }
-    else
-    {
-        int held   = Pc_MouseCursor_LeftHeld();
-        *pressed   = Pc_MouseCursor_LeftClicked();
-        *down      = held;
-        *released  = s_prevHeld && !held;
-        s_prevHeld = held;
-        ok         = Pc_MouseCursor_ViewportPos(&mx, &my);
-    }
-    if (!ok)
-        return 0;
-    *outX = mx * s_vpW;
-    *outY = (1.0f - my) * s_vpH;
-    return 1;
-}
+static float s_geoRowT, s_geoRowPitch, s_geoRowL, s_geoRowR, s_geoCheckR;
+static int   s_geoRows;
 static float s_geoBtnL[3], s_geoBtnR[3], s_geoBtnT, s_geoBtnB;
 static int   s_geoBtns;
 
 #define QM_OPEN_GUARD_MS 250u
 
+/* The list row (0 = the first drawn) under a point, or -1. */
+static int qm_row_at(float x, float y)
+{
+    int row;
+    if (!s_geoValid || !qm_is_list_mode() || s_geoRowPitch <= 0.0f || x < s_geoRowL || x > s_geoRowR || y > s_geoRowT)
+        return -1;
+    row = (int)((s_geoRowT - y) / s_geoRowPitch);
+    return (row >= 0 && row < s_geoRows) ? row : -1;
+}
+
 int Pc_QolMods_Frame(int atTitle, int up, int down, int left, int right, int confirm, int cancel)
 {
     const char* labels[3];
-    int   nBtn, mMoved, mClick;
-    float mx, my;
+    int   nBtn, mMoved, mClick, mIn, mDown;
+    float mx = 0.0f, my = 0.0f;
 
     qm_step();
 
@@ -1143,6 +1165,27 @@ int Pc_QolMods_Frame(int atTitle, int up, int down, int left, int right, int con
                 return 1;
             }
         }
+        if (s_autoNotice && s_taskState == QT_IDLE)
+        {
+            qm_auto_show();
+            Pc_MouseCursor_Show();
+            return 1;
+        }
+        if (!s_autoTried && s_offeredThisRun && s_taskState == QT_IDLE)
+        {
+            const char* v = Pc_ModConfig_Value(QM_CHECKED_KEY);
+            s_autoTried = 1;
+            if (!(v && strcmp(v, SH_BUILD_GIT_HASH) == 0))
+            {
+                if (qm_file_size(QM_INSTALLED) > 0)
+                {
+                    s_auto = 1;
+                    qm_task_start(-1);
+                }
+                else
+                    PcConfig_SaveKeyValue(QM_CHECKED_KEY, SH_BUILD_GIT_HASH);
+            }
+        }
         return 0;
     }
 
@@ -1157,30 +1200,39 @@ int Pc_QolMods_Frame(int atTitle, int up, int down, int left, int right, int con
 
     if (cancel) { qm_cancel(); return 1; }
 
-    if (s_mode == QM_LIST || s_mode == QM_CHARS)
+    if (qm_is_list_mode())
     {
-        int total = s_rowCount + 1; /* the button bar counts as one stop */
+        int view[QM_MAX_MODS + 1], n = qm_view(view);
+        int total = n + 1; /* the button bar counts as one stop */
         if (up)   s_sel = (s_sel + total - 1) % total;
         if (down) s_sel = (s_sel + 1) % total;
-        if (up || down) qm_scroll_to_sel();
-        if (s_sel < s_rowCount)
+        if (s_sel < n)
         {
-            int mod = s_rows[s_sel];
-            if (mod == QM_ROW_CHARS)
+            if (right && view[s_sel] != QM_ROW_GROUP) { qm_open_info(view[s_sel]); return 1; }
+            if (confirm || (right && view[s_sel] == QM_ROW_GROUP))
             {
-                if (right || confirm) { s_sel = 0; qm_set_mode(QM_CHARS); return 1; }
-            }
-            else
-            {
-                if (right) { s_infoIdx = mod; s_infoFrom = s_mode; qm_set_mode(QM_INFO); return 1; }
-                if (confirm) s_mods[mod].want = !s_mods[mod].want;
+                qm_activate_row(view[s_sel]);
+                return 1;
             }
             confirm = 0;
+            /* Keys keep the selection on screen. */
+            if (s_geoRows > 0)
+            {
+                if (s_sel < s_scroll) s_scroll = s_sel;
+                if (s_sel >= s_scroll + s_geoRows) s_scroll = s_sel - s_geoRows + 1;
+            }
         }
         else
         {
             if (left)  s_btnSel = (s_btnSel + nBtn - 1) % nBtn;
             if (right) s_btnSel = (s_btnSel + 1) % nBtn;
+        }
+        {
+            int wheel;
+            Pc_MouseCursor_OwnerRead(1);
+            wheel = Pc_MouseCursor_WheelNotches();
+            Pc_MouseCursor_OwnerRead(0);
+            s_scroll -= wheel;
         }
     }
     else if (nBtn > 0)
@@ -1189,84 +1241,97 @@ int Pc_QolMods_Frame(int atTitle, int up, int down, int left, int right, int con
         if (right) s_btnSel = (s_btnSel + 1) % nBtn;
     }
 
-    /* Pointer and finger. A press inside the list starts a drag that scrolls
-     * it; a release that did not drag is the tap: the checkbox ticks, the rest
-     * of a row opens its details (or the characters page), a button presses.
-     * Acting on the release, not the press, is what lets a drag start on a
-     * row without ticking it. */
+    /* Pointer and touch, one way for both: a press is remembered, and acts on
+     * release where it went down -- a checkbox ticks, the rest of a row opens
+     * its details (or the group page), a button presses -- unless it moved far
+     * enough to be a drag, which scrolls the list instead. Acting on release
+     * is what lets a finger scroll without ticking whatever it landed on. */
+    Pc_MouseCursor_OwnerRead(1);
+    mMoved = Pc_MouseCursor_Moved();
+    if (Pc_MouseCursor_TouchDriving())
     {
-        const int list = (s_mode == QM_LIST || s_mode == QM_CHARS);
-        int   pressed = 0, down = 0, released = 0, have;
-        float mpx, py;
-        have = qm_pointer(&pressed, &down, &released, &mpx, &py);
-        if (have) { s_ptrX = mpx; s_ptrY = py; }
-        mpx = s_ptrX;
-        py  = s_ptrY;
-        if (s_geoValid)
+        mDown = Pc_MouseCursor_TouchDown(NULL, NULL);
+        mIn   = Pc_MouseCursor_TouchViewportPos(&mx, &my);
+        mMoved = 0;
+    }
+    else
+    {
+        mDown = Pc_MouseCursor_LeftHeld();
+        mIn   = Pc_MouseCursor_ViewportPos(&mx, &my);
+    }
+    mClick = Pc_MouseCursor_LeftClicked();
+    Pc_MouseCursor_OwnerRead(0);
+    if (!s_ptrPrimed)
+    {
+        /* A press already down when the window opened is not one of ours. */
+        s_ptrPrimed = 1;
+        s_ptrDown = mDown || mClick;
+        s_ptrOurs = 0;
+    }
+    if (s_geoValid && mIn)
+    {
+        float py  = (1.0f - my) * s_vpH;
+        float mpx = mx * s_vpW;
+        int   view[QM_MAX_MODS + 1], n = qm_is_list_mode() ? qm_view(view) : 0;
+
+        /* Hover follows a moving mouse, so it and the keys never fight. */
+        if (mMoved && !s_ptrDown)
         {
-            int b, hitBtn = -1, hitRow = -1, inList = 0;
+            int b, row;
             for (b = 0; b < s_geoBtns && b < nBtn; b++)
                 if (mpx >= s_geoBtnL[b] && mpx <= s_geoBtnR[b] && py <= s_geoBtnT && py >= s_geoBtnB)
-                    hitBtn = b;
-            if (list && s_geoRowPitch > 0.0f && mpx >= s_geoRowL && mpx <= s_geoRowR &&
-                py <= s_geoRowT && py >= s_geoRowB)
-            {
-                int row = s_geoFirst + (int)((s_geoRowT - py) / s_geoRowPitch);
-                inList = 1;
-                if (row >= 0 && row < s_rowCount) hitRow = row;
-            }
-            if (have && !s_dragOn && Pc_MouseCursor_Moved())
-            {
-                if (hitBtn >= 0)      { s_btnSel = hitBtn; if (list) s_sel = s_rowCount; }
-                else if (hitRow >= 0) s_sel = hitRow;
-            }
-            if (pressed && have)
-            {
-                s_dragOn      = 1;
-                s_dragMoved   = 0;
-                s_dragList    = inList && hitBtn < 0;
-                s_dragBtn     = hitBtn;
-                s_dragRow     = hitRow;
-                s_dragY0      = py;
-                s_dragScroll0 = s_scroll;
-            }
-            if (s_dragOn && down && s_dragList)
-            {
-                float dy = py - s_dragY0;
-                if (!s_dragMoved && fabsf(dy) > s_geoRowPitch * 0.3f) s_dragMoved = 1;
-                if (s_dragMoved)
                 {
-                    s_scroll = s_dragScroll0 + dy / s_geoRowPitch;
-                    qm_clamp_scroll();
+                    s_btnSel = b;
+                    if (qm_is_list_mode()) s_sel = n;
                 }
-            }
-            if (s_dragOn && released)
-            {
-                s_dragOn = 0;
-                if (!s_dragMoved)
-                {
-                    if (s_dragBtn >= 0 && s_dragBtn == hitBtn)
-                    {
-                        qm_press_button(hitBtn);
-                        return 1;
-                    }
-                    if (s_dragRow >= 0 && s_dragRow == hitRow)
-                    {
-                        int mod = s_rows[hitRow];
-                        s_sel = hitRow;
-                        if (mod == QM_ROW_CHARS)       { s_sel = 0; qm_set_mode(QM_CHARS); }
-                        else if (mpx <= s_geoCheckR)  s_mods[mod].want = !s_mods[mod].want;
-                        else { s_infoIdx = mod; s_infoFrom = s_mode; qm_set_mode(QM_INFO); }
-                        return 1;
-                    }
-                }
-            }
-            if (!down) s_dragOn = 0;
+            row = qm_row_at(mpx, py);
+            if (row >= 0 && s_scroll + row < n)
+                s_sel = s_scroll + row;
         }
-        if (list)
+        if ((mDown || mClick) && !s_ptrDown)
         {
-            int w = Pc_MouseCursor_WheelNotches();
-            if (w) { s_scroll -= (float)w; qm_clamp_scroll(); }
+            s_ptrDown = 1;
+            s_ptrOurs = 1;
+            s_ptrDrag = 0;
+            s_ptrX = mpx;
+            s_ptrY = py;
+            s_ptrScroll = s_scroll;
+        }
+        if (s_ptrDown && s_ptrOurs && qm_is_list_mode() && s_geoRowPitch > 0.0f)
+        {
+            float dy = py - s_ptrY;
+            if (!s_ptrDrag && fabsf(dy) > s_geoRowPitch * 0.3f && qm_row_at(s_ptrX, s_ptrY) >= 0)
+                s_ptrDrag = 1;
+            if (s_ptrDrag)
+                s_scroll = s_ptrScroll + (int)floorf(dy / s_geoRowPitch + 0.5f);
+        }
+    }
+    if (s_ptrDown && !mDown && !mClick)
+    {
+        int ours = s_ptrOurs && !s_ptrDrag && s_geoValid;
+        s_ptrDown = 0;
+        s_ptrOurs = 0;
+        if (ours)
+        {
+            int b, row, view[QM_MAX_MODS + 1], n = qm_is_list_mode() ? qm_view(view) : 0;
+            for (b = 0; b < s_geoBtns && b < nBtn; b++)
+                if (s_ptrX >= s_geoBtnL[b] && s_ptrX <= s_geoBtnR[b] && s_ptrY <= s_geoBtnT && s_ptrY >= s_geoBtnB)
+                {
+                    s_btnSel = b;
+                    qm_press_button(b);
+                    return 1;
+                }
+            row = qm_row_at(s_ptrX, s_ptrY);
+            if (row >= 0 && s_scroll + row < n)
+            {
+                int item = view[s_scroll + row];
+                s_sel = s_scroll + row;
+                if (item == QM_ROW_GROUP || s_ptrX <= s_geoCheckR)
+                    qm_activate_row(item);
+                else
+                    qm_open_info(item);
+                return 1;
+            }
         }
     }
 
@@ -1721,7 +1786,7 @@ void Pc_QolMods_Draw(void)
     panelH = 0.86f * s_dvpH;
     panelW = 1.25f * panelH;
     if (panelW > 0.92f * s_dvpW) panelW = 0.92f * s_dvpW;
-    if (s_mode == QM_PROMPT || s_mode == QM_NOTICE || s_mode == QM_ERROR || s_mode == QM_SAVING ||
+    if (s_mode == QM_PROMPT || s_mode == QM_NOTICE || s_mode == QM_ERROR ||
         s_mode == QM_LOADING || s_mode == QM_DONE || s_mode == QM_BUSY)
         panelH *= 0.62f;
     panelL = (s_dvpW - panelW) * 0.5f;
@@ -1774,13 +1839,14 @@ void Pc_QolMods_Draw(void)
     qm_rect(panelL + 2.0f, panelT - titleH, panelR - 2.0f, panelT - titleH - 2.0f, 0.47f, 0.11f, 0.08f, 1.0f);
     {
         const char* title = (s_mode == QM_INFO)  ? s_mods[s_infoIdx].name
-                          : (s_mode == QM_CHARS) ? "Additional Characters" : "Essential QoL Mods";
+                          : (s_mode == QM_GROUP) ? QM_GROUP_TITLE : "Essential QoL Mods";
         int w = 0, h = 0;
         qm_text(title, pxTitle, &w, &h);
         qm_draw_text(title, pxTitle, panelL + (panelW - (float)w) * 0.5f,
                      panelT - (titleH - (float)h) * 0.5f, 1.0f, 0.93f, 0.86f);
     }
 
+    s_geoRows = 0;
     switch (s_mode)
     {
         case QM_PROMPT:
@@ -1799,11 +1865,6 @@ void Pc_QolMods_Draw(void)
         case QM_ERROR:
         case QM_DONE:
             qm_draw_paragraph(s_message, px, panelL + pad, bodyT, panelW - 2.0f * pad, lineH, 0.92f, 0.92f, 0.95f);
-            break;
-        case QM_SAVING:
-            qm_draw_paragraph("Saving the mods in your browser... Keep this page open until this finishes; "
-                              "large mods take a few seconds.",
-                              px, panelL + pad, bodyT, panelW - 2.0f * pad, lineH, 0.92f, 0.92f, 0.95f);
             break;
         case QM_BUSY:
             if (s_queueLen > 0)
@@ -1846,81 +1907,102 @@ void Pc_QolMods_Draw(void)
             break;
         }
         case QM_LIST:
-        case QM_CHARS:
+        case QM_GROUP:
         {
             float rowPitch = lineH * 2.05f, rowH = rowPitch * 0.92f, box = (float)px * 1.05f;
             float hintY = bodyB + lineH * 0.9f;
             float listT = bodyT + lineH * 0.3f;
             int   maxRows = (int)((listT - hintY - lineH * 0.4f) / rowPitch);
-            int   first, k;
+            int   view[QM_MAX_MODS + 1], n = qm_view(view), maxScroll;
             if (maxRows < 1) maxRows = 1;
-            s_geoMaxRows = maxRows;
-            qm_clamp_scroll();
-            first = (int)s_scroll;
-            s_geoFirst = first;
+            maxScroll = n > maxRows ? n - maxRows : 0;
+            if (s_scroll > maxScroll) s_scroll = maxScroll;
+            if (s_scroll < 0) s_scroll = 0;
             s_geoRowT = listT; s_geoRowPitch = rowPitch; s_geoRowL = panelL + pad * 0.5f; s_geoRowR = panelR - pad * 0.5f;
-            s_geoRowB = listT - rowPitch * (float)maxRows;
             s_geoCheckR = panelL + pad + box * 1.6f;
-            for (k = 0; k < maxRows && first + k < s_rowCount; k++)
+            s_geoRows = (n - s_scroll) < maxRows ? (n - s_scroll) : maxRows;
+            for (i = 0; i < s_geoRows; i++)
             {
-                const int i   = first + k;
-                const int mod = s_rows[i];
-                float top = listT - ((float)k - (s_scroll - (float)first)) * rowPitch, mid = top - rowH * 0.5f;
+                int   item = view[s_scroll + i];
+                float top = listT - (float)i * rowPitch, mid = top - rowH * 0.5f;
                 float bx = panelL + pad, by = mid + box * 0.5f, tx = bx + box * 1.6f;
-                char  right[64], sz[24], by_[200];
-                int   w = 0, h = 0;
-                if (i == s_sel)
-                    qm_rect(panelL + 4.0f, top, panelR - 4.0f, top - rowH, 0.42f, 0.16f, 0.12f, 0.55f);
-                if (mod == QM_ROW_CHARS)
+                char  right[64], sz[24], sub[200];
+                const char* name;
+                int   w = 0, h = 0, ticked;
+                if (item == QM_ROW_GROUP)
                 {
-                    int inst, chg, n = qm_char_stats(&inst, &chg), j, used = 0;
-                    /* An arrow where the checkbox would be: this row opens a page. */
-                    qm_rect(bx + box * 0.30f, by - box * 0.42f, bx + box * 0.70f, by - box * 0.58f, 0.85f, 0.25f, 0.18f, 1.0f);
-                    qm_rect(bx + box * 0.55f, by - box * 0.28f, bx + box * 0.70f, by - box * 0.72f, 0.85f, 0.25f, 0.18f, 1.0f);
-                    qm_draw_text("Additional Characters", px, tx, mid + lineH * 0.95f, 0.95f, 0.95f, 0.97f);
-                    by_[0] = '\0';
-                    for (j = 0; j < s_modCount && used < 150; j++)
-                        if (s_mods[j].kind == 1)
-                            used += snprintf(by_ + used, sizeof(by_) - (size_t)used, "%s%s", used ? ", " : "", s_mods[j].name);
-                    if (used > 44 && qm_text_width(by_, (int)strlen(by_), (float)px * 0.8f) > panelW * 0.6f)
-                        snprintf(by_ + 40, sizeof(by_) - 40, "...");
-                    qm_draw_text(by_, (int)(px * 0.8f), tx, mid - lineH * 0.05f, 0.62f, 0.62f, 0.68f);
-                    if (chg) snprintf(right, sizeof(right), "%d change%s", chg, chg == 1 ? "" : "s");
-                    else     snprintf(right, sizeof(right), "%d of %d installed", inst, n);
+                    int k, picked = 0, installed = 0, changes = 0;
+                    size_t used = 0;
+                    sub[0] = '\0';
+                    for (k = 0; k < s_modCount; k++)
+                    {
+                        if (!qm_grouped(&s_mods[k]))
+                            continue;
+                        picked    += s_mods[k].want;
+                        installed += s_mods[k].installed;
+                        changes   += s_mods[k].want != s_mods[k].installed;
+                        if (used + strlen(s_mods[k].name) + 3 < sizeof(sub))
+                            used += (size_t)snprintf(sub + used, sizeof(sub) - used, "%s%s", used ? ", " : "",
+                                                     s_mods[k].name);
+                    }
+                    name = QM_GROUP_TITLE;
+                    ticked = picked > 0;
+                    if (changes)
+                        snprintf(right, sizeof(right), "%d change%s", changes, changes == 1 ? "" : "s");
+                    else if (installed)
+                        snprintf(right, sizeof(right), "%d installed", installed);
+                    else
+                        snprintf(right, sizeof(right), "Choose...");
                 }
                 else
                 {
-                    const s_QmMod* m = &s_mods[mod];
-                    qm_rect(bx, by, bx + box, by - box, 0.70f, 0.70f, 0.75f, 1.0f);
-                    qm_rect(bx + 2.0f, by - 2.0f, bx + box - 2.0f, by - box + 2.0f, 0.08f, 0.07f, 0.09f, 1.0f);
-                    if (m->want)
-                        qm_rect(bx + box * 0.25f, by - box * 0.25f, bx + box * 0.75f, by - box * 0.75f,
-                                0.85f, 0.25f, 0.18f, 1.0f);
-                    qm_draw_text(m->name, px, tx, mid + lineH * 0.95f, 0.95f, 0.95f, 0.97f);
-                    snprintf(by_, sizeof(by_), "by %s", m->author);
-                    /* One line in the list; the details page shows it all. */
-                    if (strlen(by_) > 44 && qm_text_width(by_, (int)strlen(by_), (float)px * 0.8f) > panelW * 0.6f)
-                        snprintf(by_ + 40, sizeof(by_) - 40, "...");
-                    qm_draw_text(by_, (int)(px * 0.8f), tx, mid - lineH * 0.05f, 0.62f, 0.62f, 0.68f);
+                    const s_QmMod* m = &s_mods[item];
+                    name = m->name;
+                    ticked = m->want;
+                    snprintf(sub, sizeof(sub), "by %s", m->author);
                     qm_format_mb(sz, sizeof(sz), m->size);
                     snprintf(right, sizeof(right), "%s",
                              m->installed ? (m->want ? "Installed" : "Remove") : (m->want ? "Install" : sz));
                 }
+                if (s_scroll + i == s_sel)
+                    qm_rect(panelL + 4.0f, top, panelR - 4.0f, top - rowH, 0.42f, 0.16f, 0.12f, 0.55f);
+                if (item == QM_ROW_GROUP)
+                {
+                    /* An arrow, not a checkbox: the row opens a page. */
+                    int aw = 0, ah = 0;
+                    qm_text(">", pxTitle, &aw, &ah);
+                    qm_draw_text(">", pxTitle, bx + (box - (float)aw) * 0.5f, mid + (float)ah * 0.5f,
+                                 ticked ? 0.95f : 0.80f, ticked ? 0.45f : 0.80f, ticked ? 0.35f : 0.85f);
+                }
+                else
+                {
+                    qm_rect(bx, by, bx + box, by - box, 0.70f, 0.70f, 0.75f, 1.0f);
+                    qm_rect(bx + 2.0f, by - 2.0f, bx + box - 2.0f, by - box + 2.0f, 0.08f, 0.07f, 0.09f, 1.0f);
+                    if (ticked)
+                        qm_rect(bx + box * 0.25f, by - box * 0.25f, bx + box * 0.75f, by - box * 0.75f,
+                                0.85f, 0.25f, 0.18f, 1.0f);
+                }
+                qm_draw_text(name, px, tx, mid + lineH * 0.95f, 0.95f, 0.95f, 0.97f);
+                /* One line in the list; the details page shows it all. */
+                if (strlen(sub) > 44 && qm_text_width(sub, (int)strlen(sub), (float)px * 0.8f) > panelW * 0.6f)
+                    snprintf(sub + 40, sizeof(sub) - 40, "...");
+                qm_draw_text(sub, (int)(px * 0.8f), tx, mid - lineH * 0.05f, 0.62f, 0.62f, 0.68f);
                 qm_text(right, px, &w, &h);
                 qm_draw_text(right, px, panelR - pad - (float)w, mid + (float)h * 0.5f, 0.75f, 0.75f, 0.80f);
             }
-            /* A thin bar on the right when the list is longer than the page. */
-            if (s_rowCount > maxRows)
+            if (maxScroll > 0)
             {
-                float trackT = listT, trackB = s_geoRowB, trackH = trackT - trackB;
-                float thumbH = trackH * (float)maxRows / (float)s_rowCount;
-                float thumbT = trackT - trackH * (s_scroll / (float)s_rowCount);
-                qm_rect(panelR - 6.0f, trackT, panelR - 3.0f, trackB, 0.18f, 0.16f, 0.20f, 1.0f);
-                qm_rect(panelR - 6.0f, thumbT, panelR - 3.0f, thumbT - thumbH, 0.62f, 0.16f, 0.12f, 1.0f);
+                /* Where the window sits in a list taller than it. */
+                float trackT = listT, trackB = listT - rowPitch * (float)maxRows, x = panelR - pad * 0.35f;
+                float span = trackT - trackB, thumb = span * (float)maxRows / (float)n;
+                float t = trackT - (span - thumb) * (float)s_scroll / (float)maxScroll;
+                qm_rect(x - 2.0f, trackT, x + 2.0f, trackB, 0.20f, 0.18f, 0.22f, 1.0f);
+                qm_rect(x - 3.0f, t, x + 3.0f, t - thumb, 0.62f, 0.16f, 0.12f, 1.0f);
             }
-            qm_draw_paragraph(s_mode == QM_CHARS
-                                  ? "Tick the characters you want, untick to remove, then Apply. The main page installs them with the rest."
-                                  : "Tick to install, untick to remove, then Apply. Tap a name for details. Drag to scroll.",
+            qm_draw_paragraph(s_mode == QM_GROUP
+                                  ? "Tick the characters you want, then Apply. Untick one to remove it. In game, pick "
+                                    "them from Cheats > Play as in the quick menu."
+                                  : "Tick to install, untick to remove, then Apply. Tap a name for details.",
                               (int)(px * 0.85f), panelL + pad, hintY, panelW - 2.0f * pad, lineH, 0.6f, 0.6f, 0.65f);
             break;
         }
@@ -1935,7 +2017,8 @@ void Pc_QolMods_Draw(void)
     {
         float bw = (panelW - 2.0f * pad - (float)(nBtn - 1) * pad) / (float)nBtn;
         float bT = panelB + pad * 0.5f + btnH * 0.85f, bB = panelB + pad * 0.5f;
-        int   barFocused = !(s_mode == QM_LIST || s_mode == QM_CHARS) || s_sel >= s_rowCount;
+        int   view[QM_MAX_MODS + 1];
+        int   barFocused = !qm_is_list_mode() || s_sel >= qm_view(view);
         if (bw > panelW * 0.32f) bw = panelW * 0.32f;
         {
             float total = bw * (float)nBtn + pad * (float)(nBtn - 1);
