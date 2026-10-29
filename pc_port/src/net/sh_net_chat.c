@@ -191,6 +191,12 @@ static int SDLCALL Chat_TextWatch(void* user, SDL_Event* e)
 
 void ShNetChat_Open(void)
 {
+    extern int Pc_QuickOptions_IsOpen(void);
+    /* Not under the quick menu, which owns the input while it is up. */
+    if (Pc_QuickOptions_IsOpen())
+    {
+        return;
+    }
     s_open      = 1;
     s_inputLen  = 0;
     s_input[0]  = '\0';
@@ -243,6 +249,10 @@ void ShNetChat_Close(void)
 void ShNetChat_OpenTouch(void)
 {
     ShNetChat_Open();
+    if (!s_open)
+    {
+        return;
+    }
     SDL_AtomicLock(&s_tLock);
     s_tLen = s_tBack = s_tEnter = s_tEsc = 0;
     SDL_AtomicUnlock(&s_tLock);
