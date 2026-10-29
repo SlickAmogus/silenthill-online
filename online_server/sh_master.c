@@ -648,6 +648,10 @@ static void SrvSanitize(char* s, int cap)
     {
         snprintf(s, (size_t)cap, "Wanderer");
     }
+    /* Names (players, marker owners, the server's own) get the chat's slur
+     * mask too: a name is shown to everyone, in the roster, over a ghost and
+     * in the room list. */
+    ShNetChat_Censor(s);
 }
 
 /* Chat must not share SrvSanitize's default: a blank line has to stay blank so
