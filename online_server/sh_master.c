@@ -3429,8 +3429,14 @@ static void AdmRun(char* line)
     }
     else if (!strcmp(cmd, "say"))
     {
+        int i;
         if (!*rest) { AdmPrintf("say <text>\n"); return; }
         SrvBroadcastEvent(SHNET_EV_SERVER, 0, rest, NULL);
+        /* And a chat line, which stays readable after the toast has gone. */
+        for (i = 0; i < SRV_MAX_CLIENTS; i++)
+        {
+            if (g_clients[i].used) SrvSendChat(&g_clients[i], SHNET_CHAT_GLOBAL, 0, "Server", rest);
+        }
         AdmPrintf("sent\n");
     }
     else if (!strcmp(cmd, "save"))

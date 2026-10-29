@@ -33,7 +33,9 @@ is full. Each server is its own world, with its own messages and rooms.
    lines show whether the service and its admin console answer, and the
    address players enter.
 3. Double-click it again whenever a new server release comes out, or after
-   editing `server.txt`. It replaces the program and restarts; the service
+   editing `server.txt`. When players are online they first get a toast and
+   a chat line saying the server restarts in 30 seconds, and the restart
+   waits that long (`install-server.sh --no-warn` skips it). It replaces the program and restarts; the service
    file is kept, so change the command line in
    `/etc/systemd/system/sh1pc.service` once it exists.
 
