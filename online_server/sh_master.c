@@ -54,6 +54,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#ifndef SH_MASTER_EMBED
+#include <conio.h> /* _kbhit: Enter ends the console's watch mode */
+#endif
 typedef SOCKET    ShSock;
 typedef int       ShSockLen;
 #define SH_INVALID_SOCK INVALID_SOCKET
@@ -92,6 +95,15 @@ typedef socklen_t ShSockLen;
 #include <time.h>
 
 #include "sh_net_proto.h"
+#ifndef SH_MASTER_EMBED
+#include "sh_net_memo_text.h" /* a placed marker in words, for the admin feed */
+/* The admin feed: one line to every console in watch mode. Loopback only. */
+static void SrvFeed(const char* fmt, ...);
+static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int map);
+#else
+#define SrvFeed(...)     ((void)0)
+#define SrvFeedMemo(...) ((void)0)
+#endif
 
 #ifdef SH_MASTER_EMBED
 #include "sh_master_embed.h"
@@ -769,7 +781,13 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
         scope = SHNET_CHAT_GLOBAL;
     }
 
-    SrvLog("  chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "game" : "all", c->name, text);
+    /* Talk inside a co-op room (map scope from a room member) is the players'
+     * own; the public living world is what gets logged and watched. */
+    if (!(scope == SHNET_CHAT_GAME && c->room != 0))
+    {
+        SrvLog("  chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "map" : "all", c->name, text);
+        SrvFeed("chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "map" : "all", c->name, text);
+    }
 
     for (i = 0; i < SRV_MAX_CLIENTS; i++)
     {
@@ -1142,6 +1160,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         snprintf(text, sizeof(text), "%s entered the fog", name);
         SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
         SrvLog("+ %s joined from %s (id %u, build %s)", name, addr, c->playerId, build);
+        SrvFeed("+ %s joined from %s (id %u, build %s)", name, addr, c->playerId, build);
     }
 
     c->addr    = *from;
@@ -1564,6 +1583,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
            (m.kind & 0x0F) == SHNET_MARK_DEATH ? "a death marker" :
            (m.kind & 0x0F) == SHNET_MARK_SAVE  ? "a save mark" : "a message",
            m.mapIdx, m.memoId);
+    SrvFeedMemo(c->name, (int)m.kind, (int)m.phraseA, (int)m.wordA, (int)m.mapIdx);
 
     if ((m.kind & 0x0F) == SHNET_MARK_DEATH)
     {
@@ -1787,6 +1807,7 @@ static void SrvExpire(unsigned int now)
         }
         snprintf(text, sizeof(text), "%s faded away", c->name);
         SrvLog("- %s timed out (id %u)", c->name, c->playerId);
+        SrvFeed("- %s timed out (id %u)", c->name, c->playerId);
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
         SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
@@ -1905,6 +1926,7 @@ static void SrvRoomLeave(Client* c, int notify)
             }
         }
         SrvLog("- room %u closed", room);
+        SrvFeed("- room %u closed", room);
     }
     else
     {
@@ -1925,6 +1947,8 @@ static void SrvHandleRoomCreate(Client* c, const shn_u8* p, int len)
     if (!code) { SrvSendRoomReject(c, 1, "server is out of room codes"); return; }
     c->room = code; c->roomHost = 1; c->roomMax = maxP; c->roomHidden = hidden ? 1 : 0;
     SrvLog("+ room %u opened by %s (id %u, max %d%s)", code, c->name, c->playerId, maxP,
+           c->roomHidden ? ", hidden" : "");
+    SrvFeed("+ room %u opened by %s (id %u, max %d%s)", code, c->name, c->playerId, maxP,
            c->roomHidden ? ", hidden" : "");
     SrvSendRoomRoster(c, 1);
 }
@@ -2010,6 +2034,7 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
     SrvRoomLeave(c, 1);
     c->room = code; c->roomHost = 0; c->roomMax = host->roomMax;
     SrvLog("  %s (id %u) joined room %u", c->name, c->playerId, code);
+    SrvFeed("  %s (id %u) joined room %u", c->name, c->playerId, code);
     SrvSendRoomRoster(c, 1);
     SrvBroadcastRoomRoster(code, c);
 }
@@ -2117,6 +2142,8 @@ static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
     if (g_verbose || action == SHNET_INV_INVITE || action == SHNET_INV_JOIN)
     {
         SrvLog("  invite %s -> %s: action %d%s", c->name, t->name, action,
+               action == SHNET_INV_JOIN ? " (room code sent)" : "");
+        SrvFeed("  invite %s -> %s: action %d%s", c->name, t->name, action,
                action == SHNET_INV_JOIN ? " (room code sent)" : "");
     }
 }
@@ -2230,6 +2257,7 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
         char text[SHNET_EVENT_MAX];
         snprintf(text, sizeof(text), "%s left", c->name);
         SrvLog("- %s left (id %u)", c->name, c->playerId);
+        SrvFeed("- %s left (id %u)", c->name, c->playerId);
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
         SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
@@ -2854,6 +2882,110 @@ static unsigned short  g_adminPort = SHNET_DEFAULT_PORT + 3;
 static AdmBan          g_bans[ADM_BAN_MAX];
 static int             g_banCount;
 static char            g_banPath[600];
+static struct sockaddr_in g_admFrom; /* who sent the command AdmRun is running */
+static void AdmPrintf(const char* fmt, ...);
+
+/* Consoles in watch mode. A console refreshes its slot every half minute
+ * while it watches; a closed terminal simply ages out. */
+#define ADM_WATCH_MAX    8
+#define ADM_WATCH_TTL_MS 90000u
+static struct { struct sockaddr_in addr; unsigned int lastMs; } g_watch[ADM_WATCH_MAX];
+
+static int AdmWatchLive(int i, unsigned int now)
+{
+    return g_watch[i].lastMs != 0 && now - g_watch[i].lastMs < ADM_WATCH_TTL_MS;
+}
+
+static void SrvFeed(const char* fmt, ...)
+{
+    char         line[640];
+    char         stamp[16];
+    time_t       t;
+    struct tm*   tmv;
+    va_list      ap;
+    int          i, n, any = 0;
+    unsigned int now = SrvMillis();
+
+    for (i = 0; i < ADM_WATCH_MAX; i++) any |= AdmWatchLive(i, now);
+    if (!any || g_adminSock == SH_INVALID_SOCK) return;
+
+    t   = time(NULL);
+    tmv = localtime(&t);
+    if (!tmv || !strftime(stamp, sizeof(stamp), "%H:%M:%S", tmv)) stamp[0] = '\0';
+    n = snprintf(line, sizeof(line) - 2, "%s  ", stamp);
+    va_start(ap, fmt);
+    n += vsnprintf(line + n, sizeof(line) - 2 - (size_t)n, fmt, ap);
+    va_end(ap);
+    if (n > (int)sizeof(line) - 2) n = (int)sizeof(line) - 2;
+    line[n++] = '\n';
+    line[n]   = '\0';
+    for (i = 0; i < ADM_WATCH_MAX; i++)
+    {
+        if (!AdmWatchLive(i, now)) continue;
+        sendto(g_adminSock, line, (size_t)n, 0, (struct sockaddr*)&g_watch[i].addr, (ShSockLen)sizeof(g_watch[i].addr));
+    }
+}
+
+/* A marker in the words the players see. The substitution is by hand, as in
+ * the client: the phrase strings are data, never a printf format. */
+static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int map)
+{
+    const int   k  = kind & 0x0F;
+    const int   em = (kind >> 4) & 0x0F;
+    const char* p;
+    const char* w;
+    const char* e;
+    char        body[128];
+    int         o = 0;
+
+    if (k == SHNET_MARK_DEATH) { SrvFeed("x %s died on map %d", who, map); return; }
+    if (k == SHNET_MARK_SAVE)  { SrvFeed("~ %s rested on map %d", who, map); return; }
+    p = (phrase >= 0 && phrase < (int)(sizeof(s_phrases) / sizeof(s_phrases[0]))) ? s_phrases[phrase] : "?";
+    w = (word >= 0 && word < (int)(sizeof(s_words) / sizeof(s_words[0]))) ? s_words[word] : "?";
+    e = (em >= 0 && em < (int)(sizeof(s_emotes) / sizeof(s_emotes[0]))) ? s_emotes[em] : "";
+    while (*p && o < (int)sizeof(body) - 1)
+    {
+        if (p[0] == '%' && p[1] == 's')
+        {
+            const char* q = w;
+            while (*q && o < (int)sizeof(body) - 1) body[o++] = *q++;
+            p += 2;
+            continue;
+        }
+        body[o++] = *p++;
+    }
+    body[o] = '\0';
+    SrvFeed("memo %s on map %d: %s%s%s", who, map, e, e[0] ? "  " : "", body);
+}
+
+static void AdmCmdWatch(int on)
+{
+    unsigned int now  = SrvMillis();
+    int          i, slot = -1;
+    for (i = 0; i < ADM_WATCH_MAX; i++)
+    {
+        if (g_watch[i].lastMs && g_watch[i].addr.sin_port == g_admFrom.sin_port &&
+            g_watch[i].addr.sin_addr.s_addr == g_admFrom.sin_addr.s_addr)
+        {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && !AdmWatchLive(i, now)) slot = i;
+    }
+    if (!on)
+    {
+        if (slot >= 0) g_watch[slot].lastMs = 0;
+        return;
+    }
+    if (slot < 0)
+    {
+        AdmPrintf("watching: no free slot (%d consoles already watch)\n", ADM_WATCH_MAX);
+        return;
+    }
+    g_watch[slot].addr   = g_admFrom;
+    g_watch[slot].lastMs = now ? now : 1u;
+    AdmPrintf("watching: joins and leaves, living-world chat and markers, rooms, invites. Press Enter to stop.\n");
+}
 
 static int AdmStrCaseCmp(const char* a, const char* b)
 {
@@ -3019,6 +3151,7 @@ static void AdmRemove(Client* c, const char* why, const char* verb)
     SrvSendReject(&c->addr, SHNET_REJ_BANNED, why);
     snprintf(text, sizeof(text), "%s was %s", c->name, verb);
     SrvLog("- %s %s by the admin (id %u)", c->name, verb, c->playerId);
+    SrvFeed("- %s %s by the admin (id %u)", c->name, verb, c->playerId);
     SrvRoomLeave(c, 1);
     c->used = 0;
     SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
@@ -3145,7 +3278,9 @@ static void AdmHelp(void)
         "prune deaths [days]          delete death markers (all, or older than <days>)\n"
         "prune all                    delete every marker (a clean world before a release)\n"
         "say <text>                   message to everyone online\n"
-        "save                         write the marker store now\n");
+        "save                         write the marker store now\n"
+        "watch                        live feed: joins, leaves, living-world chat and markers,\n"
+        "                             rooms, invites (not the talk inside a co-op room). Enter stops\n");
 }
 
 static void AdmRun(char* line)
@@ -3173,6 +3308,8 @@ static void AdmRun(char* line)
         rest = p + strlen(p);
     }
     if (!*cmd) { AdmHelp(); return; }
+    if (!strcmp(cmd, "watch"))   { AdmCmdWatch(1); return; } /* refreshed every half minute: not journal-worthy */
+    if (!strcmp(cmd, "unwatch")) { AdmCmdWatch(0); return; }
     SrvLog("admin: %s %s", cmd, rest);
 
     if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) AdmHelp();
@@ -3327,6 +3464,7 @@ static void AdmService(void)
         if (n <= 0) return;
         if (from.sin_addr.s_addr != htonl(INADDR_LOOPBACK)) continue;
         line[n] = '\0';
+        g_admFrom = from;
         AdmRun(line);
         if (g_admLen == 0) AdmPrintf("ok\n");
         sendto(g_adminSock, g_admOut, (size_t)g_admLen, 0, (struct sockaddr*)&from, flen);
@@ -3362,6 +3500,60 @@ static int AdmSendOne(ShSock s, const struct sockaddr_in* to, const char* cmd)
     return 1;
 }
 
+/* Watch mode: print what the server pushes until Enter is pressed. The slot
+ * on the server is refreshed every half minute; "unwatch" frees it on exit. */
+static void AdmWatch(ShSock s, const struct sockaddr_in* to)
+{
+    static char  buf[ADM_REPLY_MAX + 1];
+    char         line[64];
+    unsigned int lastKeep = SrvMillis();
+
+    if (!AdmSendOne(s, to, "watch")) return;
+    for (;;)
+    {
+        fd_set         rd;
+        struct timeval tv;
+        int            n;
+        FD_ZERO(&rd);
+        FD_SET(s, &rd);
+#if !defined(_WIN32)
+        FD_SET(0, &rd);
+#endif
+        tv.tv_sec  = 0;
+        tv.tv_usec = 250000;
+        n = select((int)s + 1, &rd, NULL, NULL, &tv);
+#if defined(_WIN32)
+        if (_kbhit())
+        {
+            if (fgets(line, sizeof(line), stdin)) {}
+            break;
+        }
+#else
+        if (n > 0 && FD_ISSET(0, &rd))
+        {
+            if (fgets(line, sizeof(line), stdin)) {}
+            break;
+        }
+#endif
+        if (n > 0 && FD_ISSET(s, &rd))
+        {
+            n = (int)recv(s, buf, ADM_REPLY_MAX, 0);
+            if (n > 0 && strncmp(buf, "watching", 8) != 0) /* the keepalive's answer */
+            {
+                buf[n] = '\0';
+                fputs(buf, stdout);
+                fflush(stdout);
+            }
+        }
+        if (SrvMillis() - lastKeep > 30000u)
+        {
+            sendto(s, "watch", 5, 0, (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
+            lastKeep = SrvMillis();
+        }
+    }
+    sendto(s, "unwatch", 7, 0, (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
+}
+
 static int AdmClient(const char* oneCmd)
 {
     struct sockaddr_in to;
@@ -3389,6 +3581,7 @@ static int AdmClient(const char* oneCmd)
         line[strcspn(line, "\r\n")] = '\0';
         if (!strcmp(line, "quit") || !strcmp(line, "exit")) break;
         if (!line[0]) continue;
+        if (!strcmp(line, "watch")) { AdmWatch(s, &to); continue; }
         AdmSendOne(s, &to, line);
     }
     return 0;

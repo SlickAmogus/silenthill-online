@@ -79,6 +79,7 @@ sh_master --cmd "players"        # or one command at a time
 | `prune all` | every marker: a clean world, for example before a release |
 | `say <text>` | a message to everyone online |
 | `save` | writes the marker store now |
+| `watch` | live feed until Enter: joins and leaves, living-world chat and markers in words, rooms, invites. Talk inside a co-op room is private: not shown, not logged |
 
 The console listens on 127.0.0.1 port 27891 only (`--admin PORT` moves it,
 `--admin 0` turns it off), so only someone logged in to the server machine
