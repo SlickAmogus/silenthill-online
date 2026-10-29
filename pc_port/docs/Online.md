@@ -185,7 +185,7 @@ All is sent as Global. **Global** reaches everyone on the server; **Level**
 everyone on your map; **Coop** the players in your co-op game, and only them:
 a Coop line travels inside the room, never through the server, so it works in
 a Steam or Join-by-IP game too and is nobody else's to read. The first time
-the box opens in a session it says "Press Tab to switch channels". **Chat** in
+the box opens in a session it says "Press Tab to switch channels". On a touchscreen the chat button at the top of the screen opens the box for typing (the keyboard rises) and closes it again; the arrows button beside it switches the channel, and nothing else on screen responds until the box is closed. **Chat** in
 the `M` menu hides the feed (the box still opens on its key, and shows the
 lines while it is open); the console's `chat hide` / `chat show` do the same.
 Racial slurs are masked with asterisks on the way in and on the way out, on
