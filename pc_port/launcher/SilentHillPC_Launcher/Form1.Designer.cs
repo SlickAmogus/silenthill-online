@@ -1211,7 +1211,7 @@ partial class Form1
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.Name = "Form1";
-            this.Text = "Silent Hill Launcher";
+            this.Text = "Silent Hill Online Launcher";
             this.Load += new System.EventHandler(this.Form1_Load);
             this.vsyncPanel.ResumeLayout(false);
             this.skipIntrosPanel.ResumeLayout(false);
