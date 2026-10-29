@@ -20,7 +20,7 @@ is full. Each server is its own world, with its own messages and rooms.
 | `install-server.sh` | the installer that runs on the Linux server itself |
 | `sh_master.exe` | the server for Windows |
 | `sh_master-linux-x64`, `sh_master-linux-arm64` | the server for Linux, static, no dependencies |
-| `sh_master.c`, `sh_net_proto.h`, `sh_net_memo_text.h` | the source, built on the server when it has gcc |
+| `sh_master.c`, `sh_net_proto.h`, `sh_net_memo_text.h`, `sh_net_chat_filter.h` | the source, built on the server when it has gcc |
 
 ## On a Linux VPS, from Windows
 

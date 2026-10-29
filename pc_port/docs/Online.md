@@ -167,8 +167,21 @@ their ping.
 | `F11` | who is online |
 | `M` | leave a message |
 | arrows / Enter / Esc | drive the composer (pad works too) |
+| `Y` | open the chat box; Enter sends, Esc cancels |
+| `Tab` (box open) or `U` | next channel |
 
-Both are `key_online_players` and `key_online_memo` in `config.cfg`.
+Those are `key_online_players`, `key_online_memo`, `key_chat_game` and
+`key_chat_cycle` in `config.cfg`.
+
+**Chat channels.** **Global** (the default) reaches everyone on the server;
+**Level** everyone on your map; **Coop** the players in your co-op game, and
+only them: a Coop line travels inside the room, never through the server, so
+it works in a Steam or Join-by-IP game too and is nobody else's to read. **All**
+shows the three together, each line coloured and prefixed `[Global]`,
+`[Level]` or `[Coop]`; a line typed on All is sent as Global. The first time
+the box opens it says "Press Tab to switch channels". Racial slurs are masked
+with asterisks on the way in and on the way out, on the server and in the
+game.
 
 ---
 

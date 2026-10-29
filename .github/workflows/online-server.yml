@@ -14,6 +14,7 @@ on:
       - 'online_server/**'
       - 'pc_port/include/sh_net_proto.h'
       - 'pc_port/include/sh_net_memo_text.h'
+      - 'pc_port/include/sh_net_chat_filter.h'
       - '.github/workflows/online-server.yml'
   workflow_dispatch:
 
@@ -51,7 +52,7 @@ jobs:
           aarch64-linux-gnu-gcc   $CFLAGS -o "$STAGE/sh_master-linux-arm64" online_server/sh_master.c
           x86_64-w64-mingw32-gcc  $CFLAGS -o "$STAGE/sh_master.exe"         online_server/sh_master.c -lws2_32
           gcc -O2 -I pc_port/include -o "$RUNNER_TEMP/shnet_selftest" online_server/shnet_selftest.c
-          cp online_server/sh_master.c pc_port/include/sh_net_proto.h pc_port/include/sh_net_memo_text.h "$STAGE/"
+          cp online_server/sh_master.c pc_port/include/sh_net_proto.h pc_port/include/sh_net_memo_text.h pc_port/include/sh_net_chat_filter.h "$STAGE/"
           cp online_server/host/* "$STAGE/"
           # The batch files must stay CRLF whatever the checkout did.
           for f in "$STAGE"/*.bat; do sed -i 's/\r$//; s/$/\r/' "$f"; done

@@ -95,6 +95,7 @@ typedef socklen_t ShSockLen;
 #include <time.h>
 
 #include "sh_net_proto.h"
+#include "sh_net_chat_filter.h" /* slurs are masked before a line is relayed or logged */
 #ifndef SH_MASTER_EMBED
 #include "sh_net_memo_text.h" /* a placed marker in words, for the admin feed */
 /* The admin feed: one line to every console in watch mode. Loopback only. */
@@ -776,17 +777,20 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
     {
         return;
     }
+    /* Co-op talk travels inside the room, not here; anything else unknown is
+     * dropped rather than shouted to the whole server. */
     if (scope != SHNET_CHAT_GLOBAL && scope != SHNET_CHAT_GAME)
     {
-        scope = SHNET_CHAT_GLOBAL;
+        return;
     }
+    ShNetChat_Censor(text);
 
     /* Talk inside a co-op room (map scope from a room member) is the players'
      * own; the public living world is what gets logged and watched. */
     if (!(scope == SHNET_CHAT_GAME && c->room != 0))
     {
-        SrvLog("  chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "map" : "all", c->name, text);
-        SrvFeed("chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "map" : "all", c->name, text);
+        SrvLog("  chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "level" : "global", c->name, text);
+        SrvFeed("chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "level" : "global", c->name, text);
     }
 
     for (i = 0; i < SRV_MAX_CLIENTS; i++)

@@ -34,7 +34,7 @@ if ($target -notmatch '@') { $target = "root@$target" }
 $serverArgs = $cfg['args']
 $domain = $cfg['domain']
 
-$required = @('install-server.sh', 'sh_master.c', 'sh_net_proto.h', 'sh_net_memo_text.h')
+$required = @('install-server.sh', 'sh_master.c', 'sh_net_proto.h', 'sh_net_memo_text.h', 'sh_net_chat_filter.h')
 $optional = @('sh_master-linux-x64', 'sh_master-linux-arm64')
 foreach ($f in $required) {
     if (-not (Test-Path (Join-Path $here $f))) { Write-Host "ERROR: $f is missing next to this script" -ForegroundColor Red; exit 1 }

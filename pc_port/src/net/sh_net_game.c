@@ -813,6 +813,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);
             break;
+        case SHNET_CTRL_CHAT:
+            ShNetChat_CoopIn(from, p, len);
+            break;
         case SHNET_CTRL_ITEM_USED:
             if (len < 3) return;
             ShNetG_ItemUsedIn(p[1], p[2]);
