@@ -14,7 +14,9 @@ internal static class Program
     static void Main()
     {
         bool createdNew;
-        s_singleInstance = new Mutex(false, @"Local\SilentHillPC_Launcher_SingleInstance", out createdNew);
+        /* Its own name, so the Online launcher and the single-player one can be
+         * open at the same time; each still keeps to one copy of itself. */
+        s_singleInstance = new Mutex(false, @"Local\SilentHillOnline_Launcher_SingleInstance", out createdNew);
         if (!createdNew)
         {
             try
@@ -24,8 +26,8 @@ internal static class Program
             }
             catch { }
             MessageBox.Show(
-                Loc.T("Silent Hill PC Launcher is already running."),
-                "Silent Hill PC Launcher",
+                Loc.T("Silent Hill Online Launcher is already running."),
+                "Silent Hill Online Launcher",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
