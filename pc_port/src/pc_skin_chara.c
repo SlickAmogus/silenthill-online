@@ -52,7 +52,11 @@ extern void  func_80057228(MATRIX* mat, s32 alpha, SVECTOR* arg2, VECTOR3* arg3)
 extern s_WorldEnvWork g_WorldEnvWork;
 
 #define PC_SKIN_BONES     18
-#define PC_SKIN_MAX_CHARA 16
+/* Loaded models: every play-as swap (PLAYAS_SWAP_MAX is 32) and a replacement
+ * for each character can all be in use in one session. */
+#define PC_SKIN_MAX_CHARA 64
+/* Files looked for and not found, kept apart so they never take a slot. */
+#define PC_SKIN_MAX_MISSING 128
 #define PC_SKIN_MAX_MATS  32
 #define PC_SKIN_MAX_JOINTS 256
 #define PC_SKIN_INFL      4
@@ -296,6 +300,8 @@ static char        s_heroFile[32];
 static int         s_drawMode;     /* Pc_SkinChara_SetDrawSkin */
 static char        s_drawFile[32];
 static int         s_charaCount;
+static char        s_missing[PC_SKIN_MAX_MISSING][32];
+static int         s_missingCount;
 
 /* ---------------------------------------------------------------- math */
 
@@ -1993,10 +1999,19 @@ static PcSkinChara* Skin_Entry(const char* name, const char* file, const char* b
     for (i = 0; i < s_charaCount && ch == NULL; i++)
         if (strcmp(s_chara[i].file, file) == 0)
             ch = &s_chara[i];
+    for (i = 0; ch == NULL && i < s_missingCount; i++)
+        if (strcmp(s_missing[i], file) == 0)
+            return NULL;
     if (ch == NULL)
     {
+        /* Full, a model is refused and the character draws stock -- which
+         * play-as swaps did once every stock character looked for a
+         * replacement and each miss kept a slot. */
         if (s_charaCount >= PC_SKIN_MAX_CHARA)
+        {
+            SH_DBG("[SKIN] no room for %s (%d models loaded)", file, s_charaCount);
             return NULL;
+        }
         ch = &s_chara[s_charaCount++];
         memset(ch, 0, sizeof(*ch));
         snprintf(ch->name, sizeof(ch->name), "%s", name);
@@ -2017,6 +2032,16 @@ static PcSkinChara* Skin_Entry(const char* name, const char* file, const char* b
         }
         if (ch->state == 1)
             Skin_LoadSettings(ch, base);
+        else
+        {
+            /* Only the slot just taken can fail here: hand it back and
+             * remember the file instead. */
+            if (s_missingCount < PC_SKIN_MAX_MISSING)
+                snprintf(s_missing[s_missingCount++], sizeof(s_missing[0]), "%s", file);
+            if (ch == &s_chara[s_charaCount - 1])
+                s_charaCount--;
+            return NULL;
+        }
     }
     return ch;
 }
