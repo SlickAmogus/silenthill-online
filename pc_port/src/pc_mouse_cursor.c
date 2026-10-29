@@ -188,6 +188,23 @@ static void Mc_PinPointerToPuzzleCursor(float tipX, float tipY)
                           s_prevMy + (int)(ey / (float)g_GameWork.gsScreenHeight * 1024.0f / (fy1 - fy0)));
 }
 
+/* The Essential QoL Mods window (pc_qol_mods.c) sits over the title and Options
+ * menus, which hit-test the pointer themselves and see each tap a frame before
+ * the window does, so a tap on the window also landed on the row beneath it.
+ * While it is open only the window may read the pointer, and after it closes the
+ * pointer stays withheld until the finger or button that closed it lifts. */
+static int s_captured, s_ownerRead;
+
+static int Mc_Captured(void)
+{
+    return s_captured && !s_ownerRead;
+}
+
+void Pc_MouseCursor_OwnerRead(int on)
+{
+    s_ownerRead = on;
+}
+
 void Pc_MouseCursor_NoteCursorDrawn(int curX, int curY)
 {
     s_puzzleFrames = 3;
@@ -232,12 +249,12 @@ void Pc_MouseCursor_PuzzleOverride(int* cursorX, int* cursorY)
 
 int Pc_MouseCursor_Moved(void)
 {
-    return s_moved;
+    return s_moved && !Mc_Captured();
 }
 
 int Pc_MouseCursor_UiPos(int* outX, int* outY)
 {
-    if (!Mc_Enabled() || !s_inView || Mc_PointerHidden())
+    if (!Mc_Enabled() || !s_inView || (Mc_PointerHidden() || Mc_Captured()))
         return 0;
     if (outX != NULL)
         *outX = (int)s_gx;
@@ -253,7 +270,7 @@ int Pc_MouseCursor_UiPos(int* outX, int* outY)
  * knowledge this side does not have. */
 int Pc_MouseCursor_ViewportPos(float* outX, float* outY)
 {
-    if (!Mc_Enabled() || !s_inView || Mc_PointerHidden())
+    if (!Mc_Enabled() || !s_inView || (Mc_PointerHidden() || Mc_Captured()))
         return 0;
     if (outX != NULL) *outX = s_vx;
     if (outY != NULL) *outY = s_vy;
@@ -262,27 +279,27 @@ int Pc_MouseCursor_ViewportPos(float* outX, float* outY)
 
 int Pc_MouseCursor_LeftClicked(void)
 {
-    return Mc_Enabled() && s_inView && s_leftEdge;
+    return Mc_Enabled() && s_inView && !Mc_Captured() && s_leftEdge;
 }
 
 int Pc_MouseCursor_LeftHeld(void)
 {
-    return Mc_Enabled() && s_inView && s_leftDown;
+    return Mc_Enabled() && s_inView && !Mc_Captured() && s_leftDown;
 }
 
 int Pc_MouseCursor_RightClicked(void)
 {
-    return Mc_Enabled() && s_inView && s_rightEdge;
+    return Mc_Enabled() && s_inView && !Mc_Captured() && s_rightEdge;
 }
 
 int Pc_MouseCursor_WheelStep(void)
 {
-    return Mc_Enabled() ? s_wheelStep : 0;
+    return Mc_Enabled() && !Mc_Captured() ? s_wheelStep : 0;
 }
 
 int Pc_MouseCursor_WheelNotches(void)
 {
-    return Mc_Enabled() ? s_wheelNotches : 0;
+    return Mc_Enabled() && !Mc_Captured() ? s_wheelNotches : 0;
 }
 
 unsigned int Pc_MouseCursor_BoundPadBits(void)
@@ -403,7 +420,7 @@ int Pc_MouseCursor_TouchDriving(void)
 
 int Pc_MouseCursor_TouchDown(int* outX, int* outY)
 {
-    if (!Mc_Enabled() || !s_tDown || !s_tInView)
+    if (!Mc_Enabled() || Mc_Captured() || !s_tDown || !s_tInView)
         return 0;
     if (outX != NULL) *outX = (int)s_tgx;
     if (outY != NULL) *outY = (int)s_tgy;
@@ -412,7 +429,7 @@ int Pc_MouseCursor_TouchDown(int* outX, int* outY)
 
 int Pc_MouseCursor_TouchViewportPos(float* outX, float* outY)
 {
-    if (!Mc_Enabled() || !(s_tDown || s_tReleaseEdge) || !s_tInView)
+    if (!Mc_Enabled() || Mc_Captured() || !(s_tDown || s_tReleaseEdge) || !s_tInView)
         return 0;
     if (outX != NULL) *outX = s_tvx;
     if (outY != NULL) *outY = s_tvy;
@@ -421,12 +438,12 @@ int Pc_MouseCursor_TouchViewportPos(float* outX, float* outY)
 
 int Pc_MouseCursor_TouchPressed(void)
 {
-    return Mc_Enabled() && s_tPressEdge && s_tInView;
+    return Mc_Enabled() && !Mc_Captured() && s_tPressEdge && s_tInView;
 }
 
 int Pc_MouseCursor_TouchReleased(int* outX, int* outY)
 {
-    if (!Mc_Enabled() || !s_tReleaseEdge || !s_tInView)
+    if (!Mc_Enabled() || Mc_Captured() || !s_tReleaseEdge || !s_tInView)
         return 0;
     if (outX != NULL) *outX = (int)s_tgx;
     if (outY != NULL) *outY = (int)s_tgy;
@@ -485,7 +502,7 @@ static void Mc_PollTouchpad(void)
 
 void Pc_MouseCursor_FrameUpdate(void)
 {
-    int    mx, my;
+    int    mx, my, leftUp;
     Uint32 btn;
     float  fx, fy;
 
@@ -542,6 +559,7 @@ void Pc_MouseCursor_FrameUpdate(void)
     s_rightDown = (btn & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
     s_leftEdge  = (s_leftDown  && !s_prevLeft);
     s_rightEdge = (s_rightDown && !s_prevRight);
+    leftUp      = (!s_leftDown && s_prevLeft);
     s_prevLeft  = s_leftDown;
     s_prevRight = s_rightDown;
 
@@ -565,7 +583,15 @@ void Pc_MouseCursor_FrameUpdate(void)
 
     Mc_TouchUpdate();
 
-    /* ---- Free-cursor puzzle: ownership + clicks (the cursor itself is placed
+    {
+        extern int Pc_QolMods_IsOpen(void);
+        if (Pc_QolMods_IsOpen())
+            s_captured = 1;
+        else if (!s_leftDown && !leftUp && !s_tDown && !s_tReleaseEdge)
+            s_captured = 0;
+    }
+
+        /* ---- Free-cursor puzzle: ownership + clicks (the cursor itself is placed
      * by Pc_MouseCursor_PuzzleOverride from inside each puzzle) ----
      *
      * On a touchscreen SDL also reports every finger as the mouse, so the
@@ -679,7 +705,7 @@ int Pc_MouseCursor_MenuRowHover(int baseY, int stepY, int count, unsigned int vi
     if (outClicked != NULL)
         *outClicked = 0;
 
-    if (!Mc_Enabled() || !s_inView || stepY <= 0 || Mc_PointerHidden())
+    if (!Mc_Enabled() || !s_inView || stepY <= 0 || (Mc_PointerHidden() || Mc_Captured()))
         return -1;
 
     for (i = 0; i < count; i++)
