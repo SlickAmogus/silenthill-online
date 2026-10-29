@@ -117,6 +117,7 @@ int Pc_CoopSave_List(CoopSaveEntry* out, int max)
             continue;
         }
         nf = Coop_GameFiles(f, files);
+        SH_DBG("[COOPSAVE] %s/%d.MCD: %d Silent Hill file(s)", Coop_Dir(dirSel), Coop_CardAt(c), nf);
         for (fi = 0; fi < nf; fi++)
         {
             s_MemCard_SaveHeader hdr;

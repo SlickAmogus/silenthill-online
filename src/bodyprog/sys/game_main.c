@@ -2439,7 +2439,7 @@ void MainLoop(void) // 0x80032EE0
          * so a click is not also seen here. */
         {
             extern int  Pc_CoopMenu_InGame(void);
-            extern void Pc_CoopMenu_Update(int, int, int, int);
+            extern void Pc_CoopMenu_Update(int, int, int, int, int, int);
             if (Pc_CoopMenu_InGame()) {
                 const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
                 extern unsigned int Pc_MouseCursor_BoundPadBits(void);
@@ -2448,7 +2448,9 @@ void MainLoop(void) // 0x80032EE0
                     (clk & cc->cancel) != 0,
                     (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickUp   | ControllerFlag_DpadUp))   != 0,
                     (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickDown | ControllerFlag_DpadDown)) != 0,
-                    (clk & (cc->enter | cc->action)) != 0);
+                    (clk & (cc->enter | cc->action)) != 0,
+                    (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft))  != 0,
+                    (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickRight | ControllerFlag_DpadRight)) != 0);
                 /* Carry true held to the next pad update so nav edges are right
                  * (same fix as the quick menu) rather than a press every frame. */
                 s_pcQoHeldStash      = g_Controller0->heldBtnFlags;
