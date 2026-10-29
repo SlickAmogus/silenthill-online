@@ -30,6 +30,7 @@ extern s_WorldEnvWork g_WorldEnvWork;
 #ifdef SH_PC_PORT
 #include "pc_pick.h"
 #include "pc_dark_harry.h"
+#include "pc_pause_menu.h"
 #endif
 #include "bodyprog/events/radio.h"
 #include "bodyprog/demo.h"
@@ -166,6 +167,15 @@ void GameState_InGame_Update(void) // 0x80038BD4
             g_SysWork.bgmStatusFlags |= BgmStatusFlag_6;
             break;
     }
+
+#ifdef SH_PC_PORT
+    /* Pause left by a route other than its own exits (death, the debug save
+     * combo): the next pause must open fresh, and the capture must run again. */
+    if (g_SysWork.sysState != SysState_GamePaused && !Pc_PauseMenu_ReturnPending())
+    {
+        Pc_PauseMenu_Reset();
+    }
+#endif
 
     if (g_SysWork.sysState != SysState_Gameplay && g_SysWork.playerWork.player.health <= Q12(0.0f))
     {
@@ -753,7 +763,9 @@ void SysState_Gameplay_Update(void) // 0x80038BD4
 
 void SysState_GamePaused_Update(void) // 0x800391E8
 {
+#ifndef SH_PC_PORT
     static s32 D_800A9A68 = 0;
+#endif
 
 #ifdef SH_PC_PORT
     /* A co-op session can begin while the game is ALREADY paused - the guest
@@ -762,7 +774,6 @@ void SysState_GamePaused_Update(void) // 0x800391E8
      * moment the flag turns on rather than only being refused on entry. */
     if (ShNet_CoopPauseEject())
     {
-        D_800A9A68 = 0;
         SD_Call(4);
         {
             /* Same hand-off the pause button uses: releasing on this tick shows
@@ -799,6 +810,7 @@ void SysState_GamePaused_Update(void) // 0x800391E8
     }
 #endif
 
+#ifndef SH_PC_PORT
     D_800A9A68 += g_DeltaTimeRaw;
     if (!((D_800A9A68 >> 11) & (1 << 0)))
     {
@@ -812,7 +824,7 @@ void SysState_GamePaused_Update(void) // 0x800391E8
     }
 
     func_80091380();
-#ifndef SH_PC_PORT
+
     /* PSX keeps the clear-time clock running while paused; PC-port QoL: freeze it
      * so a pause doesn't inflate the ending results time. */
     Game_TimerUpdate();
@@ -835,7 +847,9 @@ void SysState_GamePaused_Update(void) // 0x800391E8
                                        ControllerFlag_LStickLeft)) &&
         (g_Controller0->clickedBtnFlags & ControllerFlag_L3))
     {
+#ifndef SH_PC_PORT
         D_800A9A68 = 0;
+#endif
         SD_Call(4);
         g_MapEventParam = 0;
 #ifdef SH_PC_PORT
@@ -843,35 +857,40 @@ void SysState_GamePaused_Update(void) // 0x800391E8
             extern int g_PcFreezeReleasePending;
             g_PcFreezeReleasePending = 1;
         }
+        Pc_PauseMenu_Reset();
 #endif
         SysWork_StateSetNext(SysState_SaveMenu1);
         return;
     }
 
-    if ((g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
 #ifdef SH_PC_PORT
-        && !ShNet_CoopPauseHold() /* a guest leaves the host's pause when the host does */
-#endif
-        )
+    /* The pause menu (pc_pause_menu.c), which keeps the co-op rules: a guest
+     * held by the host's pause leaves when the host does, not by Continue. */
+    Pc_PauseMenu_Update();
+#else
+    if (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.pause)
     {
         D_800A9A68 = 0;
 
         SD_Call(4);
-#ifdef SH_PC_PORT
-        /* Releasing on this tick showed one bare fog-colored frame: the world
-         * draw is still gated off by the BgmStatusFlag_Pause set above. Hand the
-         * release to MainLoop, which waits for a tick that drew. */
-        {
-            extern int g_PcFreezeReleasePending;
-            g_PcFreezeReleasePending = 1;
-        }
-#endif
         SysWork_StateSetNext(SysState_Gameplay);
     }
+#endif
 }
 
 void SysState_OptionsMenu_Update(void) // 0x80039344
 {
+#ifdef SH_PC_PORT
+    /* Entered from the pause menu: the world stays frozen behind the fade, as
+     * it is in pause, until the options screen takes over. */
+    if (Pc_PauseMenu_ReturnPending())
+    {
+        extern int g_PsxPresentLastFrame;
+        g_SysWork.bgmStatusFlags |= BgmStatusFlag_Pause;
+        g_PsxPresentLastFrame     = 1;
+    }
+#endif
+
     switch (g_SysWork.sysStateSteps[0])
     {
         case 0:
