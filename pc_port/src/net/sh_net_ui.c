@@ -1518,7 +1518,9 @@ static void Nu_DrawChat(int px)
     const int   comp  = ShNetChat_Composing();
     const float lh    = (float)px * 1.32f;
     const float x     = s_vpH * 0.03f;
-    const float bot   = s_vpH * (comp ? 0.9f : 0.93f);
+    /* Typing on a touchscreen the keyboard covers the bottom half, so the box
+     * moves up to sit under the top-edge buttons. */
+    const float bot   = s_vpH * (ShNetChat_TouchTyping() ? 0.46f : comp ? 0.9f : 0.93f);
     /* Never wider than one atlas slot can hold: a wider row is refused by
      * Nu_Upload and drew as nothing, so a long line vanished as it was typed. */
     const float wrapW = s_vpW * 0.60f < (float)(NU_ATLAS_W - 32) ? s_vpW * 0.60f : (float)(NU_ATLAS_W - 32);

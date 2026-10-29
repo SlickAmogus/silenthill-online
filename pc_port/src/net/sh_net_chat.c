@@ -22,6 +22,7 @@
 #define CHAT_LOG_MAX 48       /* lines kept across every channel; the last few of the chosen one are shown */
 #define CHAT_SHOWN   6        /* lines drawn when idle */
 #define CHAT_SHOWN_OPEN 10    /* lines drawn while composing */
+#define CHAT_SHOWN_TOUCH 5    /* lines drawn while typing on a touchscreen */
 #define CHAT_SYSTEM  (-1)     /* a line of the game's own: shown on every channel */
 #define CHAT_INPUT_MAX 450    /* typed bytes; sent as several lines of at most CHAT_PIECE_MAX */
 #define CHAT_PIECE_MAX 150    /* one line on the wire: SHNET_CHAT_MAX is 160 with the NUL */
@@ -139,6 +140,55 @@ void ShNetChat_Tick(void)
 /* Compose                                                             */
 /* ------------------------------------------------------------------ */
 
+/* Touch typing: the chat button on a touchscreen. A phone keyboard's key
+ * presses come and go between two frames, so the key-state polling below
+ * misses them; this path takes SDL's text events instead (on Android they
+ * arrive on the Java thread, hence the lock). The browser has no keyboard to
+ * raise for a canvas: there a hidden text box takes the typing (web_platform.c)
+ * and the SDL events are ignored, or a desktop key would arrive twice. */
+static int          s_touchText;
+static SDL_SpinLock s_tLock;
+static char         s_tTyped[128];
+static int          s_tLen, s_tBack, s_tEnter, s_tEsc;
+static int          s_tWatching;
+#if defined(__EMSCRIPTEN__)
+extern void Web_TextBegin(void);
+extern void Web_TextEnd(void);
+extern int  Web_TextTake(char* out, int cap);
+#endif
+
+static int SDLCALL Chat_TextWatch(void* user, SDL_Event* e)
+{
+    (void)user;
+#if defined(__EMSCRIPTEN__)
+    (void)e;
+    return 0;
+#else
+    if (!s_touchText)
+    {
+        return 0;
+    }
+    SDL_AtomicLock(&s_tLock);
+    if (e->type == SDL_TEXTINPUT)
+    {
+        const char* t = e->text.text;
+        for (; *t && s_tLen < (int)sizeof(s_tTyped); t++)
+        {
+            s_tTyped[s_tLen++] = *t;
+        }
+    }
+    else if (e->type == SDL_KEYDOWN)
+    {
+        const SDL_Scancode sc = e->key.keysym.scancode;
+        if (sc == SDL_SCANCODE_BACKSPACE) s_tBack++;
+        else if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) s_tEnter = 1;
+        else if (sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_AC_BACK) s_tEsc = 1;
+    }
+    SDL_AtomicUnlock(&s_tLock);
+    return 0;
+#endif
+}
+
 void ShNetChat_Open(void)
 {
     s_open      = 1;
@@ -177,6 +227,104 @@ void ShNetChat_Close(void)
     s_open     = 0;
     s_inputLen = 0;
     s_input[0] = '\0';
+    if (s_touchText)
+    {
+        s_touchText = 0;
+        if (SDL_HasScreenKeyboardSupport())
+        {
+            SDL_StopTextInput();
+        }
+#if defined(__EMSCRIPTEN__)
+        Web_TextEnd();
+#endif
+    }
+}
+
+void ShNetChat_OpenTouch(void)
+{
+    ShNetChat_Open();
+    SDL_AtomicLock(&s_tLock);
+    s_tLen = s_tBack = s_tEnter = s_tEsc = 0;
+    SDL_AtomicUnlock(&s_tLock);
+    if (!s_tWatching)
+    {
+        SDL_AddEventWatch(Chat_TextWatch, NULL);
+        s_tWatching = 1;
+    }
+    s_touchText = 1;
+    /* On a phone, starting text input is what raises the keyboard; SDL can
+     * count it as already on after the keyboard was dismissed, so always. */
+    if (SDL_HasScreenKeyboardSupport())
+    {
+        SDL_StartTextInput();
+    }
+#if defined(__EMSCRIPTEN__)
+    Web_TextBegin();
+#endif
+}
+
+int ShNetChat_TouchTyping(void)
+{
+    return s_open && s_touchText;
+}
+
+int ShNetChat_Available(void)
+{
+    return (ShNet_Enabled() && ShNet_Status() == SHNET_ST_CONNECTED) || ShSession_Active();
+}
+
+static void Chat_Submit(void);
+static void Chat_Append(char c);
+
+/* What the touch path collected since the last frame. Only printable ASCII is
+ * kept, as the server keeps only that. */
+static void Chat_FeedTouch(void)
+{
+    char typed[160];
+    int  n, back, enter, esc, i;
+
+    SDL_AtomicLock(&s_tLock);
+    n = s_tLen;
+    memcpy(typed, s_tTyped, (size_t)n);
+    back  = s_tBack;
+    enter = s_tEnter;
+    esc   = s_tEsc;
+    s_tLen = s_tBack = s_tEnter = s_tEsc = 0;
+    SDL_AtomicUnlock(&s_tLock);
+#if defined(__EMSCRIPTEN__)
+    {
+        /* The text box reports a backspace as '\b' and Enter as '\n'. */
+        char w[128];
+        int  k, m = Web_TextTake(w, (int)sizeof(w));
+        for (k = 0; k < m; k++)
+        {
+            if (w[k] == 27) esc = 1;
+            else if (w[k] == '\b') back++;
+            else if (w[k] == '\n') enter = 1;
+            else if (n < (int)sizeof(typed)) typed[n++] = w[k];
+        }
+    }
+#endif
+    if (esc)
+    {
+        ShNetChat_Close();
+        return;
+    }
+    while (back-- > 0 && s_inputLen > 0)
+    {
+        s_input[--s_inputLen] = '\0';
+    }
+    for (i = 0; i < n; i++)
+    {
+        if ((unsigned char)typed[i] >= 32 && (unsigned char)typed[i] <= 126)
+        {
+            Chat_Append(typed[i]);
+        }
+    }
+    if (enter)
+    {
+        Chat_Submit();
+    }
 }
 
 int ShNetChat_IsOpen(void)
@@ -326,6 +474,11 @@ void ShNetChat_FeedKeys(const unsigned char* ks)
     {
         return;
     }
+    if (s_touchText)
+    {
+        Chat_FeedTouch();
+        return;
+    }
     /* First frame after opening: seed prev from live so the opening key press
      * (Y / U) is not itself typed, and nothing held from gameplay leaks in. */
     if (!s_haveKeys)
@@ -417,7 +570,8 @@ static int Chat_OnChannel(const ChatLine* l)
  * the ones that have faded out while the box is closed. */
 static int Chat_Collect(void)
 {
-    const int shown = s_open ? CHAT_SHOWN_OPEN : CHAT_SHOWN;
+    /* Typing on a touchscreen, the box sits above the keyboard: fewer lines. */
+    const int shown = s_open ? (s_touchText ? CHAT_SHOWN_TOUCH : CHAT_SHOWN_OPEN) : CHAT_SHOWN;
     int       i;
     s_visCount = 0;
     for (i = 0; i < s_logCount; i++)
