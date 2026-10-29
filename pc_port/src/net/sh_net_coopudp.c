@@ -12,6 +12,7 @@
 #include <SDL.h>
 
 #include "sh_net_proto.h"
+#include "sh_net_chat_filter.h" /* member and room names get the chat's slur mask */
 #include "sh_net_platform.h"
 #include "sh_net_coopudp.h"
 #include "pc_config.h"
@@ -177,6 +178,7 @@ static void CoopUdp_ReadRoster(const shn_u8* p, int len, int joined)
         id = ShnGetU32(p, &off);
         ShnGetStr(p, &off, SHNET_NAME_MAX, name, SHNET_NAME_MAX);
         ShnSanitizeText(name);
+        ShNetChat_Censor(name);
         (void)ShnGetU8(p, &off); /* isHost flag (derivable from s_hostId) */
         s_members[s_memberCount].id = id;
         SDL_strlcpy(s_members[s_memberCount].name, name, SHNET_NAME_MAX);
@@ -247,6 +249,7 @@ static void CoopUdp_OnRoomList(const shn_u8* p, int len)
         s_rooms[s_roomCount].max     = ShnGetU8(p, &off);
         ShnGetStr(p, &off, SHNET_NAME_MAX, s_rooms[s_roomCount].host, SHNET_NAME_MAX);
         ShnSanitizeText(s_rooms[s_roomCount].host);
+        ShNetChat_Censor(s_rooms[s_roomCount].host);
         /* The host's map, from a server that sends it. */
         s_rooms[s_roomCount].map = (off < len) ? ShnGetU8(p, &off) : 0xFF;
         s_roomCount++;

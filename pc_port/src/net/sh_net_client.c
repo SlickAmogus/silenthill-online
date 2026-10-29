@@ -38,6 +38,7 @@
 #include "sh_net_coopudp.h" /* unified co-op rides this connection */
 #include "sh_build_hash.h"  /* this build's id, sent in HELLO */
 #include "sh_net_steam.h"
+#include "sh_net_chat_filter.h" /* names get the chat's slur mask */
 #include "pc_config.h"
 #include "sh_log.h"
 
@@ -226,6 +227,9 @@ static void ShNet_SanitizeName(char* s)
     {
         SDL_strlcpy(s, "Wanderer", SHNET_NAME_MAX);
     }
+    /* Masked here too, not only by the server: an older server passes names
+     * through as typed, and the local name is shown to its own player. */
+    ShNetChat_Censor(s);
 }
 
 const char* ShNet_LocalName(void)

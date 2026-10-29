@@ -17,6 +17,7 @@
 #include <SDL.h>
 
 #include "sh_net_proto.h"
+#include "sh_net_chat_filter.h" /* member and lobby names get the chat's slur mask */
 #include "sh_net.h"
 #include "sh_net_session.h"
 #include "sh_net_platform.h"
@@ -833,6 +834,7 @@ static void ShSession_SyncMembers(void)
         if (nm && nm[0])
         {
             SDL_strlcpy(fresh[count].name, nm, SHSESSION_NAME_MAX);
+            ShNetChat_Censor(fresh[count].name);
         }
         else if (!fresh[count].name[0])
         {
@@ -934,6 +936,7 @@ static void ShSession_Receive(unsigned int now)
             }
             ShnGetStr(buf + SHNET_HDR_SIZE, &off, SHNET_NAME_MAX, nm, SHNET_NAME_MAX);
             ShnSanitizeText(nm);
+            ShNetChat_Censor(nm);
             /* The transport's own name for a member (Steam persona, relay
              * roster) wins: a self-announced name would let anyone call
              * themselves the host. */
@@ -1407,6 +1410,7 @@ static void ShSession_Publish(void)
                 unsigned long long id = 0;
                 int players = 0, max = 0, map = -1;
                 ShSteam_LobbyListGet(j, &id, s_pub.rooms[rc].host, SHSESSION_NAME_MAX, &players, &max, &map);
+                ShNetChat_Censor(s_pub.rooms[rc].host);
                 s_pub.rooms[rc].code    = 0;
                 s_pub.rooms[rc].players = (unsigned char)players;
                 s_pub.rooms[rc].max     = (unsigned char)max;
