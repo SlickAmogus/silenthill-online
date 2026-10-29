@@ -122,6 +122,7 @@ static const QoRowDef s_pageGfx1[] = {
     { ROW_OPT,   "fog_strength",         0, NULL },
     { ROW_OPT,   "bullet_decals",        0, NULL },
     { ROW_EXTRA, NULL, QO_X_FACEANIM,       "Character Face Animation" },
+    { ROW_OPT,   "use_pgxp",             0, NULL },  /* PGXP */
     /* Frame cap, beside Weather_Rate: both decide how fast the world ticks. */
     { ROW_OPT,   "fps_cap",              0, NULL },  /* FPS_Limit */
     { ROW_OPT,   "weather_sim_hz",       0, NULL },  /* Weather_Rate: 30 or 60 Hz */
