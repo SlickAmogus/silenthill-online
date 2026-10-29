@@ -416,7 +416,7 @@ partial class Form1
             this.banner.BackColor = System.Drawing.Color.DarkSlateGray;
             this.banner.Cursor = System.Windows.Forms.Cursors.Hand;
             this.banner.Dock = System.Windows.Forms.DockStyle.Top;
-            this.banner.Image = global::SilentHillPC_Launcher.Properties.Resources.launcher;
+            this.banner.Image = global::SilentHillPC_Launcher.Properties.Resources.onlinelogo;
             this.banner.Location = new System.Drawing.Point(0, 0);
             this.banner.Name = "banner";
             this.banner.Size = new System.Drawing.Size(454, 111);
