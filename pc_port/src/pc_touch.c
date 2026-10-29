@@ -390,6 +390,13 @@ static int Tc_Mode(void)
             return TC_MODE_OFF;
     }
 
+    /* The living-world message composer takes taps and drags itself. */
+    {
+        extern int ShNetMemo_ComposerActive(void);
+        if (ShNetMemo_ComposerActive())
+            return TC_MODE_OFF;
+    }
+
     /* The PAPER map -- the fullscreen one from a wall map or a map-zoom event,
      * not the Map button's screen. It is not a sys state at all: it runs as a
      * gameplay SUB-state with the world frozen behind it, so every test below
