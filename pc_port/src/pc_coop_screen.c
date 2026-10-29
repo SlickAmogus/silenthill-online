@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <SDL.h> /* SDL_HasScreenKeyboardSupport */
+
 #include "game.h"
 #include "bodyprog/bodyprog.h"
 #include "bodyprog/text/text_draw.h"
@@ -432,7 +434,7 @@ void Pc_CoopScreen_Draw(void)
         }
     }
 
-    if (s_top > 0 || s_top + shown < n)
+    if ((s_top > 0 || s_top + shown < n) && !(editing && SDL_HasScreenKeyboardSupport()))
     {
         Nm_ScrollArrowDraw(160, CS_LIST_Y - 8, 1, s_top > 0);
         Nm_ScrollArrowDraw(160, CS_STATUS_Y - 4, 0, s_top + shown < n);
@@ -448,7 +450,12 @@ void Pc_CoopScreen_Draw(void)
             /* "Label:  typed_": the label stays put and only the typed text
              * is trimmed to keep its end, where the cursor is, in view. */
             char      label[NM_LINE_MAX], value[NM_LINE_MAX];
-            const int sx = CS_X0 + 8, sy = CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0);
+            /* A phone's keyboard covers the bottom half of a landscape
+             * screen, status line and all: there the field goes up top,
+             * under the heading, where the typing can be seen. */
+            const int sx = CS_X0 + 8,
+                      sy = SDL_HasScreenKeyboardSupport() ? CS_HEADING_Y + 16
+                                                          : CS_STATUS_Y + (small == NM_TEXT_SMALL ? 4 : 0);
             int       lw = 0;
             if (!cs_split(text, label, sizeof(label), value, sizeof(value)))
             {
