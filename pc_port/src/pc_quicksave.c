@@ -15,6 +15,7 @@
 #include "pc_config.h"
 #include "pc_rando.h"
 #include "pc_coop_save.h"
+#include "pc_quicksave.h"
 
 #include <SDL.h>
 
@@ -27,7 +28,8 @@
  * without a hand-maintained room table, and lifts by itself the moment the boss
  * dies — the walk back out of the chamber stays saveable. Quick LOAD is left
  * alone: getting out is never the problem. */
-/* Shared with the co-op save path (pc_coop_save.h). */
+/* Shared with the co-op save path (pc_coop_save.h) and, as
+ * Pc_QuickSave_BossActive, the pause menu (pc_quicksave.h). */
 int Pc_Save_BossActive(void)
 {
     static const unsigned char s_bossCharas[] = {
@@ -95,6 +97,31 @@ int Pc_Save_OpenSaveScreen(void)
     Fs_QueueWaitForEmpty();
     Game_StateSetNext(GameState_SaveScreen);
     return 1;
+}
+
+/* The pause menu's names (pc_quicksave.h). It checks for a boss itself and
+ * opens the screens from its own state, so the save screen opens unguarded
+ * here, as it does on pc-port. */
+int Pc_QuickSave_BossActive(void)
+{
+    return Pc_Save_BossActive();
+}
+
+void Pc_QuickSave_OpenSaveScreen(void)
+{
+    SysWork_SavegameUpdatePlayer();
+    Screen_Refresh(320, 0);
+    GameFs_SaveLoadBinLoad();
+    Fs_QueueWaitForEmpty();
+    Game_StateSetNext(GameState_SaveScreen);
+}
+
+void Pc_QuickSave_OpenLoadScreen(void)
+{
+    Screen_Refresh(320, 0);
+    GameFs_SaveLoadBinLoad();
+    Fs_QueueWaitForEmpty();
+    Game_StateSetNext(GameState_LoadSavegameScreen);
 }
 
 void Pc_QuickSaveLoadUpdate(void)
