@@ -48,7 +48,8 @@
 #include "pc_config.h"
 #include "pc_chara_pool.h" /* Pc_CharaPool_HarryGhostModel: clean Harry for remotes */
 #include "pc_item_pool.h"  /* a partner's weapon model */
-#include "pc_playas.h"     /* a partner's skin rig */
+#include "pc_playas.h"
+#include "pc_skin_chara.h" /* a partner wears their own swap, or none */     /* a partner's skin rig */
 #include "sh_net.h"
 #include "sh_net_art.h"
 #include "sh_net_ui.h"
@@ -614,7 +615,35 @@ static void ShNetG_DrawHeldItem(GsCOORDINATE2* hand, int itemId)
     func_80057090(&heldItem->bone.modelInfo, &g_OrderingTable0[g_ActiveBufferIdx], 1, &viewMat, &worldMat, 0);
 }
 
-static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, const ShNetGPose* pose)
+/* The Harry swap each room member says they wear (SHNET_CTRL_SKIN), by id. */
+static struct { unsigned long long id; char token[24]; } s_memberSkin[SHSESSION_MAX_MEMBERS];
+
+void ShNetG_SetMemberSkin(unsigned long long id, const char* token)
+{
+    int i, free_ = -1;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_memberSkin[i].id == id) { free_ = i; break; }
+        if (free_ < 0 && s_memberSkin[i].id == 0) free_ = i;
+    }
+    if (free_ < 0) free_ = 0;
+    s_memberSkin[free_].id = id;
+    snprintf(s_memberSkin[free_].token, sizeof(s_memberSkin[free_].token), "%s", token ? token : "");
+}
+
+/* The swap file to draw a member in: theirs when this machine has it, else
+ * none (stock Harry), the fallback for any character mod we do not share. */
+static const char* ShNetG_MemberSkinFile(unsigned long long id)
+{
+    int i;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+        if (s_memberSkin[i].id == id && s_memberSkin[i].token[0])
+            return Pc_PlayAs_SkinFileForToken(s_memberSkin[i].token);
+    return NULL;
+}
+
+static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, const ShNetGPose* pose,
+                               const char* skinFile)
 {
     static GsCOORDINATE2 s_coords[GHOST_BONE_MAX];
     s_CharaModel*      cm;
@@ -713,9 +742,13 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
         Pc_PlayAs_RigHideParts(rig, cm, savedVis);
     }
     ret = (s16)func_8003DD74((e_CharaId)charaId, 0);
+    /* Swaps ride Harry's row: this body wears the partner's file if we have
+     * it, otherwise the stock model, and never the local player's swap. */
+    Pc_SkinChara_SetDrawSkin((charaId == Chara_Harry && skinFile != NULL) ? 1 : 2, skinFile);
     func_80045534(&cm->skeleton, &g_OrderingTable0[g_ActiveBufferIdx], 1,
                   s_coords, Q8_TO_Q12(CHARA_FILE_INFOS[charaId].field_6),
                   (u16)ret, CHARA_FILE_INFOS[charaId].field_8);
+    Pc_SkinChara_SetDrawSkin(0, NULL);
     if (charaId != Chara_Harry)
     {
         Pc_PlayAs_RigRestoreParts(cm, savedVis);
@@ -1068,7 +1101,8 @@ void ShNet_DrawWorld(GsOT* ot)
                     {
                         unsigned char* before = (unsigned char*)poly;
                         GsOUT_PACKET_P = (PACKET*)poly;
-                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, &gp);
+                        drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, &gp,
+                                                        ShNetG_MemberSkinFile(m->steamId));
                         {
                             unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
                             poly     = (POLY_FT4*)after;
@@ -1228,7 +1262,7 @@ void ShNet_DrawWorld(GsOT* ot)
                     gp.heldItem  = 0xFF;
                     gp.handBone  = 0;
                     g_PcCharaTranslucent = 1; /* living-world bodies are translucent */
-                    drewModel = ShNetG_TryDrawModel(g->charaId, gx, gy, gz, grot, &gp);
+                    drewModel = ShNetG_TryDrawModel(g->charaId, gx, gy, gz, grot, &gp, NULL);
                     g_PcCharaTranslucent = 0;
                     {
                         unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
