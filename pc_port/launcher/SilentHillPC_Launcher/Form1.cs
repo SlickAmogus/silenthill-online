@@ -2517,7 +2517,7 @@ public partial class Form1 : Form
 
         try
         {
-            banner.Image = SilentHillPC_Launcher.Properties.Resources.launcher;
+            banner.Image = SilentHillPC_Launcher.Properties.Resources.onlinelogo;
 
             if (_bannerCustom != null)
             {
