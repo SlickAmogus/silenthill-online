@@ -517,7 +517,7 @@ typedef struct {
     int  onlineGhosts;        /* 1 = draw other players in the world (online_ghosts) */
     int  onlineMemos;         /* 1 = draw and place messages (online_memos) */
     int  onlineDeaths;        /* 1 = draw and report death markers (online_deaths) */
-    int  onlineChatHintShown; /* 1 once "Press Tab to switch channels" has been shown (online_chat_hint_shown) */
+    int  onlineChatHidden;    /* 1 = the chat feed is hidden (M menu Chat row, console `chat hide`) (online_chat_hidden) */
     int  onlineGhostStyle;    /* SHNET_GS_*: contour, floor ring, or both (online_ghost_style) */
     int  onlineGhostRange;    /* metres past which a ghost is not drawn (online_ghost_range) */
     int  onlineNameplates;    /* 1 = float each other player's name over their head (online_nameplates) */
