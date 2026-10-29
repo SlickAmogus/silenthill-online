@@ -23,6 +23,11 @@ int         Pc_PlayAs_Current(void);
 const char* Pc_PlayAs_Label(int idx);   /* uppercase display name */
 const char* Pc_PlayAs_Name(int idx);    /* lowercase config/console token */
 int         Pc_PlayAs_SkinCharaId(void);/* Chara_Harry when not swapped */
+/* The HERO_* swap worn, as its lowercase token ("cj"), or "" for a built-in
+ * character. What a co-op partner is told, so they can wear the same file. */
+const char* Pc_PlayAs_SkinToken(void);
+/* The swap file ("HERO_CJ") this machine has for a token, or NULL. */
+const char* Pc_PlayAs_SkinFileForToken(const char* token);
 int         Pc_PlayAs_IsFemale(void);   /* gates the optional voice-pitch shift */
 
 /* Select a character. Mid-game this synchronously reloads the player model
