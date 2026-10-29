@@ -159,6 +159,20 @@ int Pc_CoopSave_List(CoopSaveEntry* out, int max)
                     char* p;
                     for (p = e->name; *p; p++) if (*p == '_') *p = ' ';
                 }
+                snprintf(e->where, sizeof(e->where), "%s", g_Savegame_SaveLocationNames[loc]);
+                {
+                    char* p;
+                    for (p = e->where; *p; p++) if (*p == '_') *p = ' ';
+                }
+                /* Slots A-D of port 1, then of port 2 (Coop_CardAt); a second
+                 * folder is another install's saves (coop_saves_dir). */
+                snprintf(e->card, sizeof(e->card), "%s %d%c", dirSel ? "Other card" : "Card",
+                         c / 4 + 1, 'A' + c % 4);
+                e->secs       = secs + (int)sg->add290Hours * 290 * 3600;
+                e->saveNo     = (int)sg->savegameCount;
+                e->difficulty = (int)sg->gameDifficulty;
+                e->nextFear   = sg->isNextFearMode ? 1 : 0;
+                e->clears     = (int)sg->clearGameCount;
                 snprintf(e->key, sizeof(e->key), "%d.%d.%d.%d", dirSel, Coop_CardAt(c), files[fi], slot);
                 e->mapIdx = sg->mapIdx;
                 e->order  = hdr.saveMetadata[slot].totalSavegameCount;
