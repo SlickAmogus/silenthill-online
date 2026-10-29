@@ -1239,6 +1239,32 @@ static void Nu_DrawWrapped(const char* text, const int* starts, const int* lens,
     }
 }
 
+/* One colour per channel; a line of the game's own is grey. */
+static void Nu_ChatColor(int scope, float* r, float* g, float* b)
+{
+    switch (scope)
+    {
+    case SHNET_CHAT_GLOBAL: *r = 0.72f; *g = 0.78f; *b = 0.90f; break;
+    case SHNET_CHAT_GAME:   *r = 0.88f; *g = 0.80f; *b = 0.58f; break;
+    case SHNET_CHAT_COOP:   *r = 0.64f; *g = 0.88f; *b = 0.66f; break;
+    case SHNET_CHAT_ALL:    *r = 0.86f; *g = 0.86f; *b = 0.86f; break;
+    default:                *r = 0.70f; *g = 0.70f; *b = 0.70f; break;
+    }
+}
+
+/* The line as drawn: on All every line says where it came from. */
+static const char* Nu_ChatLine(int i, char* buf, int cap)
+{
+    const char* t  = ShNetChat_LineText(i);
+    const int   sc = ShNetChat_LineScope(i);
+    if (ShNetChat_Scope() == SHNET_CHAT_ALL && sc >= 0)
+    {
+        snprintf(buf, (size_t)cap, "[%s] %s", ShNetChat_ScopeName(sc), t);
+        return buf;
+    }
+    return t;
+}
+
 static void Nu_DrawChat(int px)
 {
     const int   n     = ShNetChat_LineCount();
@@ -1264,13 +1290,15 @@ static void Nu_DrawChat(int px)
      * a long line would otherwise draw as nothing. */
     for (i = 0; i < n; i++)
     {
-        int st[NU_WRAP_MAX], ln[NU_WRAP_MAX];
-        rows += Nu_Wrap(ShNetChat_LineText(i), wrapW, px, st, ln, NU_WRAP_MAX);
+        int  st[NU_WRAP_MAX], ln[NU_WRAP_MAX];
+        char lb[512];
+        rows += Nu_Wrap(Nu_ChatLine(i, lb, (int)sizeof(lb)), wrapW, px, st, ln, NU_WRAP_MAX);
     }
     if (comp)
     {
-        const int g = (ShNetChat_Scope() == SHNET_CHAT_GAME);
-        snprintf(compose, sizeof(compose), "%s %s_", g ? "[Game]" : "[All]", ShNetChat_ComposeText());
+        const int sc = ShNetChat_Scope();
+        snprintf(compose, sizeof(compose), "[%s] %s_",
+                 sc == SHNET_CHAT_ALL ? "All > Global" : ShNetChat_ScopeName(sc), ShNetChat_ComposeText());
         compRows = Nu_Wrap(compose, wrapW, px, cs, cl, NU_WRAP_MAX);
     }
 
@@ -1286,21 +1314,21 @@ static void Nu_DrawChat(int px)
     y = bot - lh * (float)(rows + compRows);
     for (i = 0; i < n; i++)
     {
-        const char* t = ShNetChat_LineText(i);
-        const int   g = (ShNetChat_LineScope(i) == SHNET_CHAT_GAME);
+        char        lb[512];
+        const char* t = Nu_ChatLine(i, lb, (int)sizeof(lb));
+        float       cr, cg, cb;
         int         st[NU_WRAP_MAX], ln[NU_WRAP_MAX];
         const int   r = Nu_Wrap(t, wrapW, px, st, ln, NU_WRAP_MAX);
-        Nu_DrawWrapped(t, st, ln, r, x, &y, lh, px,
-                       g ? 0.86f : 0.72f,
-                       g ? 0.80f : 0.78f,
-                       g ? 0.62f : 0.86f, ShNetChat_LineAlpha(i));
+        Nu_ChatColor(ShNetChat_LineScope(i), &cr, &cg, &cb);
+        Nu_DrawWrapped(t, st, ln, r, x, &y, lh, px, cr, cg, cb, ShNetChat_LineAlpha(i));
     }
 
     if (comp)
     {
-        const int g = (ShNetChat_Scope() == SHNET_CHAT_GAME);
+        float cr, cg, cb;
+        Nu_ChatColor(ShNetChat_Scope(), &cr, &cg, &cb);
         Nu_DrawWrapped(compose, cs, cl, compRows, x, &y, lh, px,
-                       g ? 0.95f : 0.80f, g ? 0.90f : 0.86f, g ? 0.66f : 0.95f, 1.0f);
+                       cr + 0.08f, cg + 0.08f, cb + 0.06f, 1.0f);
     }
 }
 

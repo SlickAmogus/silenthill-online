@@ -31,71 +31,7 @@
 /* How long "Message left." stays up after a placement. */
 #define MEMO_PLACED_FRAMES 150
 
-/* APPEND ONLY - see the file header. */
-static const char* const s_phrases[] = {
-    "%s ahead",
-    "Beware of %s",
-    "Try %s",
-    "Need %s",
-    "No %s",
-    "%s here",
-    "Look for %s",
-    "I can hear %s",
-    "Maybe %s",
-    "Turn back. %s",
-    "Remember %s",
-    "It was %s",
-    "Why %s?",
-    "So cold... %s",
-    "%s",
-    "Don't trust %s",
-    "%s saved me",
-    "%s killed me",
-    "Nothing but %s",
-    "Follow %s",
-    "%s, I think",
-    "Hidden: %s",
-    "Wrong way. %s",
-    "Thank you for %s"
-};
-
-/* APPEND ONLY, and only ever at the END OF ITS GROUP - see the file header. */
-static const char* const s_words[] = {
-    /* 0: creatures */
-    "the birds", "the dogs", "the nurses", "the children",
-    "the crawling things", "something big", "the twitching one",
-    "the thing in the dark", "the doctors", "the wings above",
-    /* 10: supplies */
-    "a health drink", "ammo", "a first aid kit", "an antidote",
-    "the handgun", "the shotgun", "the rifle", "the knife",
-    "the hammer", "the axe", "a key", "the map",
-    /* 22: the world */
-    "the door", "the stairs", "the hole", "the elevator",
-    "the corridor", "the window", "the gate", "the ladder",
-    "the drain", "the locker", "the vent", "the roof",
-    "the fence", "the car", "the radio", "the flashlight",
-    /* 38: what to do */
-    "running", "hiding", "listening", "waiting",
-    "looking up", "looking down", "going back", "standing still",
-    "the radio static", "turning it off", "reading it", "taking it",
-    /* 50: places */
-    "the school", "the hospital", "the sewer", "the church",
-    "the alley", "the fog", "the other side", "the lighthouse",
-    "the motel", "the mall", "the pier", "the amusement park",
-    /* 62: feelings */
-    "hope", "nothing", "a trap", "silence",
-    "blood", "a dead end", "safety", "help",
-    "the truth", "a dream", "the end", "a secret"
-};
-
-static const struct { int first; const char* name; } s_groups[] = {
-    {  0, "THEY" },
-    { 10, "SUPPLIES" },
-    { 22, "THE PLACE" },
-    { 38, "WHAT TO DO" },
-    { 50, "WHERE" },
-    { 62, "WHAT I FELT" }
-};
+#include "sh_net_memo_text.h" /* the tables, shared with the server so it can print a marker */
 
 #define PHRASE_COUNT ((int)(sizeof(s_phrases) / sizeof(s_phrases[0])))
 #define WORD_COUNT   ((int)(sizeof(s_words)   / sizeof(s_words[0])))
@@ -266,11 +202,6 @@ static int s_word;
 static int s_emote;    /* index into s_emotes; 0 = none */
 static int s_placedTimer;
 
-/* Emotes ride the high nibble of the memo kind byte (no wire-size change), so
- * at most 15. ASCII only: every glyph is guaranteed in the overlay font. */
-static const char* const s_emotes[] = {
-    "", "<3", "!!", "??", ":)", ":(", "XD", "**", "->", "RIP", "o/", "...", "zZz", "!?", "<o>"
-};
 #define EMOTE_COUNT ((int)(sizeof(s_emotes) / sizeof(s_emotes[0])))
 
 int ShNetMemo_EmoteCount(void)

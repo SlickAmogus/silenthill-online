@@ -6,7 +6,7 @@
 #   sudo bash install-server.sh [--args "-n Fog -m Welcome"] [--domain server.example.com]
 #
 # The files come from the folder this script is in (the unzipped release):
-# when gcc is installed, sh_master.c + sh_net_proto.h are compiled here, so a
+# when gcc is installed, sh_master.c + its three headers are compiled here, so a
 # locally edited server works too; otherwise the prebuilt sh_master-linux-x64
 # or sh_master-linux-arm64 matching `uname -m` is used.
 #
@@ -54,7 +54,7 @@ fi
 mkdir -p "$(dirname "$BIN")" "$WORKDIR"
 
 echo ">> server program ..."
-if command -v gcc >/dev/null 2>&1 && [ -f "$HERE/sh_master.c" ] && [ -f "$HERE/sh_net_proto.h" ]; then
+if command -v gcc >/dev/null 2>&1 && [ -f "$HERE/sh_master.c" ] && [ -f "$HERE/sh_net_proto.h" ] && [ -f "$HERE/sh_net_memo_text.h" ] && [ -f "$HERE/sh_net_chat_filter.h" ]; then
     echo "   compiling sh_master.c with gcc"
     gcc -O2 -I"$HERE" -o "$BIN.new" "$HERE/sh_master.c"
 else
