@@ -173,15 +173,17 @@ their ping.
 Those are `key_online_players`, `key_online_memo`, `key_chat_game` and
 `key_chat_cycle` in `config.cfg`.
 
-**Chat channels.** **Global** (the default) reaches everyone on the server;
-**Level** everyone on your map; **Coop** the players in your co-op game, and
-only them: a Coop line travels inside the room, never through the server, so
-it works in a Steam or Join-by-IP game too and is nobody else's to read. **All**
-shows the three together, each line coloured and prefixed `[Global]`,
-`[Level]` or `[Coop]`; a line typed on All is sent as Global. The first time
-the box opens it says "Press Tab to switch channels". Racial slurs are masked
-with asterisks on the way in and on the way out, on the server and in the
-game.
+**Chat channels.** **All** (the default) shows every channel together, each
+line coloured and prefixed `[Global]`, `[Level]` or `[Coop]`; a line typed on
+All is sent as Global. **Global** reaches everyone on the server; **Level**
+everyone on your map; **Coop** the players in your co-op game, and only them:
+a Coop line travels inside the room, never through the server, so it works in
+a Steam or Join-by-IP game too and is nobody else's to read. The first time
+the box opens in a session it says "Press Tab to switch channels". **Chat** in
+the `M` menu hides the feed (the box still opens on its key, and shows the
+lines while it is open); the console's `chat hide` / `chat show` do the same.
+Racial slurs are masked with asterisks on the way in and on the way out, on
+the server and in the game.
 
 ---
 

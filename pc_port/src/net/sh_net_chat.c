@@ -37,10 +37,10 @@ static ChatLine s_log[CHAT_LOG_MAX];
 static int      s_logCount;
 
 static int  s_open;
-static int  s_scope = SHNET_CHAT_GLOBAL; /* the channel shown, and sent to (All sends to Global) */
+static int  s_hintShown;                 /* "Press Tab..." once per run */
+static int  s_scope = SHNET_CHAT_ALL;    /* the channel shown, and sent to (All sends to Global) */
 static int  s_vis[CHAT_LOG_MAX];         /* indices into s_log on the chosen channel, this frame */
 static int  s_visCount;
-static int  s_hidden;
 static char s_input[CHAT_INPUT_MAX];
 static int  s_inputLen;
 
@@ -145,10 +145,9 @@ void ShNetChat_Open(void)
     s_inputLen  = 0;
     s_input[0]  = '\0';
     s_haveKeys  = 0; /* so the key that opened us is not read as a keystroke */
-    if (!g_PcConfig.onlineChatHintShown)
+    if (!s_hintShown)
     {
-        g_PcConfig.onlineChatHintShown = 1;
-        PcConfig_SaveKeyValue("online_chat_hint_shown", "1");
+        s_hintShown = 1;
         ShNetChat_AddSystem("Press Tab to switch channels");
     }
 }
@@ -185,10 +184,13 @@ int ShNetChat_IsOpen(void)
     return s_open;
 }
 
+/* Hidden puts the feed away; the box still opens on its key, and the lines
+ * show while it is open, so a hidden chat is still one you can take part in. */
 void ShNetChat_SetHidden(int hidden)
 {
-    s_hidden = hidden ? 1 : 0;
-    if (s_hidden)
+    g_PcConfig.onlineChatHidden = hidden ? 1 : 0;
+    PcConfig_SaveKeyValue("online_chat_hidden", hidden ? "1" : "0");
+    if (hidden)
     {
         ShNetChat_Close();
     }
@@ -196,7 +198,7 @@ void ShNetChat_SetHidden(int hidden)
 
 int ShNetChat_Hidden(void)
 {
-    return s_hidden;
+    return g_PcConfig.onlineChatHidden;
 }
 
 /* A Coop line goes to the room itself, as a control note, so a Steam or
@@ -434,7 +436,7 @@ static int Chat_Collect(void)
 
 int ShNetChat_DisplayActive(void)
 {
-    if (s_hidden || !ShNet_Enabled())
+    if ((g_PcConfig.onlineChatHidden && !s_open) || !ShNet_Enabled())
     {
         return 0;
     }
@@ -447,7 +449,7 @@ int ShNetChat_DisplayActive(void)
 
 int ShNetChat_LineCount(void)
 {
-    if (s_hidden)
+    if (g_PcConfig.onlineChatHidden && !s_open)
     {
         return 0;
     }
