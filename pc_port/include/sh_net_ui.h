@@ -38,4 +38,8 @@ unsigned char* ShNetUi_RasterizeText(const char* text, int px, int* outW, int* o
 }
 #endif
 
+/* The message composer for the mouse and touch: once a frame from the game,
+ * before the pad reaches ShNetMemo_ComposerInput. */
+void ShNetUi_ComposerPointer(void);
+
 #endif /* SH_NET_UI_H */

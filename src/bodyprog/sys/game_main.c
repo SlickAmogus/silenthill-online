@@ -2552,6 +2552,12 @@ void MainLoop(void) // 0x80032EE0
 
             if (ShNetMemo_ComposerActive()) {
                 const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
+                extern void ShNetUi_ComposerPointer(void);
+                extern unsigned int Pc_MouseCursor_BoundPadBits(void);
+                /* The pointer acts on the composer itself; a mouse button bound
+                 * to a pad button must not also confirm through the pad. */
+                const u32 cmpClk = g_Controller0->clickedBtnFlags & ~Pc_MouseCursor_BoundPadBits();
+                ShNetUi_ComposerPointer();
                 /* PULSED for the axes so a held direction repeats, CLICKED for
                  * confirm and cancel so a held button cannot place two memos. */
                 ShNetMemo_ComposerInput(
@@ -2559,8 +2565,8 @@ void MainLoop(void) // 0x80032EE0
                     (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickDown  | ControllerFlag_DpadDown))  != 0,
                     (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft))  != 0,
                     (g_Controller0->pulsedBtnFlags  & (ControllerFlag_LStickRight | ControllerFlag_DpadRight)) != 0,
-                    (g_Controller0->clickedBtnFlags & (cc->enter | cc->action))  != 0,
-                    (g_Controller0->clickedBtnFlags & (cc->cancel | cc->option)) != 0);
+                    (cmpClk & (cc->enter | cc->action))  != 0,
+                    (cmpClk & (cc->cancel | cc->option)) != 0);
                 /* Carry the true held state to the next pad update (same fix as
                  * the quick menu) so edges compute correctly -- zeroing held
                  * alone made a held direction read as a fresh press every frame
