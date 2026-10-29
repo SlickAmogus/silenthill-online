@@ -109,7 +109,7 @@ your character, point at one or press its number, let go: everyone on your
 map hears it from where you stand. A character mod speaks with the voice its
 ini names (`voice=cybil`, say), or else one of the five voices of its gender
 (Harry and Kaufmann, or Cybil, Lisa and Dahlia), always the same one for
-that mod; partners hear the voice the speaker has. A folder under
+that mod (Heather speaks as Lisa unless her ini says otherwise); partners hear the voice the speaker has. A folder under
 gamedata/voices named by voice_pack can replace them with your own WAVs on
 your machine.
 
