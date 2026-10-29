@@ -73,8 +73,8 @@ the launcher checks for the newest build each time you press Play and offers
 it, and installs only the files that changed. The builds are on the
 [Realtime release](https://github.com/SlickAmogus/silenthill-online/releases/tag/realtime).
 
-**In game**, `M` opens the multiplayer menu: leave a message, save, change
-your **Character** (any of the fourteen playable characters; the body swaps
+**In game**, `M` opens the multiplayer menu: leave a message, hide or show
+the **Chat** feed, save, change your **Character** (any of the fourteen playable characters; the body swaps
 in place and everyone sees the new one), toggle nameplates and **Health
 Bars** (yours, your partners', both or none; neither shows during a scene),
 see the players (with pings), leave. A guest also has **Teleport to Host**.

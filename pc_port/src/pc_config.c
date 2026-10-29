@@ -883,9 +883,9 @@ void PcConfig_Load(const char* path)
         {
             g_PcConfig.onlineDeaths = (atoi(value) != 0);
         }
-        else if (strcmp(key, "online_chat_hint_shown") == 0)
+        else if (strcmp(key, "online_chat_hidden") == 0)
         {
-            g_PcConfig.onlineChatHintShown = (atoi(value) != 0);
+            g_PcConfig.onlineChatHidden = (atoi(value) != 0);
         }
         else if (strcmp(key, "online_ghost_style") == 0)
         {
