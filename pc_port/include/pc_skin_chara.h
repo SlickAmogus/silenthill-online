@@ -58,6 +58,9 @@ void  Pc_SkinChara_SetHeroFile(const char* file);
  * nothing (the stock model, whatever the local player wears), mode 0 is the
  * normal rule again. */
 void  Pc_SkinChara_SetDrawSkin(int mode, const char* file);
+/* The partner whose body the next draws are (their member id), 0 for none:
+ * their voice-wheel lines move its mouth. */
+void  Pc_SkinChara_SetDrawSpeaker(unsigned long long id);
 
 /* HERO's replacement says female=1 in its HERO.ini (drives the voice pitch). */
 int   Pc_SkinChara_HeroFemale(void);

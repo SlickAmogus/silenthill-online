@@ -1101,8 +1101,10 @@ void ShNet_DrawWorld(GsOT* ot)
                     {
                         unsigned char* before = (unsigned char*)poly;
                         GsOUT_PACKET_P = (PACKET*)poly;
+                        Pc_SkinChara_SetDrawSpeaker(m->steamId);
                         drewModel = ShNetG_TryDrawModel(m->charaId, gx, gy, gz, grot, &gp,
                                                         ShNetG_MemberSkinFile(m->steamId));
+                        Pc_SkinChara_SetDrawSpeaker(0);
                         {
                             unsigned char* after = (unsigned char*)GsOUT_PACKET_P;
                             poly     = (POLY_FT4*)after;
