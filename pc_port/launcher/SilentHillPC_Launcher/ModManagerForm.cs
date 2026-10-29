@@ -1998,6 +1998,7 @@ namespace SilentHillPC_Launcher
                 taken.Add(m);
                 m.Enabled = true;
                 m.EssentialId = em.Id;
+                m.EssentialSha = em.Sha256;
                 _toInstall.Remove(em.Id);
             }
             _mgr.SaveState();
