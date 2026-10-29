@@ -517,6 +517,7 @@ typedef struct
     int         gunTwist, gunPitch, gunYaw; /* ini: degrees */
     int         handRelax; /* ini: percent of the fist held with empty hands */
     int         female;
+    char        voice[16]; /* voice= in the ini: whose voice wheel it speaks with, "" to pick by female= */
     int         native; /* built in game space (SH_NATIVE node): the game's own parts */
     u32         nativeBones; /* the bones whose stock parts it replaces */
     int         brightness; /* percent of the lit vertex colour */
@@ -2265,6 +2266,7 @@ static void Skin_LoadSettings(PcSkinChara* ch, const char* base)
     ch->gunRaise = ch->gunOut = ch->gunFwd = 0;
     ch->gunTwist = ch->gunPitch = ch->gunYaw = 0;
     ch->handRelax = 0;
+    ch->voice[0] = '\0';
     snprintf(path, sizeof(path), "%s.ini", base);
     f = fopen(path, "r");
     if (f == NULL)
@@ -2273,6 +2275,8 @@ static void Skin_LoadSettings(PcSkinChara* ch, const char* base)
     {
         char key[32];
         int val;
+        if (sscanf(line, " voice = %15[A-Za-z]", ch->voice) == 1)
+            continue;
         if (sscanf(line, " %31[A-Za-z_] = %d", key, &val) != 2)
             continue;
         if (strcmp(key, "female") == 0)
@@ -2404,6 +2408,13 @@ int Pc_SkinChara_HeroGunAdjust(MATRIX* adj)
     }
     return hero->gunTwist != 0 || hero->gunPitch != 0 || hero->gunYaw != 0 || adj->t[0] != 0 || adj->t[1] != 0 ||
            adj->t[2] != 0;
+}
+
+const char* Pc_SkinChara_HeroVoice(void)
+{
+    const PcSkinChara* hero = g_PcConfig.allowLooseFiles ? Skin_CurrentHero() : NULL;
+
+    return hero != NULL ? hero->voice : "";
 }
 
 int Pc_SkinChara_HeroFemale(void)

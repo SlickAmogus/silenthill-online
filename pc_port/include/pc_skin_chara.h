@@ -61,6 +61,9 @@ void  Pc_SkinChara_SetDrawSkin(int mode, const char* file);
 
 /* HERO's replacement says female=1 in its HERO.ini (drives the voice pitch). */
 int   Pc_SkinChara_HeroFemale(void);
+/* voice= from the worn swap's ini (harry, cybil, kaufmann, lisa, dahlia), or
+ * "" when it names none. */
+const char* Pc_SkinChara_HeroVoice(void);
 
 /* HERO's replacement moves the flashlight (flashlight_x/y/z, cm): the shift in
  * torso space, Q12 metres. Returns 0 when there is none. */
