@@ -72,6 +72,13 @@ static const unsigned char s_setFemale[VOICE_CHARAS] = { 0, 1, 0, 1, 1 };
 
 static int Voice_SetFor(int charaId);
 
+/* Catalog characters with an obvious match, for when their ini names no
+ * voice: the packs live on the release, and changing one makes everyone who
+ * has it download it again. */
+static const struct { const char* swap; int set; } s_knownVoice[] = {
+    { "heather", 3 }, /* lisa */
+};
+
 /* The set the local player speaks with. A built-in character with lines of
  * its own uses them (the rest speak as Harry, as before). A HERO_* swap uses
  * the one its ini names with voice=, or else one of the voices of its gender
@@ -93,6 +100,10 @@ static int Voice_LocalSet(void)
     for (i = 0; want[0] && i < VOICE_CHARAS; i++)
     {
         if (SDL_strcasecmp(s_sets[i].folder, want) == 0) return i;
+    }
+    for (i = 0; i < (int)(sizeof(s_knownVoice) / sizeof(s_knownVoice[0])); i++)
+    {
+        if (SDL_strcasecmp(swap, s_knownVoice[i].swap) == 0) return s_knownVoice[i].set;
     }
     female = Pc_PlayAs_IsFemale() ? 1 : 0;
     for (i = 0; i < VOICE_CHARAS; i++) n += (s_setFemale[i] == female);
