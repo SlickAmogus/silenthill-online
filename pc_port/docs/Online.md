@@ -147,10 +147,16 @@ pasted over the frame. A ghost hides during cutscenes and menus — during a
 cutscene the other player is standing where the camera put them, not where
 they walked.
 
-**Messages.** Press `M` to leave one. You pick a phrase and a word from two
-lists; there is no typing, which is deliberate — nothing to moderate, nothing
-to translate at runtime, and a message costs four bytes on the wire. Walk over
-somebody's message to read it.
+**Messages.** Press `M` to leave one. You pick a phrase, a word and an
+emoji from three lists; there is no typing, which is deliberate — nothing to
+moderate, nothing to translate at runtime, and a message costs a few bytes on
+the wire. Keys or a pad scroll the lists; with a mouse, click an entry to
+pick it (click it again to move on), roll the wheel over a list, or drag it;
+on a touchscreen, tap and drag the same way. **Leave Message** places it and
+the X in the corner closes the window. There are 52 phrases, about 170 words
+in thirteen groups (people, monsters, items, landmarks and more) and 56
+emoji. Stand on somebody's message to read it; two messages a couple of steps
+apart can each be read.
 
 **Death markers.** Placed automatically where you die, and visible to
 everyone. Turn them off with `online_deaths = 0` if you would rather not know.
