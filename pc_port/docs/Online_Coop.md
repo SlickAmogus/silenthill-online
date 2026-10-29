@@ -55,7 +55,11 @@ arrow keys or the mouse wheel on PC, hold and drag on phones.
 
 **Saves.** Multiplayer uses your normal single-player saves; there are no
 separate multiplayer saves. The host picks the save to start from (or a New
-Game); guests start from wherever the host is. Everyone saves on their own
+Game); guests start from wherever the host is. The saves offered are the ones
+in this install's gamedata/save folder. Silent Hill Online installs beside the
+single-player game with saves of its own, so a fresh install offers only New
+Game: copy the single-player gamedata/save folder across, or set
+`coop_saves_dir` in config.cfg to that folder and the host row lists both. Everyone saves on their own
 machine: a save point, the quick save key or **Save** in the `M` menu opens
 the usual save screen and writes to your memory card like any other save,
 host and guests alike. A guest's save is the shared game as it stood, so it
@@ -160,7 +164,9 @@ selection back.
   open for all.
 - **Difficulty.** With partners to lean on, monsters have 1.5 times their
   health and hit twice as hard.
-- **Dying.** A death is not game over while a partner is alive. After the
+- **Dying.** A death is not game over while a partner is alive. The world
+  keeps running while your inventory is open, and a hit that kills you there
+  closes the inventory so the death and the respawn play on screen. After the
   respawn delay you come back next to a living partner who is out of combat:
   no monster on them and no hit taken for a few seconds, including a couple
   of seconds after they run through a door. Until there is one the screen

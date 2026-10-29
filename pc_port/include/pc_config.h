@@ -564,6 +564,7 @@ typedef struct {
      * with these at their defaults behaves exactly like the offline port. */
     int  onlineEnabled;       /* 1 = connect to a master server (config key: online_enabled) */
     char onlineServer[128];   /* hostname or IP of the master server (online_server) */
+    char coopSavesDir[260];   /* a second folder of N.MCD cards the host's Start From row lists (coop_saves_dir) */
     int  onlinePort;          /* UDP port; 0 = SHNET_DEFAULT_PORT (online_port) */
     char onlineName[24];      /* how other players see you (online_name) */
     char onlinePassword[64];  /* shared word for a private server, "" = none (online_password) */

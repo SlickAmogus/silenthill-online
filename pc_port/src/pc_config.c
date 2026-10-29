@@ -846,6 +846,17 @@ void PcConfig_Load(const char* path)
         {
             g_PcConfig.onlineEnabled = (atoi(value) != 0);
         }
+        else if (strcmp(key, "coop_saves_dir") == 0)
+        {
+            size_t n;
+            strncpy(g_PcConfig.coopSavesDir, value, sizeof(g_PcConfig.coopSavesDir) - 1);
+            g_PcConfig.coopSavesDir[sizeof(g_PcConfig.coopSavesDir) - 1] = '\0';
+            n = strlen(g_PcConfig.coopSavesDir);
+            while (n > 0 && (g_PcConfig.coopSavesDir[n - 1] == '/' || g_PcConfig.coopSavesDir[n - 1] == '\\'))
+            {
+                g_PcConfig.coopSavesDir[--n] = '\0';
+            }
+        }
         else if (strcmp(key, "online_server") == 0)
         {
             strncpy(g_PcConfig.onlineServer, value, sizeof(g_PcConfig.onlineServer) - 1);

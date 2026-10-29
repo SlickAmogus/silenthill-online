@@ -178,6 +178,13 @@ void GameState_ItemScreens_Update(void) // 0x8004C9B0
             g_PcWorldDrawnThisFrame = savedDrawn;
             g_PcHorPlusEnabled      = savedHor;
             g_PcWorldHorPlus        = savedWorldHor;
+            /* Killed in the pack: the item button is the inventory's own way
+             * out, pressed for him every frame until the exit steps take over,
+             * so the death and the respawn play on screen, not behind a menu. */
+            if (g_SysWork.playerWork.player.health <= Q12(0.0f))
+            {
+                g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.item;
+            }
         }
     }
 #endif
