@@ -208,6 +208,7 @@ static const QoRowDef s_page0[] = {
     { ROW_OPT,   "bullet_decals",        0, NULL },
     /* Frame cap, beside Weather_Rate for the same reason the Options menu puts
      * them together: both decide how fast the world ticks. */
+    { ROW_OPT,   "use_pgxp",             0, NULL },  /* PGXP */
     { ROW_OPT,   "fps_cap",              0, NULL },  /* FPS_Limit */
     { ROW_OPT,   "weather_sim_hz",       0, NULL },  /* Weather_Rate: 30 or 60 Hz */
     { ROW_PAGE,  NULL, 0,                   "Next page  (HUD & Audio)" },
