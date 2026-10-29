@@ -25,6 +25,9 @@ void        ShNetVoice_CtrlIn(unsigned long long from, const unsigned char* p, i
 int         ShNetVoice_MenuOpen(void);
 int         ShNetVoice_MenuSelected(void);    /* -1 none */
 const char* ShNetVoice_MenuLabel(int slot);   /* 0..7 */
+/* Mouth opening 0..1 for a voice-wheel line the local player (local=1) or
+ * the member id is saying now, -1 when they are not. */
+float       ShNetVoice_MouthLevel(int local, unsigned long long id);
 
 #ifdef __cplusplus
 }

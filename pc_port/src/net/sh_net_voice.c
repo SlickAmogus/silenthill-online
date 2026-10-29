@@ -117,8 +117,12 @@ static int Voice_LocalSet(void)
 }
 
 /* Decoded clips, kept once made: [set][slot]. */
-typedef struct { short* pcm; unsigned int samples; int rate, stereo, tried; } VoiceClip;
+typedef struct { short* pcm; unsigned int samples; int rate, stereo, tried; float peak; } VoiceClip;
 static VoiceClip s_clips[VOICE_CHARAS][VOICE_SLOTS];
+
+/* The line each speaker is saying now, for their model's mouth. Entry 0 is
+ * the local player. */
+static struct { unsigned long long id; unsigned int handle; const VoiceClip* clip; } s_speaking[SHSESSION_MAX_MEMBERS + 1];
 
 static int          s_open;        /* the wheel is up */
 static int          s_sel = -1;    /* slot under the pointer, -1 none */
@@ -183,13 +187,89 @@ static const VoiceClip* Voice_Clip(int set, int slot)
     return NULL;
 }
 
-static void Voice_Play(int set, int slot, float gain)
+static void Voice_Play(int set, int slot, float gain, int local, unsigned long long from)
 {
     const VoiceClip* c = Voice_Clip(set, slot);
-    if (c)
+    unsigned int     h;
+    int              i, k = -1;
+    if (!c)
     {
-        Pc_VoiceClip_Play(c->pcm, c->samples, c->rate, c->stereo, gain);
+        return;
     }
+    h = Pc_VoiceClip_PlayEx(c->pcm, c->samples, c->rate, c->stereo, gain, 1.0f);
+    if (local)
+    {
+        k = 0;
+    }
+    for (i = 1; i <= SHSESSION_MAX_MEMBERS && k < 0; i++)
+    {
+        if (s_speaking[i].id == from) k = i;
+    }
+    for (i = 1; i <= SHSESSION_MAX_MEMBERS && k < 0; i++)
+    {
+        if (s_speaking[i].id == 0 || !Pc_VoiceClip_Playing(s_speaking[i].handle)) k = i;
+    }
+    if (k < 0)
+    {
+        return;
+    }
+    s_speaking[k].id     = local ? 0 : from;
+    s_speaking[k].handle = h;
+    s_speaking[k].clip   = c;
+}
+
+/* RMS of the 20 ms window at frame f. */
+static float Voice_WindowRms(const VoiceClip* c, unsigned int f)
+{
+    const unsigned int ch     = c->stereo ? 2u : 1u;
+    const unsigned int frames = c->samples / ch;
+    const unsigned int win    = (unsigned int)(c->rate > 0 ? c->rate : 22050) / 50u;
+    unsigned int       i, end = f + win > frames ? frames : f + win;
+    double             sum = 0.0;
+    if (end <= f) return 0.0f;
+    for (i = f; i < end; i++)
+    {
+        double v = ch == 2 ? 0.5 * (c->pcm[i * 2] + c->pcm[i * 2 + 1]) : c->pcm[i];
+        sum += v * v;
+    }
+    return (float)sqrt(sum / (double)(end - f));
+}
+
+float ShNetVoice_MouthLevel(int local, unsigned long long id)
+{
+    VoiceClip*   c;
+    unsigned int frames, f, win;
+    float        rms, ref;
+    int          i, k = -1;
+
+    for (i = 0; i <= SHSESSION_MAX_MEMBERS && k < 0; i++)
+    {
+        if (s_speaking[i].clip && (local ? i == 0 : (i > 0 && s_speaking[i].id == id))) k = i;
+    }
+    if (k < 0 || !Pc_VoiceClip_Playing(s_speaking[k].handle))
+    {
+        return -1.0f;
+    }
+    c      = (VoiceClip*)s_speaking[k].clip;
+    frames = c->samples / (c->stereo ? 2u : 1u);
+    win    = (unsigned int)(c->rate > 0 ? c->rate : 22050) / 50u;
+    if (c->peak <= 0.0f)
+    {
+        for (f = 0; f < frames; f += win)
+        {
+            rms = Voice_WindowRms(c, f);
+            if (rms > c->peak) c->peak = rms;
+        }
+        if (c->peak <= 0.0f) c->peak = 1.0f;
+    }
+    f   = (unsigned int)(Pc_VoiceClip_Progress(s_speaking[k].handle) * (float)frames);
+    rms = Voice_WindowRms(c, f);
+    /* As the cutscene lip sync scales it (pc_lipsync.c): against the line's
+     * own loudest window, with a floor that keeps quiet tails shut. */
+    ref = c->peak * 0.6f;
+    if (ref < 1500.0f) ref = 1500.0f;
+    ref = (rms - 0.12f * ref) / (0.88f * ref);
+    return ref < 0.0f ? 0.0f : (ref > 1.0f ? 1.0f : ref);
 }
 
 static void Voice_Say(int slot)
@@ -204,7 +284,7 @@ static void Voice_Say(int slot)
         return;
     }
     s_lastSentMs = now;
-    Voice_Play(set, slot, 1.0f);
+    Voice_Play(set, slot, 1.0f, 1, 0);
     if (ShSession_Active())
     {
         b[o++] = SHNET_CTRL_VOICE;
@@ -379,7 +459,7 @@ void ShNetVoice_CtrlIn(unsigned long long from, const unsigned char* p, int len)
     {
         return;
     }
-    Voice_Play(set, slot, gain);
+    Voice_Play(set, slot, gain, 0, from);
 }
 
 int ShNetVoice_MenuOpen(void)
