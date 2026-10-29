@@ -37,7 +37,7 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup>
-    <ApplicationIcon>favicon.ico</ApplicationIcon>
+    <ApplicationIcon>Resources\icononline.ico</ApplicationIcon>
     <!-- Ship a real manifest (asInvoker, supported-OS, stable identity) to lower
          antivirus false-positive heuristics. See docs/Launcher_Antivirus_Notes.md. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -222,6 +222,8 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="favicon.ico" />
+    <None Include="Resources\icononline.ico" />
+    <None Include="Resources\icononline.png" />
     <!-- 7-Zip's LGPL/BSD notice, shipped beside the launcher (redistribution of
          7za.exe must reproduce this). -->
     <Content Include="LICENSE-7zip.txt">
