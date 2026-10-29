@@ -9,6 +9,9 @@
 #include "sh_net.h"
 #include "sh_net_proto.h"
 #include "sh_net_chat.h"
+#include "sh_net_chat_filter.h"
+#include "sh_net_session.h"
+#include "pc_config.h"
 #include "sh_log.h"
 
 /* How long a line stays fully lit, then how long it fades, once nothing new
@@ -16,8 +19,10 @@
  * is held at full. */
 #define CHAT_SHOW_MS 9000
 #define CHAT_FADE_MS 1500
-#define CHAT_LOG_MAX 12       /* lines kept; the last few are shown */
+#define CHAT_LOG_MAX 48       /* lines kept across every channel; the last few of the chosen one are shown */
 #define CHAT_SHOWN   6        /* lines drawn when idle */
+#define CHAT_SHOWN_OPEN 10    /* lines drawn while composing */
+#define CHAT_SYSTEM  (-1)     /* a line of the game's own: shown on every channel */
 #define CHAT_INPUT_MAX 450    /* typed bytes; sent as several lines of at most CHAT_PIECE_MAX */
 #define CHAT_PIECE_MAX 150    /* one line on the wire: SHNET_CHAT_MAX is 160 with the NUL */
 
@@ -32,7 +37,9 @@ static ChatLine s_log[CHAT_LOG_MAX];
 static int      s_logCount;
 
 static int  s_open;
-static int  s_scope = SHNET_CHAT_GAME; /* Y "brings up game chat" */
+static int  s_scope = SHNET_CHAT_GLOBAL; /* the channel shown, and sent to (All sends to Global) */
+static int  s_vis[CHAT_LOG_MAX];         /* indices into s_log on the chosen channel, this frame */
+static int  s_visCount;
 static int  s_hidden;
 static char s_input[CHAT_INPUT_MAX];
 static int  s_inputLen;
@@ -62,8 +69,54 @@ void ShNetChat_AddSystem(const char* text)
 {
     if (text && text[0])
     {
-        Chat_Push(SHNET_CHAT_GLOBAL, text);
+        Chat_Push(CHAT_SYSTEM, text);
     }
+}
+
+const char* ShNetChat_ScopeName(int scope)
+{
+    switch (scope)
+    {
+    case SHNET_CHAT_GLOBAL: return "Global";
+    case SHNET_CHAT_GAME:   return "Level";
+    case SHNET_CHAT_COOP:   return "Coop";
+    case SHNET_CHAT_ALL:    return "All";
+    default:                return "";
+    }
+}
+
+/* The name a room member goes by, or "?" when they are not (or no longer) in it. */
+static void Chat_MemberName(unsigned long long id, char* out, int cap)
+{
+    int i, n = ShSession_Active() ? ShSession_MemberCount() : 0;
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && m->steamId == id && m->name[0])
+        {
+            SDL_strlcpy(out, m->name, (size_t)cap);
+            return;
+        }
+    }
+    SDL_strlcpy(out, "?", (size_t)cap);
+}
+
+void ShNetChat_CoopIn(unsigned long long from, const unsigned char* p, int len)
+{
+    char name[SHSESSION_NAME_MAX];
+    char text[SHNET_CHAT_MAX];
+    char line[sizeof(s_log[0].text)];
+    int  n = len - 1;
+    if (len < 2) return;
+    if (n > SHNET_CHAT_MAX - 1) n = SHNET_CHAT_MAX - 1;
+    memcpy(text, p + 1, (size_t)n);
+    text[n] = '\0';
+    text[strcspn(text, "\r\n")] = '\0';
+    if (!text[0]) return;
+    ShNetChat_Censor(text);
+    Chat_MemberName(from, name, (int)sizeof(name));
+    snprintf(line, sizeof(line), "%s: %s", name, text);
+    Chat_Push(SHNET_CHAT_COOP, line);
 }
 
 void ShNetChat_Tick(void)
@@ -76,8 +129,9 @@ void ShNetChat_Tick(void)
 
     while (ShNet_PopChat(&scope, &fromId, name, sizeof(name), text, sizeof(text)))
     {
+        ShNetChat_Censor(text); /* an older server relays them as typed */
         snprintf(line, sizeof(line), "%s: %s", name[0] ? name : "?", text);
-        Chat_Push(scope, line);
+        Chat_Push(scope == SHNET_CHAT_GAME ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL, line);
     }
 }
 
@@ -91,11 +145,28 @@ void ShNetChat_Open(void)
     s_inputLen  = 0;
     s_input[0]  = '\0';
     s_haveKeys  = 0; /* so the key that opened us is not read as a keystroke */
+    if (!g_PcConfig.onlineChatHintShown)
+    {
+        g_PcConfig.onlineChatHintShown = 1;
+        PcConfig_SaveKeyValue("online_chat_hint_shown", "1");
+        ShNetChat_AddSystem("Press Tab to switch channels");
+    }
+}
+
+/* Global -> Level -> Coop (while in a co-op game) -> All -> Global. */
+static int Chat_NextScope(int sc)
+{
+    for (;;)
+    {
+        sc = (sc + 1) % 4;
+        if (sc == SHNET_CHAT_COOP && !ShSession_Active()) continue;
+        return sc;
+    }
 }
 
 void ShNetChat_CycleScope(void)
 {
-    s_scope = (s_scope == SHNET_CHAT_GLOBAL) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
+    s_scope = Chat_NextScope(s_scope);
     if (!s_open)
     {
         ShNetChat_Open();
@@ -128,15 +199,43 @@ int ShNetChat_Hidden(void)
     return s_hidden;
 }
 
+/* A Coop line goes to the room itself, as a control note, so a Steam or
+ * Join-by-IP game has it too and the server never sees it. The room does not
+ * echo, so the line is shown here as sent. */
+static void Chat_SendCoop(const char* piece)
+{
+    unsigned char b[1 + SHNET_CHAT_MAX];
+    char          name[SHSESSION_NAME_MAX];
+    char          line[sizeof(s_log[0].text)];
+    int           n = (int)strlen(piece);
+    if (n > SHNET_CHAT_MAX - 1) n = SHNET_CHAT_MAX - 1;
+    b[0] = SHNET_CTRL_CHAT;
+    memcpy(b + 1, piece, (size_t)n);
+    b[1 + n] = '\0';
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 2 + n, 0, 1);
+    Chat_MemberName(ShSession_SelfId(), name, (int)sizeof(name));
+    if (name[0] == '?' && g_PcConfig.onlineName[0]) SDL_strlcpy(name, g_PcConfig.onlineName, sizeof(name));
+    snprintf(line, sizeof(line), "%s: %s", name, piece);
+    Chat_Push(SHNET_CHAT_COOP, line);
+}
+
 static void Chat_Submit(void)
 {
     if (s_inputLen > 0)
     {
-        if (ShNet_Status() == SHNET_ST_CONNECTED)
+        const int coop = (s_scope == SHNET_CHAT_COOP);
+        /* All shows everything but speaks to everyone: it sends as Global. */
+        const int sendScope = (s_scope == SHNET_CHAT_GAME) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
+        ShNetChat_Censor(s_input);
+        if (coop && !ShSession_Active())
         {
-            /* No local echo: the server sends the line back to everyone
-             * including us, so it lands in the same list, in order. A long
-             * message goes as several lines, broken at a space. */
+            ShNetChat_AddSystem("[not in a co-op game]");
+        }
+        else if (coop || ShNet_Status() == SHNET_ST_CONNECTED)
+        {
+            /* No local echo on the server channels: the server sends the line
+             * back to everyone including us, so it lands in the same list, in
+             * order. A long message goes as several lines, broken at a space. */
             const char* p = s_input;
             while (*p)
             {
@@ -153,7 +252,8 @@ static void Chat_Submit(void)
                 }
                 memcpy(piece, p, (size_t)n);
                 piece[n] = '\0';
-                ShNet_SendChat(s_scope, piece);
+                if (coop) Chat_SendCoop(piece);
+                else      ShNet_SendChat(sendScope, piece);
                 p += n;
             }
         }
@@ -251,11 +351,11 @@ void ShNetChat_FeedKeys(const unsigned char* ks)
      * been typed yet, so it stays a normal letter once you are writing. */
     if (ks[SDL_SCANCODE_TAB] && !s_prevKeys[SDL_SCANCODE_TAB])
     {
-        s_scope = (s_scope == SHNET_CHAT_GLOBAL) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
+        s_scope = Chat_NextScope(s_scope);
     }
     else if (s_inputLen == 0 && ks[SDL_SCANCODE_U] && !s_prevKeys[SDL_SCANCODE_U])
     {
-        s_scope = (s_scope == SHNET_CHAT_GLOBAL) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
+        s_scope = Chat_NextScope(s_scope);
         goto done; /* consume it: don't also type 'u' */
     }
 
@@ -306,24 +406,30 @@ static float Chat_Alpha(const ChatLine* l)
     return 1.0f - (float)(age - CHAT_SHOW_MS) / (float)CHAT_FADE_MS;
 }
 
-/* First visible index into s_log for this frame (older lines fully faded). */
-static int Chat_FirstVisible(void)
+static int Chat_OnChannel(const ChatLine* l)
 {
-    int start = s_logCount - CHAT_SHOWN;
-    int i;
-    if (start < 0)
+    return l->scope == CHAT_SYSTEM || s_scope == SHNET_CHAT_ALL || l->scope == s_scope;
+}
+
+/* The lines of the chosen channel to draw this frame: the newest few, minus
+ * the ones that have faded out while the box is closed. */
+static int Chat_Collect(void)
+{
+    const int shown = s_open ? CHAT_SHOWN_OPEN : CHAT_SHOWN;
+    int       i;
+    s_visCount = 0;
+    for (i = 0; i < s_logCount; i++)
     {
-        start = 0;
-    }
-    if (!s_open)
-    {
-        while (start < s_logCount && Chat_Alpha(&s_log[start]) <= 0.0f)
+        if (!Chat_OnChannel(&s_log[i])) continue;
+        if (!s_open && Chat_Alpha(&s_log[i]) <= 0.0f) continue;
+        if (s_visCount == shown)
         {
-            start++;
+            memmove(&s_vis[0], &s_vis[1], sizeof(s_vis[0]) * (size_t)(shown - 1));
+            s_visCount--;
         }
+        s_vis[s_visCount++] = i;
     }
-    (void)i;
-    return start;
+    return s_visCount;
 }
 
 int ShNetChat_DisplayActive(void)
@@ -336,7 +442,7 @@ int ShNetChat_DisplayActive(void)
     {
         return 1;
     }
-    return Chat_FirstVisible() < s_logCount;
+    return Chat_Collect() > 0;
 }
 
 int ShNetChat_LineCount(void)
@@ -345,13 +451,12 @@ int ShNetChat_LineCount(void)
     {
         return 0;
     }
-    return s_logCount - Chat_FirstVisible();
+    return Chat_Collect();
 }
 
 static const ChatLine* Chat_At(int i)
 {
-    int idx = Chat_FirstVisible() + i;
-    return (idx >= 0 && idx < s_logCount) ? &s_log[idx] : NULL;
+    return (i >= 0 && i < s_visCount) ? &s_log[s_vis[i]] : NULL;
 }
 
 const char* ShNetChat_LineText(int i)
@@ -363,7 +468,7 @@ const char* ShNetChat_LineText(int i)
 int ShNetChat_LineScope(int i)
 {
     const ChatLine* l = Chat_At(i);
-    return l ? l->scope : SHNET_CHAT_GLOBAL;
+    return l ? l->scope : CHAT_SYSTEM;
 }
 
 float ShNetChat_LineAlpha(int i)

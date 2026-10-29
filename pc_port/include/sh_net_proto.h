@@ -231,7 +231,9 @@ enum
 enum
 {
     SHNET_CHAT_GLOBAL = 0, /* everyone connected to the server */
-    SHNET_CHAT_GAME   = 1  /* everyone on the same map (a "game", for now) */
+    SHNET_CHAT_GAME   = 1, /* everyone on the same map: "Level" chat */
+    SHNET_CHAT_COOP   = 2, /* the co-op room only; rides SHNET_CTRL_CHAT inside the room, never CHAT_SAY */
+    SHNET_CHAT_ALL    = 3  /* client view only: every channel at once */
 };
 
 #define SHNET_CHAT_MAX 160   /* max UTF-8 bytes of one chat line, incl. NUL */
@@ -469,7 +471,8 @@ enum
     SHNET_CTRL_GATE      = 7, /* member -> all: u8 map, u8 row, u8 state (1 waiting at a story door, 2 went through, 3 host: come through with me) */
     SHNET_CTRL_SUMMON    = 8, /* host -> one: u64 target, u8 map, s32 x,y,z, s16 rot; come to me */
     SHNET_CTRL_RESTART   = 9, /* host -> all: u16 gen, u8 map, s_Savegame; I loaded a save, start from it with me */
-    SHNET_CTRL_ITEM_USED = 10 /* member -> all: u8 item, u8 count; I used up this key item, drop yours too */
+    SHNET_CTRL_ITEM_USED = 10, /* member -> all: u8 item, u8 count; I used up this key item, drop yours too */
+    SHNET_CTRL_CHAT      = 11  /* member -> all: a Coop chat line, NUL-terminated, at most SHNET_CHAT_MAX */
 };
 #define SHNET_PERM_CHEATS 1    /* this guest may use the console, quick-menu cheats, binds */
 

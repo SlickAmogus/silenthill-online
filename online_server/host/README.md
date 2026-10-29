@@ -20,7 +20,7 @@ is full. Each server is its own world, with its own messages and rooms.
 | `install-server.sh` | the installer that runs on the Linux server itself |
 | `sh_master.exe` | the server for Windows |
 | `sh_master-linux-x64`, `sh_master-linux-arm64` | the server for Linux, static, no dependencies |
-| `sh_master.c`, `sh_net_proto.h` | the source, built on the server when it has gcc |
+| `sh_master.c`, `sh_net_proto.h`, `sh_net_memo_text.h`, `sh_net_chat_filter.h` | the source, built on the server when it has gcc |
 
 ## On a Linux VPS, from Windows
 
@@ -64,9 +64,10 @@ the commands:
 | `prune all` | delete every marker: a clean world |
 | `say <text>` | a message to everyone online |
 | `save` | write the marker store now |
+| `watch` | a live feed until you press Enter: who joins and leaves, chat and markers in the living world (in words), rooms opening and closing, invites. What players say to each other inside a co-op room is theirs and is neither shown nor logged |
 
 The console only listens on the machine itself (127.0.0.1:27891), so it needs
-the ssh login. The log is `journalctl -u sh1pc -f`. Markers live in `memos.db`
+the ssh login. The log is `journalctl -u sh1pc -f`; it carries the same joins, leaves, living-world chat and marker placements as `watch`, with addresses. Markers live in `memos.db`
 and bans in `bans.txt` in the service's working directory (`/root` by default).
 
 ## On a Linux machine, directly
