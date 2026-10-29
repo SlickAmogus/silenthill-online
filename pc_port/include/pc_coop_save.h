@@ -22,6 +22,13 @@ extern "C" {
 typedef struct
 {
     char name[COOP_SAVE_NAME_MAX]; /* "Cafe  1:23  (save 4)", for the menu */
+    char where[32];                /* the save location's name: "Cafe" */
+    char card[32];                 /* which card it is on: "Card 1A" */
+    int  secs;                     /* play time, with the 290-hour additions */
+    int  saveNo;                   /* the game's own save number */
+    int  difficulty;               /* GameDifficulty_* */
+    int  nextFear;
+    int  clears;
     char key[COOP_SAVE_KEY_MAX];   /* card.file.slot, for Pc_CoopSave_Load */
     int  mapIdx;
     int  order;                    /* the game's running save counter; newest is highest */

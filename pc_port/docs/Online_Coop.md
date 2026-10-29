@@ -24,9 +24,12 @@ Then **Max Players**, whether the room is **Listed** or hidden (code only),
 **Living World** (Private by default: just you and your friends, no
 strangers' ghosts or messages; Shown makes the game part of the living
 world), the **FPS Lock** (60 is the default, and what the sync is tuned for),
-and **Start From**: a New Game or any of your single-player saves, newest
-first; the left and right arrows step through them, Enter or a click moves
-to the next. **Open Room** opens it; **Start Game** boots everyone into the
+and **Start From**: a New Game or any of your single-player saves. The row
+names where the save is; Enter, a click or a tap opens the list of every
+save, newest first, each with its location, play time, save number,
+difficulty (and Next Fear or clears) and the card it is on, and picking
+one brings you back. The left and right arrows step through them on the
+row itself. **Open Room** opens it; **Start Game** boots everyone into the
 host's map.
 
 **Join a game.** Browse Server Rooms lists every open game ("Name's Game",
