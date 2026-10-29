@@ -51,6 +51,7 @@ typedef enum
     COOP_PAGE_PLAYERS,      /* member list (in-game) */
     COOP_PAGE_PLAYER,       /* one member: allow cheats / remove (host) */
     COOP_PAGE_INVITE,       /* accepting an invite: save first, or go */
+    COOP_PAGE_SAVES,        /* Start From: every save to pick from */
     COOP_PAGE_SETTINGS      /* phones and the browser: server, living world, name */
 } CoopPage;
 
@@ -409,7 +410,7 @@ void Pc_CoopMenu_FeedKeys(const unsigned char* ks)
 /* Save picker for the host setup and split screen: the host's own
  * single-player saves and which one to start from (-1 = a fresh New Game).
  * Guests pick nothing: they play the host's game. */
-static CoopSaveEntry s_saves[24];
+static CoopSaveEntry s_saves[60];
 static int           s_saveCount;
 static int           s_loadIdx = -1;
 
@@ -438,15 +439,57 @@ static void Coop_CycleSave(void)
     Coop_StepSave(1);
 }
 
+/* Just where: the time, the number and the rest are on the Start From list,
+ * which Enter or a tap on this row opens. */
 static void Coop_SaveRowText(char* out, int cap)
 {
     if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
-        snprintf(out, cap, "Start From:  %s", s_saves[s_loadIdx].name);
-    else if (s_saveCount == 0)
-        snprintf(out, cap, "Start From:  New Game  (no saves found in gamedata/save)");
+        snprintf(out, cap, "Start From:  %s", s_saves[s_loadIdx].where);
     else
-        snprintf(out, cap, "Start From:  New Game  (%d save%s: arrows or Enter to pick)", s_saveCount,
-                 s_saveCount == 1 ? "" : "s");
+        snprintf(out, cap, "Start From:  New Game");
+}
+
+/* The Start From list, opened from a row of `from`; it comes back there. */
+static int s_savesFrom, s_savesFromRow;
+
+static void Coop_OpenSaves(int from, int row)
+{
+    s_savesFrom    = from;
+    s_savesFromRow = row;
+    s_page         = COOP_PAGE_SAVES;
+    s_sel          = s_loadIdx + 1;
+    s_msg[0]       = '\0';
+}
+
+static void Coop_CloseSaves(void)
+{
+    s_page = s_savesFrom;
+    s_sel  = s_savesFromRow;
+}
+
+void Pc_CoopMenu_SaveEntry(int row, char* line1, int cap1, char* line2, int cap2, char* right, int capR)
+{
+    const CoopSaveEntry* e;
+    if (row <= 0 || row > s_saveCount)
+    {
+        snprintf(line1, (size_t)cap1, "New Game");
+        snprintf(line2, (size_t)cap2, "Start from the beginning");
+        if (capR > 0) right[0] = '\0';
+        return;
+    }
+    e = &s_saves[row - 1];
+    snprintf(line1, (size_t)cap1, "%s", e->where);
+    snprintf(right, (size_t)capR, "%d:%02d:%02d", e->secs / 3600, (e->secs / 60) % 60, e->secs % 60);
+    {
+        const char* diff = e->difficulty < 0 ? "Easy" : e->difficulty > 0 ? "Hard" : "Normal";
+        char        extra[48] = "";
+        if (e->nextFear)
+            snprintf(extra, sizeof(extra), " - Next Fear");
+        else if (e->clears > 0)
+            snprintf(extra, sizeof(extra), " - %d clear%s", e->clears, e->clears == 1 ? "" : "s");
+        /* Short enough for one line at the small size: no scrolling. */
+        snprintf(line2, (size_t)cap2, "Save %d - %s%s - %s", e->saveNo, diff, extra, e->card);
+    }
 }
 
 void Pc_CoopMenu_Open(void)
@@ -836,6 +879,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
     case COOP_PAGE_PLAYER:     return 4; /* Allow Cheats, Bring Here, Remove, Back */
     case COOP_PAGE_INVITE:     return 3; /* Save First, Join Without Saving, Back */
+    case COOP_PAGE_SAVES:      return s_saveCount + 2; /* New Game, the saves, Back */
     default:                   return 1;
     }
 }
@@ -852,6 +896,7 @@ int Pc_CoopMenu_View(void)
     case COOP_PAGE_SETTINGS:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
+    case COOP_PAGE_SAVES:      return PC_COOP_VIEW_SAVES;
     default:                   return PC_COOP_VIEW_MENU;
     }
 }
@@ -880,6 +925,7 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
     case COOP_PAGE_PLAYER:     return s_playerName;
     case COOP_PAGE_INVITE:     return "ACCEPT INVITE";
+    case COOP_PAGE_SAVES:      return "START FROM";
     case COOP_PAGE_SETTINGS:   return "MULTIPLAYER SETTINGS";
     default:                   return "MULTIPLAYER";
     }
@@ -1052,6 +1098,16 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
     }
 
+    case COOP_PAGE_SAVES:
+        if (i <= s_saveCount)
+        {
+            char l2[96], r[16];
+            Pc_CoopMenu_SaveEntry(i, out, cap, l2, (int)sizeof(l2), r, (int)sizeof(r));
+        }
+        else
+            snprintf(out, cap, "Back");
+        break;
+
     case COOP_PAGE_INVITE:
         if (i == 0)      snprintf(out, cap, "Save First");
         else if (i == 1) snprintf(out, cap, "Join Without Saving");
@@ -1205,6 +1261,14 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         else                     { ShSession_StatusLine(out, cap); }
         break;
 
+    case COOP_PAGE_SAVES:
+        if (s_saveCount == 0)
+            snprintf(out, cap, "No saves found in gamedata/save. Start a New Game, or save in single player first.");
+        else
+            snprintf(out, cap, "%d save%s, newest first. Pick one to start the game from.", s_saveCount,
+                     s_saveCount == 1 ? "" : "s");
+        break;
+
     case COOP_PAGE_INVITE:
     {
         char who[SHNET_NAME_MAX];
@@ -1293,7 +1357,7 @@ static void Coop_Confirm(void)
         else if (s_sel == 2) { s_setPublic = !s_setPublic; }
         else if (s_sel == 3) { s_setLiving = !s_setLiving; }
         else if (s_sel == 4) { s_setFps = (s_setFps == 60) ? 30 : 60; }
-        else if (s_sel == 5) { Coop_CycleSave(); }
+        else if (s_sel == 5) { Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 5); }
         else if (s_sel == 6) { Coop_StartHosting(); } /* Open Room / Lobby */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
@@ -1317,7 +1381,7 @@ static void Coop_Confirm(void)
             snprintf(v, sizeof(v), "%d", g_PcConfig.splitP2Audio);
             PcConfig_SaveKeyValue("split_p2_audio", v);
         }
-        else if (s_sel == 4) { Coop_CycleSave(); }
+        else if (s_sel == 4) { Coop_OpenSaves(COOP_PAGE_SPLIT, 4); }
         else if (s_sel == 5) { s_splitOnline = (s_splitOnline + 1) % 3; }
         else if (s_splitOnline && s_sel == 6) { s_page = COOP_PAGE_SPLIT_ONLINE; s_sel = 0; }
         else if (s_sel == (s_splitOnline ? 7 : 6)) { Coop_StartSplit(); }
@@ -1435,6 +1499,14 @@ static void Coop_Confirm(void)
         s_page = COOP_PAGE_INGAME;
         s_sel  = Coop_PlayersRow();
         s_msg[0] = '\0';
+        break;
+
+    case COOP_PAGE_SAVES:
+        if (s_sel <= s_saveCount)
+        {
+            s_loadIdx = s_sel - 1; /* row 0 is New Game */
+        }
+        Coop_CloseSaves();
         break;
 
     case COOP_PAGE_INVITE:
@@ -1729,6 +1801,10 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int
         {
             s_page = COOP_PAGE_PLAYERS;
             s_sel  = 0;
+        }
+        else if (s_page == COOP_PAGE_SAVES)
+        {
+            Coop_CloseSaves(); /* the pick stays as it was */
         }
         else if (s_page == COOP_PAGE_SPLIT_ONLINE)
         {

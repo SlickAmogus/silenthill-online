@@ -213,8 +213,9 @@ void Pc_CoopScreen_Draw(void)
     const int sel     = Pc_CoopMenu_Selected();
     const int editing = Pc_CoopMenu_Editing();
     const int inGame  = Pc_CoopMenu_InGame();
-    const int table   = (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS);
-    const int entries = (view == PC_COOP_VIEW_ROOMS) ? n - 2 : (view == PC_COOP_VIEW_PLAYERS) ? n - 1 : 0;
+    const int table   = (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_SAVES);
+    const int entries = (view == PC_COOP_VIEW_ROOMS) ? n - 2 :
+                        (view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_SAVES) ? n - 1 : 0;
     const int small   = cs_interlaced() ? NM_TEXT_SMALL : NM_TEXT_TALL;
     int       rowY[CS_MAX_ROWS], rowH[CS_MAX_ROWS];
     int       listY   = CS_LIST_Y + (table ? 16 : 0);
@@ -335,6 +336,11 @@ void Pc_CoopScreen_Draw(void)
             Nm_TextDrawVerbatim(CS_BULLET_X, hy, NM_TEXT_TALL, StringColorId_LightGrey, "GAME");
             cs_text_right(CS_RIGHT_X, hy, StringColorId_LightGrey, "PLAYERS");
         }
+        else if (view == PC_COOP_VIEW_SAVES)
+        {
+            Nm_TextDrawVerbatim(CS_BULLET_X, hy, NM_TEXT_TALL, StringColorId_LightGrey, "SAVE");
+            cs_text_right(CS_RIGHT_X, hy, StringColorId_LightGrey, "TIME");
+        }
         else
         {
             Nm_TextDrawVerbatim(CS_BULLET_X, hy, NM_TEXT_TALL, StringColorId_LightGrey, "PLAYER");
@@ -361,8 +367,13 @@ void Pc_CoopScreen_Draw(void)
         {
             /* A list entry: name and the count on the first line, where it
              * is on the second, a rule under it. */
-            char line1[64] = "", line2[64] = "", right[16] = "";
-            if (view == PC_COOP_VIEW_ROOMS)
+            char line1[64] = "", line2[96] = "", right[16] = "";
+            if (view == PC_COOP_VIEW_SAVES)
+            {
+                Pc_CoopMenu_SaveEntry(row, line1, (int)sizeof(line1), line2, (int)sizeof(line2),
+                                      right, (int)sizeof(right));
+            }
+            else if (view == PC_COOP_VIEW_ROOMS)
             {
                 int  code = 0, players = 0, max = 0, map = -1;
                 char host[40] = "";
