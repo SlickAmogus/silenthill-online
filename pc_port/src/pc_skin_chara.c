@@ -38,6 +38,7 @@
 #include "hires_override.h"
 #include "pc_config.h"
 #include "pc_lipsync.h"
+#include "sh_net_voice.h" /* voice-wheel lines move the speaker's mouth */
 #include "pc_pplit.h"
 #include "pc_modern_mesh.h"
 #include "pc_modern_shader.h"
@@ -510,6 +511,9 @@ typedef struct
     float       blinkClock, blinkNext;
     float       breathPhase, breathPeriod;
     float       mouth;
+    float       wheelMouth[PC_SKIN_INST]; /* per body: two players may wear one file */
+    int         wheel;      /* this draw: 0 nobody's, 1 the local player, 2 a partner */
+    unsigned long long wheelId; /* the partner, when wheel is 2 */
     float       grip[2];
     float       gunOff[3]; /* right-hand bone frame */
     int         lightLogged;
@@ -534,6 +538,7 @@ static PcSkinChara s_chara[PC_SKIN_MAX_CHARA];
 /* The play-as Harry swap's file base (HERO_CJ), or empty for HERO itself. */
 static char        s_heroFile[32];
 static int         s_drawMode;     /* Pc_SkinChara_SetDrawSkin */
+static unsigned long long s_drawSpeaker; /* Pc_SkinChara_SetDrawSpeaker */
 static char        s_drawFile[32];
 static int         s_charaCount;
 static char        s_missing[PC_SKIN_MAX_MISSING][32];
@@ -2569,6 +2574,11 @@ void Pc_SkinChara_SetHeroFile(const char* file)
     snprintf(s_heroFile, sizeof(s_heroFile), "%s", file != NULL ? file : "");
 }
 
+void Pc_SkinChara_SetDrawSpeaker(unsigned long long id)
+{
+    s_drawSpeaker = id;
+}
+
 void Pc_SkinChara_SetDrawSkin(int mode, const char* file)
 {
     s_drawMode = mode;
@@ -2606,6 +2616,8 @@ void* Pc_SkinChara_Begin(s_Skeleton* skel, const void* boneCoords)
         memset(ch->have, 0, sizeof(ch->have));
         memset(ch->lit, 0, sizeof(ch->lit));
         ch->isPlayer = 0;
+        ch->wheel    = s_drawSpeaker != 0 ? 2 : 0;
+        ch->wheelId  = s_drawSpeaker;
         return ch;
     }
 
@@ -2679,6 +2691,8 @@ void* Pc_SkinChara_Begin(s_Skeleton* skel, const void* boneCoords)
     memset(ch->have, 0, sizeof(ch->have));
     memset(ch->lit, 0, sizeof(ch->lit));
     ch->isPlayer = (lm == g_WorldGfxWork.harryModel.lmHdr);
+    ch->wheel    = ch->isPlayer ? 1 : 0;
+    ch->wheelId  = 0;
     return ch;
 }
 
@@ -3259,7 +3273,14 @@ static float Skin_MouthWeight(PcSkinChara* ch)
         target = level;
     rate = target > ch->mouth ? 30.0f : 14.0f;
     ch->mouth += (target - ch->mouth) * (dt * rate > 1.0f ? 1.0f : dt * rate);
-    return ch->mouth;
+    {
+        float* wm = &ch->wheelMouth[ch->inst];
+        float  wl = ch->wheel ? ShNetVoice_MouthLevel(ch->wheel == 1, ch->wheelId) : -1.0f;
+        float  wt = wl > 0.0f && !s_rd.active ? wl : 0.0f;
+        rate = wt > *wm ? 30.0f : 14.0f;
+        *wm += (wt - *wm) * (dt * rate > 1.0f ? 1.0f : dt * rate);
+        return *wm > ch->mouth ? *wm : ch->mouth;
+    }
 }
 
 /* Fingers close round whatever the game puts in that hand (the phone goes in
