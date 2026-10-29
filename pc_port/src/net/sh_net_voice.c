@@ -25,6 +25,7 @@
 #include "pc_config.h"
 #include "pc_mouse_cursor.h"
 #include "pc_playas.h"
+#include "pc_skin_chara.h" /* a swap's voice= */
 #include "pc_voice_clip.h"
 #include "xa_player.h"
 #include "xa_wav.h"
@@ -65,6 +66,44 @@ static const VoiceSet s_sets[VOICE_CHARAS] = {
         { 234, "Darkness." },         { 552, "Alessa." },          { 542, "Bad girl." },    { 536, "I was careless." },
         { 76,  "I knew you'd come." },{ 183, "You were too late." },{ 423, "Before it is too late." }, { 517, "But what a pity, yes?" } } },
 };
+
+/* Which of s_sets are women's voices, for a swap that names none. */
+static const unsigned char s_setFemale[VOICE_CHARAS] = { 0, 1, 0, 1, 1 };
+
+static int Voice_SetFor(int charaId);
+
+/* The set the local player speaks with. A built-in character with lines of
+ * its own uses them (the rest speak as Harry, as before). A HERO_* swap uses
+ * the one its ini names with voice=, or else one of the voices of its gender
+ * (female= in the same ini), chosen from the swap's name so it is the same
+ * every session. Only the set's chara id travels, so every partner hears the
+ * voice the speaker chose. */
+static int Voice_LocalSet(void)
+{
+    const char*  swap = Pc_PlayAs_SkinToken();
+    const char*  want;
+    unsigned int h = 2166136261u;
+    int          i, n = 0, female, pick;
+
+    if (!swap[0])
+    {
+        return Voice_SetFor(Pc_PlayAs_SkinCharaId());
+    }
+    want = Pc_SkinChara_HeroVoice();
+    for (i = 0; want[0] && i < VOICE_CHARAS; i++)
+    {
+        if (SDL_strcasecmp(s_sets[i].folder, want) == 0) return i;
+    }
+    female = Pc_PlayAs_IsFemale() ? 1 : 0;
+    for (i = 0; i < VOICE_CHARAS; i++) n += (s_setFemale[i] == female);
+    for (i = 0; swap[i]; i++) h = (h ^ (unsigned char)swap[i]) * 16777619u;
+    pick = (int)(h % (unsigned int)n);
+    for (i = 0; i < VOICE_CHARAS; i++)
+    {
+        if (s_setFemale[i] == female && pick-- == 0) return i;
+    }
+    return 0;
+}
 
 /* Decoded clips, kept once made: [set][slot]. */
 typedef struct { short* pcm; unsigned int samples; int rate, stereo, tried; } VoiceClip;
@@ -145,7 +184,7 @@ static void Voice_Play(int set, int slot, float gain)
 static void Voice_Say(int slot)
 {
     const unsigned int now = ShNetPlat_Millis();
-    int                set = Voice_SetFor(Pc_PlayAs_SkinCharaId());
+    int                set = Voice_LocalSet();
     unsigned char      b[6];
     int                o = 0;
 
@@ -344,7 +383,7 @@ int ShNetVoice_MenuSelected(void)
 
 const char* ShNetVoice_MenuLabel(int slot)
 {
-    int set = Voice_SetFor(Pc_PlayAs_SkinCharaId());
+    int set = Voice_LocalSet();
     if (slot < 0 || slot >= VOICE_SLOTS) return "";
     return s_sets[set].line[slot].label;
 }
