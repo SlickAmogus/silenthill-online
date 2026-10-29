@@ -174,6 +174,27 @@ static int PlayAs_Roster(void)
 
 static int s_current = 0;
 
+const char* Pc_PlayAs_SkinToken(void)
+{
+    const PcPlayAsChara* p;
+    if (s_current < 0 || s_current >= PLAYAS_COUNT)
+        return "";
+    p = &s_playable[s_current];
+    return p->skinFile != NULL ? p->name : "";
+}
+
+const char* Pc_PlayAs_SkinFileForToken(const char* token)
+{
+    int i, n;
+    if (token == NULL || token[0] == '\0')
+        return NULL;
+    n = PLAYAS_COUNT;
+    for (i = 0; i < n; i++)
+        if (s_playable[i].skinFile != NULL && strcmp(s_playable[i].name, token) == 0)
+            return s_playable[i].skinFile;
+    return NULL;
+}
+
 /* PC-owned destination for any non-HERO player ILM. One buffer, sized for the
  * largest playable file, registered under the Chara_Harry key (the pool only
  * registers 2..43) so Pc_BigLm_DestCapacity lifts the loose byte-replace size

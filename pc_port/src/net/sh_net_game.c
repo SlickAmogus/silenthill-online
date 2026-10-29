@@ -63,6 +63,39 @@ static unsigned int s_lastNameReqMs = 0;
 /* Recompute every frame rather than caching: the player can change character
  * mid-session (PLAYAS), and a ghost wearing the wrong body is worse than the
  * three instructions this costs. */
+/* Tell the room which Harry swap we wear: on change, when the roster changes
+ * (a newcomer has not heard), and every few seconds regardless, since it is
+ * sent unreliably. An empty token clears a swap we took off. */
+static void ShNetG_SkinAnnounce(void)
+{
+    static char         s_sent[24];
+    static int          s_sentCount = -1;
+    static unsigned int s_sentMs;
+    const char*         tok = Pc_PlayAs_SkinToken();
+    const unsigned int  now = ShNetPlat_Millis();
+    int                 n;
+    unsigned char       b[1 + 24];
+    size_t              len;
+
+    if (!ShSession_Active())
+    {
+        s_sentCount = -1;
+        return;
+    }
+    n = ShSession_MemberCount();
+    if (strcmp(tok, s_sent) == 0 && n == s_sentCount && now - s_sentMs < 3000u)
+        return;
+    len = strlen(tok);
+    if (len > sizeof(b) - 2) len = sizeof(b) - 2;
+    b[0] = SHNET_CTRL_SKIN;
+    memcpy(b + 1, tok, len);
+    b[1 + len] = 0;
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, (int)(2 + len), 0, 0);
+    snprintf(s_sent, sizeof(s_sent), "%s", tok);
+    s_sentCount = n;
+    s_sentMs    = now;
+}
+
 static int ShNetG_LocalChara(void)
 {
     int id = Pc_PlayAs_SkinCharaId();
@@ -575,6 +608,7 @@ static void ShNetG_PublishPose(int mapIdx, int flags)
         }
     }
     ShSession_PublishLocalPos(mapIdx, ShNetG_LocalChara(), flags, &pose);
+    ShNetG_SkinAnnounce();
 }
 
 /* ------------------------------------------------------------------ */
@@ -816,6 +850,22 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_CHAT:
             ShNetChat_CoopIn(from, p, len);
             break;
+        case SHNET_CTRL_SKIN:
+        {
+            extern void ShNetG_SetMemberSkin(unsigned long long id, const char* token);
+            char tok[24];
+            int  i, n = len - 1;
+            if (n > (int)sizeof(tok) - 1) n = (int)sizeof(tok) - 1;
+            for (i = 0; i < n && p[1 + i]; i++)
+            {
+                char c = (char)p[1 + i];
+                if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+                tok[i] = ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-') ? c : '_';
+            }
+            tok[i] = '\0';
+            ShNetG_SetMemberSkin(from, tok);
+            break;
+        }
         case SHNET_CTRL_ITEM_USED:
             if (len < 3) return;
             ShNetG_ItemUsedIn(p[1], p[2]);

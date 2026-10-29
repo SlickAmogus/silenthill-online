@@ -51,6 +51,11 @@ void  Pc_SkinChara_ApplyLighting(u32 handle, unsigned int program);
 /* Which file HERO's replacement loads: a play-as swap's base name (HERO_CJ),
  * or NULL for HERO itself. A swap whose file is gone falls back to HERO. */
 void  Pc_SkinChara_SetHeroFile(const char* file);
+/* For the next skeleton draws only (sh_net_ghost.c, around a partner's body):
+ * mode 1 wears `file` (a HERO_* swap base name this machine has), mode 2 wears
+ * nothing (the stock model, whatever the local player wears), mode 0 is the
+ * normal rule again. */
+void  Pc_SkinChara_SetDrawSkin(int mode, const char* file);
 
 /* HERO's replacement says female=1 in its HERO.ini (drives the voice pitch). */
 int   Pc_SkinChara_HeroFemale(void);
