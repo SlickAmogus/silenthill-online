@@ -42,6 +42,7 @@ enum { TB_AIM = 0, TB_ITEM, TB_MAP, TB_START, TB_RUN, TB_BACK, TB_FIRE, TB_MENU,
        TB_SKIP,
        TB_LIGHT, TB_VIEW, TB_CAM, TB_QSAVE, TB_QLOAD, TB_BONUS, TB_CLICK,
        TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP, TB_VOICE,
+       TB_CHAT, TB_CHANNEL,
        TB_COUNT };
 
 typedef struct
@@ -139,6 +140,11 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
     /* The multiplayer menu, in a co-op game only: what M opens on a keyboard.
      * Top centre, between the quick save pair, clear of both thumbs. */
     [TB_COOP] = { 0.500f, 0.068f, 0.055f, 0 },
+    /* Chat, on the other side of the multiplayer button from the voice
+     * wheel: opens the box for typing, and closes it again. While it is open
+     * the channel button beside it is the only other live control. */
+    [TB_CHAT] = { 0.410f, 0.068f, 0.055f, 0 },
+    [TB_CHANNEL] = { 0.320f, 0.068f, 0.055f, 0 },
     /* The voice wheel (what holding B opens on a keyboard), beside it. */
     [TB_VOICE] = { 0.590f, 0.068f, 0.055f, 0 },
 };
@@ -298,7 +304,7 @@ enum { TC_LEVEL_NONE = 0, TC_LEVEL_ESCAPE, TC_LEVEL_FULL };
  * the instant you touched a dial and the puzzle could never be solved. */
 enum { TC_MODE_OFF = 0, TC_MODE_GAMEPLAY, TC_MODE_PAUSE, TC_MODE_MAP, TC_MODE_ADVANCE, TC_MODE_BACK,
        TC_MODE_BACK_CURSOR, TC_MODE_ESCAPE, TC_MODE_TITLE, TC_MODE_SKIP,
-       TC_MODE_BONUS, TC_MODE_RESULTS, TC_MODE_SAVEASK, TC_MODE_PAPERMAP };
+       TC_MODE_BONUS, TC_MODE_RESULTS, TC_MODE_SAVEASK, TC_MODE_PAPERMAP, TC_MODE_CHAT };
 
 /* Gameplay gets the full scheme. Pause gets Start ALONE -- nothing else on that
  * screen responds to a pointer, so hiding the controls there left no way back
@@ -335,6 +341,13 @@ static int Tc_VoiceButtonOn(void)
  * through the free-cursor servo (the map5_s01 combination lock). */
 int g_PcTapPuzzleFrame = -100;
 
+/* The chat button: anywhere there is a channel to talk on, in play. */
+static int Tc_ChatButtonOn(void)
+{
+    extern int ShNetChat_Available(void);
+    return ShNetChat_Available() && Tc_MenuAllowed();
+}
+
 static int Tc_Mode(void)
 {
     int level = Tc_Level();
@@ -348,6 +361,16 @@ static int Tc_Mode(void)
      * would also count as a look-drag. */
     if (Pc_QuickOptions_IsOpen())
         return TC_MODE_OFF;
+
+    /* Typing a chat line: the keyboard has the text, the chat button closes
+     * it, the channel button switches, and nothing else may steer or fire.
+     * The chat box itself is not a control: it is on screen whenever there
+     * is chat, so touching it changes nothing. */
+    {
+        extern int ShNetChat_TouchTyping(void);
+        if (ShNetChat_TouchTyping())
+            return TC_MODE_CHAT;
+    }
 
     /* The in-game multiplayer menu, likewise: it takes taps through the
      * pointer, and a tap on a row must not also steer or press a button. */
@@ -894,6 +917,8 @@ static int Tc_SoloButton(int mode)
         return TB_NO;      /* Yes is a tap anywhere; No needs the button */
     if (mode == TC_MODE_ADVANCE && Tc_CutsceneSkip())
         return TB_SKIP;    /* a scene can be skipped; text only advances */
+    if (mode == TC_MODE_CHAT)
+        return TB_CHAT;    /* the chat button closes the box it opened */
 
     return -1;
 }
@@ -1045,6 +1070,8 @@ static int Tc_ExtraButton(int b, int mode)
         return mode == TC_MODE_BACK_CURSOR && Pc_MouseCursor_PuzzleActive();
     if (b == TB_MAPUP || b == TB_MAPDN)
         return mode == TC_MODE_MAP || mode == TC_MODE_PAPERMAP;
+    if (b == TB_CHANNEL)
+        return mode == TC_MODE_CHAT;
     return 0;
 }
 
@@ -1054,7 +1081,7 @@ static int Tc_ExtraButton(int b, int mode)
  * up in different places. */
 static int Tc_SoloOwnPos(int b)
 {
-    return b == TB_NO;
+    return b == TB_NO || b == TB_CHAT;
 }
 
 static int Tc_HitButton(float x, float y, float aspect)
@@ -1068,6 +1095,8 @@ static int Tc_HitButton(float x, float y, float aspect)
         if (Tc_CornerOnly(i) || Tc_ScreenOnly(i))
             continue;
         if ((i == TB_QSAVE || i == TB_QLOAD) && !Tc_QuickButtonsOn())
+            continue;
+        if ((i == TB_CHAT && !Tc_ChatButtonOn()) || i == TB_CHANNEL)
             continue;
         if ((i == TB_COOP && !Tc_CoopButtonOn()) || (i == TB_VOICE && !Tc_VoiceButtonOn()))
             continue;
@@ -2040,6 +2069,31 @@ void Pc_Touch_Update(void)
             s_voiceWas = voiceNow;
         }
 
+        /* Chat: the button opens the box for typing and closes it; the channel
+         * button, live only while typing, steps the channel. Edge-triggered on
+         * the latch like Menu. */
+        {
+            extern int  ShNetChat_IsOpen(void);
+            extern void ShNetChat_OpenTouch(void);
+            extern void ShNetChat_Close(void);
+            extern void ShNetChat_CycleScope(void);
+            static int  s_chatWas, s_chanWas;
+            const int   chatNow = (s_Buttons[TB_CHAT].holdFrames > 0);
+            const int   chanNow = (s_Buttons[TB_CHANNEL].holdFrames > 0);
+
+            if (chatNow && !s_chatWas)
+            {
+                if (ShNetChat_IsOpen())
+                    ShNetChat_Close();
+                else if (Tc_ChatButtonOn())
+                    ShNetChat_OpenTouch();
+            }
+            if (chanNow && !s_chanWas && ShNetChat_IsOpen())
+                ShNetChat_CycleScope();
+            s_chatWas = chatNow;
+            s_chanWas = chanNow;
+        }
+
         /* Quick Save / Quick Load, edge-triggered on the latch for the same
          * reason as Menu. Gamepad style handles its own pair above. */
         {
@@ -2675,6 +2729,13 @@ void Pc_Touch_Draw(void)
             (mode != TC_MODE_GAMEPLAY || (i == TB_COOP ? !Tc_CoopButtonOn() : !Tc_VoiceButtonOn())))
             continue;
 
+        /* Chat in play when there is a channel; the channel button only while
+         * typing, where the solo/extra rules below place both. */
+        if (i == TB_CHAT && mode == TC_MODE_GAMEPLAY && !Tc_ChatButtonOn())
+            continue;
+        if (i == TB_CHANNEL && mode != TC_MODE_CHAT)
+            continue;
+
         /* Quick Save / Quick Load: only with the option on, and only in play. */
         if ((i == TB_QSAVE || i == TB_QLOAD) &&
             (mode != TC_MODE_GAMEPLAY || !Tc_QuickButtonsOn()))
@@ -2825,6 +2886,35 @@ void Pc_Touch_Draw(void)
                                 cx + d - t, cy + d + t, cx + d + t, cy + d - t, lum);
                 Tc_Quad(&batch, cx + d - t, cy - d - t, cx + d + t, cy - d + t,
                                 cx - d - t, cy + d - t, cx - d + t, cy + d + t, lum);
+                break;
+            }
+            case TB_CHAT:
+            {
+                /* Three lines of text, the last one short: something to read
+                 * and write, apart from the voice wheel's speech bubble. */
+                int w = (r * 36) / 100, t = (r * 6) / 100, g = (r * 18) / 100, k;
+
+                for (k = -1; k <= 1; k++)
+                {
+                    int yc = cy + k * g, ww = (k == 1) ? (w * 55) / 100 : w;
+                    Tc_Quad(&batch, cx - w, yc - t, cx - w + 2 * ww, yc - t,
+                                    cx - w, yc + t, cx - w + 2 * ww, yc + t, lum);
+                }
+                break;
+            }
+            case TB_CHANNEL:
+            {
+                /* Two arrows passing each other: switch. */
+                int w = (r * 34) / 100, t = (r * 6) / 100, g = (r * 15) / 100, h = (r * 14) / 100;
+
+                Tc_Quad(&batch, cx - w, cy - g - t, cx + w - h, cy - g - t,
+                                cx - w, cy - g + t, cx + w - h, cy - g + t, lum);
+                Tc_Quad(&batch, cx + w - h, cy - g - h, cx + w, cy - g,
+                                cx + w - h, cy - g + h, cx + w - h, cy - g + h, lum);
+                Tc_Quad(&batch, cx - w + h, cy + g - t, cx + w, cy + g - t,
+                                cx - w + h, cy + g + t, cx + w, cy + g + t, lum);
+                Tc_Quad(&batch, cx - w + h, cy + g - h, cx - w, cy + g,
+                                cx - w + h, cy + g + h, cx - w + h, cy + g + h, lum);
                 break;
             }
             case TB_COOP:
