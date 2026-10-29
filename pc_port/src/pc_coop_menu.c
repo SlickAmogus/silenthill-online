@@ -21,6 +21,7 @@
 #include "sh_net.h"
 #include "sh_net_session.h"
 #include "sh_net_invite.h" /* the Invite / Accept / Decline rows */
+#include "sh_net_chat.h"   /* the Chat row */
 #include "sh_net_proto.h" /* SHNET_PERM_* */
 #include "sh_net_steam.h"
 #include "sh_log.h"
@@ -717,9 +718,9 @@ enum
 {
     COOP_IG_RESUME = 0, COOP_IG_MESSAGE, COOP_IG_SAVE, COOP_IG_CHARACTER, COOP_IG_NAMEPLATES,
     COOP_IG_HEALTHBARS, COOP_IG_FRIENDLY, COOP_IG_CHEATS, COOP_IG_TELEPORT, COOP_IG_PLAYERS, COOP_IG_LEAVE,
-    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE
+    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE, COOP_IG_CHAT
 };
-#define COOP_IG_MAX 16
+#define COOP_IG_MAX 20
 
 static int Coop_InGameRows(int* rows)
 {
@@ -741,6 +742,7 @@ static int Coop_InGameRows(int* rows)
     {
         rows[n++] = COOP_IG_INVITE;
     }
+    rows[n++] = COOP_IG_CHAT;
     /* Outside a co-op game (the living world alone) that is the whole menu:
      * the rest belongs to a shared game. */
     if (!g_PcCoopGame)
@@ -957,6 +959,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_IG_SAVE:       snprintf(out, cap, "Save"); break;
         case COOP_IG_CHARACTER:  snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current())); break;
         case COOP_IG_NAMEPLATES: snprintf(out, cap, "Nameplates:  %s", g_PcConfig.onlineNameplates ? "On" : "Off"); break;
+        case COOP_IG_CHAT:       snprintf(out, cap, "Chat:  %s", ShNetChat_Hidden() ? "Hidden" : "Shown"); break;
         case COOP_IG_HEALTHBARS:
         {
             static const char* const hb[4] = { "Off", "Mine", "Partners", "Everyone" };
@@ -1330,6 +1333,7 @@ static void Coop_Confirm(void)
         case COOP_IG_SAVE:       Coop_DoSave(); break;
         case COOP_IG_CHARACTER:  Pc_PlayAs_Cycle(1); break; /* reloads the body in place */
         case COOP_IG_NAMEPLATES: g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; break;
+        case COOP_IG_CHAT:       ShNetChat_SetHidden(!ShNetChat_Hidden()); break;
         case COOP_IG_HEALTHBARS:
         {
             char v[4];
