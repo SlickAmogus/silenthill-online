@@ -142,25 +142,17 @@ void GameState_ItemScreens_Update(void) // 0x8004C9B0
      * it. Characters draw from inside their own updates, so skipping the draw
      * call alone would not keep them out; clearing the frame's OTs does. */
     {
-        extern int  g_PcCoopGame;
-        extern int  g_PcSimOnly;
-        extern int  g_PcWorldDrawnThisFrame, g_PcHorPlusEnabled, g_PcWorldHorPlus;
-        extern u8   g_Player_DisableControl;
-        extern void InGame_SimAndDraw(void);
+        extern int g_PcCoopGame;
+        extern int Pc_CoopMenuSim(void);
         if (g_PcCoopGame &&
             g_GameWork.gameStateSteps[1] >= 1 && g_GameWork.gameStateSteps[1] <= 16)
         {
-            u8  savedDisable = g_Player_DisableControl;
-            int savedDrawn   = g_PcWorldDrawnThisFrame;
-            int savedHor     = g_PcHorPlusEnabled;
-            int savedWorldHor = g_PcWorldHorPlus;
-            g_Player_DisableControl = true;
-            g_PcSimOnly             = 1;
-            InGame_SimAndDraw();
-            g_PcSimOnly             = 0;
-            g_Player_DisableControl = savedDisable;
-            GsClearOt(0, 0, &g_OrderingTable0[g_ActiveBufferIdx]);
-            GsClearOt(0, 0, &g_OrderingTable2[g_ActiveBufferIdx]);
+            /* Killed in the pack: the item button is the inventory's own way
+             * out, pressed for him every frame until the exit steps take over. */
+            if (Pc_CoopMenuSim())
+            {
+                g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.item;
+            }
             /* The sim's camera (vcExecCamera) replaced what the inventory pins
              * ONCE at step 0 and never re-asserts: the item projection
              * (func_8004BFE8), the carousel's reference view (ItemScreen_CamSet
@@ -169,22 +161,9 @@ void GameState_ItemScreens_Update(void) // 0x8004C9B0
              * are lit with (the chara draws set the room's). Without these the
              * carousel projects through the gameplay camera, off screen, and
              * whatever shows is lit by a dark room. */
-            if (g_GameWork.gameStateSteps[1] >= 1)
-            {
-                GsSetProjection(1000);
-                vbSetRefView(&D_800C3B48);
-                GsSetAmbient(1024, 1024, 1024);
-            }
-            g_PcWorldDrawnThisFrame = savedDrawn;
-            g_PcHorPlusEnabled      = savedHor;
-            g_PcWorldHorPlus        = savedWorldHor;
-            /* Killed in the pack: the item button is the inventory's own way
-             * out, pressed for him every frame until the exit steps take over,
-             * so the death and the respawn play on screen, not behind a menu. */
-            if (g_SysWork.playerWork.player.health <= Q12(0.0f))
-            {
-                g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.item;
-            }
+            GsSetProjection(1000);
+            vbSetRefView(&D_800C3B48);
+            GsSetAmbient(1024, 1024, 1024);
         }
     }
 #endif

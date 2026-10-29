@@ -24,8 +24,10 @@ Then **Max Players**, whether the room is **Listed** or hidden (code only),
 **Living World** (Private by default: just you and your friends, no
 strangers' ghosts or messages; Shown makes the game part of the living
 world), the **FPS Lock** (60 is the default, and what the sync is tuned for),
-and **Start From**: a New Game or any of your single-player saves. **Open
-Room** opens it; **Start Game** boots everyone into the host's map.
+and **Start From**: a New Game or any of your single-player saves, newest
+first; the left and right arrows step through them, Enter or a click moves
+to the next. **Open Room** opens it; **Start Game** boots everyone into the
+host's map.
 
 **Join a game.** Browse Server Rooms lists every open game ("Name's Game",
 where it is, how many are in it), server rooms and Steam lobbies alike; or
@@ -95,8 +97,9 @@ or the centre to put it away. Long lists scroll with a finger: hold and drag.
 
 **Pausing** is the host's: the host's pause pauses everyone, and a guest's
 pause button asks the host instead. Reading a note, a locked door message or
-an item does not stop the world for anyone. The quick menu (F10) opens
-without pausing.
+an item does not stop the world for anyone, and neither does your inventory,
+the paper map or the options screen: the monsters keep coming while they are
+open, and you keep taking hits. The quick menu (F10) opens without pausing.
 
 **Voice lines.** Hold `B` (key_vocalize) for a wheel of eight short lines of
 your character, point at one or press its number, let go: everyone on your
@@ -165,8 +168,9 @@ selection back.
 - **Difficulty.** With partners to lean on, monsters have 1.5 times their
   health and hit twice as hard.
 - **Dying.** A death is not game over while a partner is alive. The world
-  keeps running while your inventory is open, and a hit that kills you there
-  closes the inventory so the death and the respawn play on screen. After the
+  keeps running while your inventory, paper map or options screen is open,
+  and a hit that kills you there closes the screen so the death and the
+  respawn play where you can see them. After the
   respawn delay you come back next to a living partner who is out of combat:
   no monster on them and no hit taken for a few seconds, including a couple
   of seconds after they run through a door. Until there is one the screen

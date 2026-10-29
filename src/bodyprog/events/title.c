@@ -445,7 +445,9 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                     (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickUp) != 0,
                     (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickDown) != 0,
                     (clk & (g_GameWorkPtr->config.controllerConfig.enter |
-                            g_GameWorkPtr->config.controllerConfig.action)) != 0);
+                            g_GameWorkPtr->config.controllerConfig.action)) != 0,
+                    (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickLeft  | ControllerFlag_DpadLeft))  != 0,
+                    (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickRight | ControllerFlag_DpadRight)) != 0);
                 g_Controller0->clickedBtnFlags   = 0;
                 g_Controller0->pulsedBtnFlags    = 0;
                 g_Controller0->releasedBtnFlags  = 0;
