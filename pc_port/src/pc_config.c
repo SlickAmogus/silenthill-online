@@ -862,6 +862,10 @@ void PcConfig_Load(const char* path)
         {
             g_PcConfig.onlineChatHidden = (atoi(value) != 0);
         }
+        else if (strcmp(key, "online_joins_hidden") == 0)
+        {
+            g_PcConfig.onlineJoinsHidden = (atoi(value) != 0);
+        }
         else if (strcmp(key, "online_ghost_style") == 0)
         {
             int v = atoi(value);
