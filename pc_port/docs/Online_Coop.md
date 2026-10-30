@@ -215,16 +215,16 @@ selection back.
   another map is not pulled across; they play the scene when they get
   there.
 - **Story doors.** A door with a point of no return behind it (the two
-  gates in the alley, the school's Door of Eclipse) belongs to the host. A
-  guest who uses one stands at it under "Waiting for Harry at the door..."
-  until the host goes through, and partners get a note that someone is
-  waiting at a gate. The host goes through once every partner on the map is
-  close by, and they all go through together in the same moment, so nobody
-  is left a step short on the wrong side. If someone is far away the host
-  waits too, under the same panel naming who is missing; Action takes
-  everyone through at once, and after a minute and a half the host takes
-  everyone through anyway. Cancel turns back. A guest who waits that long
-  turns back on their own.
+  gates in the alley, Old Silent Hill's Door of Eclipse) belongs to the
+  host. A guest who uses one stands at it under "Waiting for Harry at the
+  door..." until the host goes through, and partners get a note that
+  someone is waiting at a gate. When every partner on the map is close by,
+  the host goes straight through and they all go through together in the
+  same moment, so nobody is left a step short on the wrong side. If someone
+  is far away, the host's first use of the door only warns that going
+  through will bring the others; using it again within 15 seconds goes
+  through and brings everyone on the map. Cancel turns a guest back, and a
+  guest who waits a minute and a half turns back on their own.
 - **Level doors.** A guest cannot leave for another map while the host is
   on theirs and not beside them: the door waits under "Waiting for the
   host..." (Cancel turns back). A host who went on ahead is followed

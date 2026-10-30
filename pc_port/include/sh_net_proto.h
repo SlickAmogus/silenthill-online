@@ -82,7 +82,7 @@ typedef char shn_static_assert_widths[
  * can join a PC: the executable's hash differed per platform, and on Android
  * was the system's own app_process. Bump it whenever the co-op wire format or
  * the shared game logic changes in a way the previous build cannot follow. */
-#define SHNET_COOP_BUILD   "coop-2026-10-28"
+#define SHNET_COOP_BUILD   "coop-2026-10-30"
 #define SHNET_SERVER_MAX   32
 #define SHNET_MOTD_MAX     128
 #define SHNET_REJECT_MAX   96
