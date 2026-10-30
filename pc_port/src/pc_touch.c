@@ -304,7 +304,7 @@ enum { TC_LEVEL_NONE = 0, TC_LEVEL_ESCAPE, TC_LEVEL_FULL };
  * the instant you touched a dial and the puzzle could never be solved. */
 enum { TC_MODE_OFF = 0, TC_MODE_GAMEPLAY, TC_MODE_PAUSE, TC_MODE_MAP, TC_MODE_ADVANCE, TC_MODE_BACK,
        TC_MODE_BACK_CURSOR, TC_MODE_ESCAPE, TC_MODE_TITLE, TC_MODE_SKIP,
-       TC_MODE_BONUS, TC_MODE_RESULTS, TC_MODE_SAVEASK, TC_MODE_PAPERMAP, TC_MODE_CHAT };
+       TC_MODE_BONUS, TC_MODE_RESULTS, TC_MODE_SAVEASK, TC_MODE_PAPERMAP, TC_MODE_CHAT, TC_MODE_LOBBY };
 
 /* Gameplay gets the full scheme. Pause gets Start ALONE -- nothing else on that
  * screen responds to a pointer, so hiding the controls there left no way back
@@ -573,6 +573,17 @@ static int Tc_Mode(void)
 
         if (g_GameWork.gameState == GameState_MainMenu && Pc_AchScreen_IsOpen())
             return TC_MODE_BACK_CURSOR;
+    }
+
+    /* The main menu and the multiplayer lobby over it: just the chat button,
+     * with every other tap left to the menus, as the live-background modes
+     * leave them. Not while a field there is taking the keyboard. */
+    if (g_GameWork.gameState == GameState_MainMenu && level == TC_LEVEL_FULL)
+    {
+        extern int Pc_CoopMenu_Editing(void);
+        extern int Pc_QolMods_IsOpen(void);
+        if (Tc_ChatButtonOn() && !Pc_CoopMenu_Editing() && !Pc_QolMods_IsOpen())
+            return TC_MODE_LOBBY;
     }
 
     if (g_GameWork.gameState != GameState_InGame)
@@ -917,8 +928,8 @@ static int Tc_SoloButton(int mode)
         return TB_NO;      /* Yes is a tap anywhere; No needs the button */
     if (mode == TC_MODE_ADVANCE && Tc_CutsceneSkip())
         return TB_SKIP;    /* a scene can be skipped; text only advances */
-    if (mode == TC_MODE_CHAT)
-        return TB_CHAT;    /* the chat button closes the box it opened */
+    if (mode == TC_MODE_CHAT || mode == TC_MODE_LOBBY)
+        return TB_CHAT;    /* the chat button closes the box it opened; at the menus it opens it */
 
     return -1;
 }
