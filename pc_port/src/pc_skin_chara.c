@@ -954,10 +954,15 @@ static cgltf_result Skin_FileRead(const struct cgltf_memory_options* mem, const 
     return cgltf_result_success;
 }
 
-static void Skin_FileRelease(const struct cgltf_memory_options* mem, const struct cgltf_file_options* file, void* data)
+/* The size cgltf passes is unused, but the parameter must be there: a
+ * WebAssembly indirect call checks the callee's type and traps on a
+ * mismatch. */
+static void Skin_FileRelease(const struct cgltf_memory_options* mem, const struct cgltf_file_options* file, void* data,
+                             cgltf_size size)
 {
     (void)mem;
     (void)file;
+    (void)size;
     free(data);
 }
 
