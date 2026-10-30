@@ -473,6 +473,7 @@ enum
     SHNET_CTRL_RESTART   = 9, /* host -> all: u16 gen, u8 map, s_Savegame; I loaded a save, start from it with me */
     SHNET_CTRL_ITEM_USED = 10, /* member -> all: u8 item, u8 count; I used up this key item, drop yours too */
     SHNET_CTRL_CHAT      = 11, /* member -> all: a Coop chat line, NUL-terminated, at most SHNET_CHAT_MAX */
+    SHNET_CTRL_GAMEOVER  = 13, /* host -> all: u16 gen; nobody is left alive, the game over plays for everyone */
     SHNET_CTRL_SKIN      = 12  /* member -> all: the Harry swap worn (its lowercase play-as token, NUL-terminated,
                                 * at most 24; empty = none). A partner with the same file draws it; anyone
                                 * else draws Harry. Repeated every few seconds and on change. */
