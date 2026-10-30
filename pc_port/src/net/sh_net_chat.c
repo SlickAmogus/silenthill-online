@@ -6,6 +6,9 @@
 
 #include <SDL.h>
 
+#include "game.h"
+#include "bodyprog/bodyprog.h"
+
 #include "sh_net.h"
 #include "sh_net_proto.h"
 #include "sh_net_chat.h"
@@ -45,6 +48,25 @@ static int  s_visCount;
 static char s_input[CHAT_INPUT_MAX];
 static int  s_inputLen;
 
+/* At the main menu (and the multiplayer lobby, which is drawn over it) there
+ * is no level to talk to: only Global, and the room's own channel, called
+ * Lobby there, while in one. */
+static int Chat_InMenus(void)
+{
+    return g_GameWork.gameState == GameState_MainMenu;
+}
+
+/* The channel actually in use: s_scope, or Global where the menus have no
+ * such channel. s_scope itself is kept for when the game starts. */
+static int Chat_Scope(void)
+{
+    if (Chat_InMenus() && !(s_scope == SHNET_CHAT_COOP && ShSession_Active()))
+    {
+        return SHNET_CHAT_GLOBAL;
+    }
+    return s_scope;
+}
+
 static unsigned char s_prevKeys[SDL_NUM_SCANCODES];
 static int           s_haveKeys;
 
@@ -80,7 +102,7 @@ const char* ShNetChat_ScopeName(int scope)
     {
     case SHNET_CHAT_GLOBAL: return "Global";
     case SHNET_CHAT_GAME:   return "Level";
-    case SHNET_CHAT_COOP:   return "Coop";
+    case SHNET_CHAT_COOP:   return Chat_InMenus() ? "Lobby" : "Coop";
     case SHNET_CHAT_ALL:    return "All";
     default:                return "";
     }
@@ -208,9 +230,14 @@ void ShNetChat_Open(void)
     }
 }
 
-/* Global -> Level -> Coop (while in a co-op game) -> All -> Global. */
+/* Global -> Level -> Coop (while in a co-op game) -> All -> Global. At the
+ * menus: Global -> Lobby (in a room) -> Global. */
 static int Chat_NextScope(int sc)
 {
+    if (Chat_InMenus())
+    {
+        return (sc != SHNET_CHAT_COOP && ShSession_Active()) ? SHNET_CHAT_COOP : SHNET_CHAT_GLOBAL;
+    }
     for (;;)
     {
         sc = (sc + 1) % 4;
@@ -221,7 +248,7 @@ static int Chat_NextScope(int sc)
 
 void ShNetChat_CycleScope(void)
 {
-    s_scope = Chat_NextScope(s_scope);
+    s_scope = Chat_NextScope(Chat_Scope());
     if (!s_open)
     {
         ShNetChat_Open();
@@ -383,9 +410,10 @@ static void Chat_Submit(void)
 {
     if (s_inputLen > 0)
     {
-        const int coop = (s_scope == SHNET_CHAT_COOP);
+        const int scope = Chat_Scope();
+        const int coop  = (scope == SHNET_CHAT_COOP);
         /* All shows everything but speaks to everyone: it sends as Global. */
-        const int sendScope = (s_scope == SHNET_CHAT_GAME) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
+        const int sendScope = (scope == SHNET_CHAT_GAME) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
         ShNetChat_Censor(s_input);
         if (coop && !ShSession_Active())
         {
@@ -573,7 +601,8 @@ static float Chat_Alpha(const ChatLine* l)
 
 static int Chat_OnChannel(const ChatLine* l)
 {
-    return l->scope == CHAT_SYSTEM || s_scope == SHNET_CHAT_ALL || l->scope == s_scope;
+    const int sc = Chat_Scope();
+    return l->scope == CHAT_SYSTEM || sc == SHNET_CHAT_ALL || l->scope == sc;
 }
 
 /* The lines of the chosen channel to draw this frame: the newest few, minus
@@ -650,7 +679,7 @@ int ShNetChat_Composing(void)
 
 int ShNetChat_Scope(void)
 {
-    return s_scope;
+    return Chat_Scope();
 }
 
 const char* ShNetChat_ComposeText(void)
