@@ -57,7 +57,7 @@ the commands:
 
 | command | does |
 |---|---|
-| `players` | who is on, with ids, addresses, rooms and builds |
+| `players` | who is on, with ids, addresses, rooms and builds, and how long the server has been up |
 | `kick <id or name> [reason]` | removes a player; they can reconnect |
 | `ban <id, name or IP> [minutes] [reason]` | no minutes means forever |
 | `unban <IP or uid>`, `bans` | lift a ban, list them |
