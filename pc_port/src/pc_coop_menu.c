@@ -470,6 +470,17 @@ static void Coop_OpenSaves(int from, int row)
     s_msg[0]       = '\0';
 }
 
+/* Enemy Damage / Enemy Health: 0.25x steps from 0.25x to 4x, wrapping. */
+static void Coop_StepScale(int* pct, const char* key, int dir)
+{
+    char v[8];
+    *pct += dir * 25;
+    if (*pct > 400) *pct = 25;
+    if (*pct < 25)  *pct = 400;
+    snprintf(v, sizeof(v), "%d", *pct);
+    PcConfig_SaveKeyValue(key, v);
+}
+
 static void Coop_CloseSaves(void)
 {
     s_page = s_savesFrom;
@@ -912,7 +923,7 @@ int Pc_CoopMenu_RowCount(void)
     {
     case COOP_PAGE_ROOT:       { int r[5]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Back */
     case COOP_PAGE_SETTINGS:   return 7; /* Living World IP, Living World, Name, Join Messages, Chat, Restart Connection, Back */
-    case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
+    case COOP_PAGE_HOST_SETUP: return 10; /* Host on, Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Load, Open, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
@@ -1019,8 +1030,10 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 2) snprintf(out, cap, "Room List:  %s", s_setPublic ? "Listed" : "Hidden (code only)");
         else if (i == 3) snprintf(out, cap, "Living World:  %s", s_setLiving ? "Shown" : "Private");
         else if (i == 4) snprintf(out, cap, "FPS Lock:  %d", s_setFps);
-        else if (i == 5) Coop_SaveRowText(out, cap);
-        else if (i == 6) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
+        else if (i == 5) snprintf(out, cap, "Enemy Damage:  %d.%02dx", g_PcConfig.onlineEnemyDamagePct / 100, g_PcConfig.onlineEnemyDamagePct % 100);
+        else if (i == 6) snprintf(out, cap, "Enemy Health:  %d.%02dx", g_PcConfig.onlineEnemyHealthPct / 100, g_PcConfig.onlineEnemyHealthPct % 100);
+        else if (i == 7) Coop_SaveRowText(out, cap);
+        else if (i == 8) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
         else snprintf(out, cap, "Back");
         break;
 
@@ -1429,8 +1442,10 @@ static void Coop_Confirm(void)
         else if (s_sel == 2) { s_setPublic = !s_setPublic; }
         else if (s_sel == 3) { s_setLiving = !s_setLiving; }
         else if (s_sel == 4) { s_setFps = (s_setFps == 60) ? 30 : 60; }
-        else if (s_sel == 5) { Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 5); }
-        else if (s_sel == 6) { Coop_StartHosting(); } /* Open Room / Lobby */
+        else if (s_sel == 5) { Coop_StepScale(&g_PcConfig.onlineEnemyDamagePct, "online_enemy_damage", 1); }
+        else if (s_sel == 6) { Coop_StepScale(&g_PcConfig.onlineEnemyHealthPct, "online_enemy_health", 1); }
+        else if (s_sel == 7) { Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 7); }
+        else if (s_sel == 8) { Coop_StartHosting(); } /* Open Room / Lobby */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
@@ -1774,7 +1789,9 @@ static int Coop_Adjust(int dir)
         case 2: s_setPublic = !s_setPublic; return 1;
         case 3: s_setLiving = !s_setLiving; return 1;
         case 4: s_setFps = (s_setFps == 60) ? 30 : 60; return 1;
-        case 5: Coop_StepSave(dir); return 1;
+        case 5: Coop_StepScale(&g_PcConfig.onlineEnemyDamagePct, "online_enemy_damage", dir); return 1;
+        case 6: Coop_StepScale(&g_PcConfig.onlineEnemyHealthPct, "online_enemy_health", dir); return 1;
+        case 7: Coop_StepSave(dir); return 1;
         default: return 0;
         }
     case COOP_PAGE_SPLIT_ONLINE:

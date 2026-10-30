@@ -1401,9 +1401,9 @@ void Pc_NetNpc_GameTick(void)
 
     if (role == PC_NETNPC_HOST)
     {
-        /* Co-op monsters are tougher: 1.5x health, applied once the monster's
-         * own init has written its health (a frame or more after the spawn),
-         * so the bonus is not overwritten by it. */
+        /* Co-op monsters are tougher, by the host's Enemy Health, applied
+         * once the monster's own init has written its health (a frame or more
+         * after the spawn), so the bonus is not overwritten by it. */
         int k;
         for (k = 0; k < NPC_COUNT_MAX; k++)
         {
@@ -1413,8 +1413,9 @@ void Pc_NetNpc_GameTick(void)
             {
                 continue;
             }
-            npc->health += npc->health >> 1;
-            s_scaled[k]  = 1;
+            npc->health = (q19_12)(((long long)npc->health * g_PcConfig.onlineEnemyHealthPct) / 100);
+            if (npc->health <= 0) npc->health = 1;
+            s_scaled[k] = 1;
         }
         Npc_HostSend();
     }

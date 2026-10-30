@@ -174,7 +174,8 @@ selection back.
   exception: using one up uses up everyone's copy, and the door it opened is
   open for all.
 - **Difficulty.** With partners to lean on, monsters have 1.5 times their
-  health and hit twice as hard.
+  health and hit 1.5 times as hard. The host sets both before opening the
+  room (Enemy Damage, Enemy Health), from 0.25x to 4x in steps of 0.25.
 - **Dying.** A death is not game over while a partner is alive. The world
   keeps running while your inventory, paper map or options screen is open,
   and a hit that kills you there closes the screen so the death and the

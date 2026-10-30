@@ -98,6 +98,8 @@ s_PcConfig g_PcConfig = {
     .onlineEvents     = 1,
     .onlineUiScale    = 1.0f,
     .onlineFriendlyFire = 0,
+    .onlineEnemyDamagePct = 150,
+    .onlineEnemyHealthPct = 150,
     .onlineGuestConsole = 0,
     .onlineCoopLiving   = 0,
     .onlineHealthBars   = 2,
@@ -943,6 +945,15 @@ void PcConfig_Load(const char* path)
             g_PcConfig.onlineUiScale = (float)atof(value);
             if (g_PcConfig.onlineUiScale < 0.5f) g_PcConfig.onlineUiScale = 0.5f;
             if (g_PcConfig.onlineUiScale > 3.0f) g_PcConfig.onlineUiScale = 3.0f;
+        }
+        else if (strcmp(key, "online_enemy_damage") == 0 || strcmp(key, "online_enemy_health") == 0)
+        {
+            int v = atoi(value);
+            v = (v + 12) / 25 * 25;
+            if (v < 25) v = 25;
+            if (v > 400) v = 400;
+            if (key[13] == 'd') g_PcConfig.onlineEnemyDamagePct = v;
+            else                g_PcConfig.onlineEnemyHealthPct = v;
         }
         else if (strcmp(key, "online_friendly_fire") == 0)
         {
