@@ -130,6 +130,10 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
 /* Co-op peers stream poses every frame (60/s, one room-wide relay each) on
  * top of STATE, pings, items and hits. */
 #define SRV_RATE_PER_SEC  200
+/* COOP_RELAY counts apart. A co-op host in a fight sends ~60 poses, 30-90
+ * monster datagrams and the rest each second, close to the 200 above, and a
+ * relay dropped here is a stutter on every guest's screen. */
+#define SRV_RELAY_PER_SEC 400
 
 /* Two death markers within this distance and this long apart are one death.
  * Q19.12 metres: 1.5m, 30s. */
@@ -194,6 +198,7 @@ typedef struct
     /* Rate limiter: a packet budget refilled once a second. */
     unsigned int       rateWindowMs;
     int                rateCount;
+    int                relayCount;
 
     unsigned int       lastDeathMs;
     shn_s32            lastDeathX, lastDeathZ;
@@ -243,6 +248,16 @@ typedef struct
 } Memo;
 
 static Client        g_clients[SRV_MAX_CLIENTS];
+/* One past the highest slot in use. Slots are taken lowest first, so every
+ * walk of the table stops here instead of at SRV_MAX_CLIENTS; it only grows
+ * between SrvExpire passes, which pull it back down. */
+static int           g_clientHigh;
+
+/* Session id -> slot, open addressing. Entries are never deleted: a lookup
+ * checks the slot still holds that session, and SrvExpire rebuilds the table
+ * once a second, so freed players' entries cannot pile up. */
+#define SRV_SESS_HASH 4096 /* power of two, 4x the slots */
+static short         g_sessHash[SRV_SESS_HASH];
 static Memo*         g_memos;
 static int           g_memoCount;
 static shn_u32       g_nextMemoId = 1;
@@ -492,7 +507,7 @@ static void SrvAddrStr(const struct sockaddr_in* a, char* out, int cap)
 static Client* SrvFindByAddr(const struct sockaddr_in* a)
 {
     int i;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && SrvAddrEqual(&g_clients[i].addr, a))
         {
@@ -502,18 +517,48 @@ static Client* SrvFindByAddr(const struct sockaddr_in* a)
     return NULL;
 }
 
-static Client* SrvFindBySession(shn_u32 session)
+static unsigned int SrvSessHashAt(shn_u32 session)
+{
+    return (session * 2654435761u) >> 20 & (SRV_SESS_HASH - 1);
+}
+
+static void SrvSessHashAdd(int slot)
+{
+    unsigned int h = SrvSessHashAt(g_clients[slot].session);
+    while (g_sessHash[h] != 0)
+    {
+        h = (h + 1) & (SRV_SESS_HASH - 1);
+    }
+    g_sessHash[h] = (short)(slot + 1);
+}
+
+static void SrvSessHashRebuild(void)
 {
     int i;
+    memset(g_sessHash, 0, sizeof(g_sessHash));
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        if (g_clients[i].used)
+        {
+            SrvSessHashAdd(i);
+        }
+    }
+}
+
+/* Every datagram after HELLO comes through here. */
+static Client* SrvFindBySession(shn_u32 session)
+{
+    unsigned int h;
     if (session == 0)
     {
         return NULL;
     }
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (h = SrvSessHashAt(session); g_sessHash[h] != 0; h = (h + 1) & (SRV_SESS_HASH - 1))
     {
-        if (g_clients[i].used && g_clients[i].session == session)
+        Client* c = &g_clients[g_sessHash[h] - 1];
+        if (c->used && c->session == session)
         {
-            return &g_clients[i];
+            return c;
         }
     }
     return NULL;
@@ -534,7 +579,7 @@ static shn_u32 SrvNewSession(void)
 static int SrvClientsFromIp(shn_u32 ip)
 {
     int i, n = 0;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && g_clients[i].addr.sin_addr.s_addr == ip) n++;
     }
@@ -620,7 +665,7 @@ static void SrvPassFailed(shn_u32 ip, unsigned int now)
 static int SrvClientCount(void)
 {
     int i, n = 0;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used) n++;
     }
@@ -738,7 +783,7 @@ static void SrvSendEvent(Client* c, int kind, shn_u32 who, const char* text)
 static void SrvBroadcastEvent(int kind, shn_u32 who, const char* text, Client* except)
 {
     int i;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && &g_clients[i] != except)
         {
@@ -797,7 +842,7 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
         SrvFeed("chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "level" : "global", c->name, text);
     }
 
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* o = &g_clients[i];
         if (!o->used)
@@ -1161,6 +1206,11 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         c->playerId = g_nextPlayerId++;
         c->session  = SrvNewSession();
         c->joinMs   = SrvMillis();
+        if (i + 1 > g_clientHigh)
+        {
+            g_clientHigh = i + 1;
+        }
+        SrvSessHashAdd(i);
         c->mapIdx   = -1;
 
         fresh       = 1;
@@ -1263,7 +1313,7 @@ static void SrvHandleRosterReq(Client* c)
         ShnPutU16(buf, &off, (shn_u16)sent);
         ShnPutU16(buf, &off, 0);
 
-        for (; i < SRV_MAX_CLIENTS && count < SHNET_ROSTER_MAX; i++)
+        for (; i < g_clientHigh && count < SHNET_ROSTER_MAX; i++)
         {
             Client* o = &g_clients[i];
             if (!o->used)
@@ -1387,7 +1437,7 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
 static void SrvPushMemo(const Memo* m)
 {
     int i;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* o = &g_clients[i];
         shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_MEMO_ENTRY_NAMED];
@@ -1703,7 +1753,7 @@ static void SrvSendSnapshots(unsigned int now)
 {
     static SnapPick picks[SRV_MAX_CLIENTS];
     int i;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* c = &g_clients[i];
         shn_u8  buf[SHNET_MTU];
@@ -1734,7 +1784,7 @@ static void SrvSendSnapshots(unsigned int now)
 
         {
             int n = 0;
-            for (j = 0; j < SRV_MAX_CLIENTS; j++)
+            for (j = 0; j < g_clientHigh; j++)
             {
                 Client* o = &g_clients[j];
                 long long dx, dz;
@@ -1804,7 +1854,7 @@ static void SrvRoomLeave(Client* c, int notify); /* defined with the co-op rooms
 static void SrvExpire(unsigned int now)
 {
     int i;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* c = &g_clients[i];
         char    text[SHNET_EVENT_MAX];
@@ -1820,6 +1870,11 @@ static void SrvExpire(unsigned int now)
         c->used = 0;
         SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
     }
+    while (g_clientHigh > 0 && !g_clients[g_clientHigh - 1].used)
+    {
+        g_clientHigh--;
+    }
+    SrvSessHashRebuild();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1836,7 +1891,7 @@ static Client* SrvRoomHost(shn_u16 room)
 {
     int i;
     if (!room) return NULL;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
         if (g_clients[i].used && g_clients[i].room == room && g_clients[i].roomHost)
             return &g_clients[i];
     return NULL;
@@ -1846,7 +1901,7 @@ static int SrvRoomCount(shn_u16 room)
 {
     int i, n = 0;
     if (!room) return 0;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
         if (g_clients[i].used && g_clients[i].room == room) n++;
     return n;
 }
@@ -1866,7 +1921,7 @@ static void SrvSendRoomRoster(Client* c, int joined)
     cntOff = off; ShnPutU8(buf, &off, 0);
     /* room 0 is "not in a room", which every un-roomed player shares; listing
      * it would hand a kicked member the names of strangers server-wide. */
-    for (i = 0; c->room && i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; c->room && i < g_clientHigh; i++)
     {
         Client* m = &g_clients[i];
         if (!m->used || m->room != c->room) continue;
@@ -1884,7 +1939,7 @@ static void SrvSendRoomRoster(Client* c, int joined)
 static void SrvBroadcastRoomRoster(shn_u16 room, Client* except)
 {
     int i;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
         if (g_clients[i].used && g_clients[i].room == room && &g_clients[i] != except)
             SrvSendRoomRoster(&g_clients[i], 0);
 }
@@ -1924,7 +1979,7 @@ static void SrvRoomLeave(Client* c, int notify)
     if (wasHost)
     {
         int i;
-        for (i = 0; i < SRV_MAX_CLIENTS; i++)
+        for (i = 0; i < g_clientHigh; i++)
         {
             Client* m = &g_clients[i];
             if (m->used && m->room == room)
@@ -2001,7 +2056,7 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
     if (code == 0)
     {
         int i, otherBuild = 0;
-        for (i = 0; i < SRV_MAX_CLIENTS; i++)
+        for (i = 0; i < g_clientHigh; i++)
         {
             Client* h = &g_clients[i];
             if (h->used && h->roomHost && !h->roomHidden && SrvRoomCount(h->room) < h->roomMax)
@@ -2056,7 +2111,7 @@ static void SrvHandleRoomKick(Client* c, const shn_u8* p, int len)
     shn_u32 who;
     if (!c->room || !c->roomHost || len < 4) return;
     who = ShnGetU32(p, &off);
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* m = &g_clients[i];
         if (!m->used || m == c || m->room != c->room || m->playerId != who) continue;
@@ -2083,7 +2138,7 @@ static void SrvHandleRoomList(Client* c, const shn_u8* p, int len)
     int    page = (len >= 1) ? (int)p[0] : 0;
     skip   = page * SRV_ROOMS_PER_PAGE;
     cntOff = off; ShnPutU8(buf, &off, 0);
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* h = &g_clients[i];
         if (!h->used || !h->roomHost || h->roomHidden) continue;
@@ -2127,7 +2182,7 @@ static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
     (void)ShnGetU8(p, &off);
     code   = ShnGetU16(p, &off);
     if (action < SHNET_INV_INVITE || action > SHNET_INV_SAVING || action == SHNET_INV_GONE || to == c->playerId) return;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && g_clients[i].playerId == to) { t = &g_clients[i]; break; }
     }
@@ -2179,7 +2234,7 @@ static void SrvHandleCoopRelay(Client* c, const shn_u8* p, int len)
     /* S_WORLD boots every guest into a map, S_KICK removes one; only the host
      * may say either. */
     if (SHNET_S_HOST_ONLY(iType) && !c->roomHost) return;
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         Client* m = &g_clients[i];
         shn_u8  buf[SHNET_MTU];
@@ -2226,8 +2281,9 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     {
         c->rateWindowMs = now;
         c->rateCount    = 0;
+        c->relayCount   = 0;
     }
-    if (++c->rateCount > SRV_RATE_PER_SEC)
+    if (type == SHNET_MSG_COOP_RELAY ? ++c->relayCount > SRV_RELAY_PER_SEC : ++c->rateCount > SRV_RATE_PER_SEC)
     {
         return;
     }
@@ -3134,10 +3190,10 @@ static Client* AdmFindPlayer(const char* who)
     int     i, n = 0;
     if (*who && !*end)
     {
-        for (i = 0; i < SRV_MAX_CLIENTS; i++)
+        for (i = 0; i < g_clientHigh; i++)
             if (g_clients[i].used && g_clients[i].playerId == (shn_u32)id) return &g_clients[i];
     }
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && !AdmStrCaseCmp(g_clients[i].name, who))
         {
@@ -3170,7 +3226,7 @@ static void AdmCmdPlayers(void)
     unsigned int now = SrvMillis();
     int          i, n = 0;
     AdmPrintf("%-6s %-24s %-24s %4s %6s %5s %-10s %s\n", "id", "name", "address", "map", "room", "ping", "uid", "build");
-    for (i = 0; i < SRV_MAX_CLIENTS; i++)
+    for (i = 0; i < g_clientHigh; i++)
     {
         const Client* c = &g_clients[i];
         char          a[64];
@@ -3360,7 +3416,7 @@ static void AdmRun(char* line)
             shn_u32 ip = (shn_u32)inet_addr(tok);
             int     i;
             AdmAddBan(1, ip, minutes, why);
-            for (i = 0; i < SRV_MAX_CLIENTS; i++)
+            for (i = 0; i < g_clientHigh; i++)
             {
                 if (g_clients[i].used && g_clients[i].addr.sin_addr.s_addr == ip)
                 {
@@ -3433,7 +3489,7 @@ static void AdmRun(char* line)
         if (!*rest) { AdmPrintf("say <text>\n"); return; }
         SrvBroadcastEvent(SHNET_EV_SERVER, 0, rest, NULL);
         /* And a chat line, which stays readable after the toast has gone. */
-        for (i = 0; i < SRV_MAX_CLIENTS; i++)
+        for (i = 0; i < g_clientHigh; i++)
         {
             if (g_clients[i].used) SrvSendChat(&g_clients[i], SHNET_CHAT_GLOBAL, 0, "Server", rest);
         }
