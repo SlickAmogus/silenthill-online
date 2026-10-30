@@ -795,7 +795,10 @@ static void ShNetW_HandleEvent(const unsigned char* p, int len)
     (void)ShnGetU32(p, &off);
     ShnGetStr(p, &off, SHNET_EVENT_MAX, text, sizeof(text));
     ShNet_SanitizeName(text);
-    (void)kind;
+    if ((kind == SHNET_EV_JOIN || kind == SHNET_EV_LEAVE) && g_PcConfig.onlineJoinsHidden)
+    {
+        return;
+    }
     ShNet_PushEvent(text);
 }
 
