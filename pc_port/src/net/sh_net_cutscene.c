@@ -35,9 +35,10 @@
  * Story doors (s_gates below: a door or gate with a scene, or a point of no
  * return, behind it) belong to the host. A guest who uses one stands at it
  * under "Waiting for other players..." until the host goes through. The host
- * goes through once every partner on the map who has not been through it is
- * close by (or at once with Action), and every such partner goes through
- * with them in the same moment. Two machines deciding on their own would let
+ * goes straight through when every partner on the map who has not been
+ * through it is close by; otherwise the first use only warns that going
+ * through brings the others, and using it again goes. Either way every such
+ * partner goes through with them in the same moment. Two machines deciding on their own would let
  * one slip through while the other is a step short, and the one left behind
  * may then find the door shut by the flags the first one sent.
  * Cancel turns back.
@@ -616,6 +617,13 @@ static void Cut_GateRelease(unsigned int now, const char* why)
     Cut_Thaw();
 }
 
+/* The host's first use of a story door with partners away from it: a
+ * warning, not a wait. Using it again within CUT_WARN_MS goes through and
+ * brings them. */
+#define CUT_WARN_MS 15000u
+static int          s_warnMap = -1, s_warnRow = -1;
+static unsigned int s_warnMs;
+
 /* The door's row is about to dispatch. */
 static int Cut_GateHold(int map, int row, int kind, unsigned int now)
 {
@@ -635,6 +643,28 @@ static int Cut_GateHold(int map, int row, int kind, unsigned int now)
             Cut_GateTell(map, row, 2);
         }
         return 0;
+    }
+    if (ShSession_IsHost() && kind == DOOR_STORY)
+    {
+        if (s_warnMap == map && s_warnRow == row && now - s_warnMs >= CUT_PRESS_GRACE_MS && now - s_warnMs < CUT_WARN_MS)
+        {
+            s_warnMap = s_warnRow = -1;
+            SH_DBG("[CUTSCENE] map %d row %d: used again; bringing everyone through", map, row);
+            Cut_PassedAdd(ShSession_SelfId(), map, row);
+            Cut_GateTell(map, row, 3);
+            Cut_GateTell(map, row, 2);
+            return 0;
+        }
+        if (!(s_warnMap == map && s_warnRow == row && now - s_warnMs < CUT_WARN_MS))
+        {
+            s_warnMap = map;
+            s_warnRow = row;
+            s_warnMs  = now;
+            ShNet_PostLocalEvent("Going through brings the other players to you. Use the door again to go.");
+            SH_DBG("[CUTSCENE] map %d row %d: warned the host (%s is away from the door)", map, row, who);
+        }
+        g_MapEventSysState = SysState_Invalid;
+        return 1;
     }
     s_gateRow      = g_MapEventData;
     s_gateMap      = map;
