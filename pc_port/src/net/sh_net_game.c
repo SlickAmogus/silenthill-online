@@ -750,6 +750,14 @@ static void ShNetG_CtrlTick(void)
     }
     if (s_permDirty || now - s_permSentMs >= 2000u)
     {
+        unsigned char r[3];
+        r[0] = SHNET_CTRL_RULES;
+        r[1] = (unsigned char)(g_PcConfig.onlineEnemyDamagePct / 25);
+        r[2] = (unsigned char)(g_PcConfig.onlineEnemyHealthPct / 25);
+        ShSession_SendGame(SHNET_MSG_S_CTRL, r, 3, 0, 1);
+    }
+    if (s_permDirty || now - s_permSentMs >= 2000u)
+    {
         unsigned char b[2 + SHSESSION_MAX_MEMBERS * 9];
         int           o = 0, i;
         b[o++] = SHNET_CTRL_PERM;
@@ -769,6 +777,7 @@ static void ShNetG_CtrlTick(void)
  * one playthrough, so everyone starts again from it. Told a few times, the
  * relay being best-effort, with a generation so a repeat is ignored. */
 static int          s_restartSeenGen = -1;
+static int          s_hostDamagePct; /* guest: the host's SHNET_CTRL_RULES damage, 0 before it is heard */
 static int          s_restartGen;
 static int          s_restartSendsLeft;
 static unsigned int s_restartNextMs;
@@ -914,6 +923,10 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
             ShNetG_SetMemberSkin(from, tok);
             break;
         }
+        case SHNET_CTRL_RULES:
+            if (!fromHost || ShSession_IsHost() || len < 3 || p[1] == 0 || p[2] == 0) return;
+            s_hostDamagePct = p[1] * 25;
+            break;
         case SHNET_CTRL_GAMEOVER:
             if (!fromHost || ShSession_IsHost() || len < 3) return;
             {
@@ -1015,6 +1028,18 @@ int ShNet_CoopGuestConsole(void)
         }
     }
     return 0;
+}
+
+/* Monsters' damage in this co-op game: the host's setting. A guest uses what
+ * the host last sent (SHNET_CTRL_RULES), the default until it is heard. Health
+ * needs no such thing: the host runs the monsters. */
+int ShNet_CoopEnemyDamagePct(void)
+{
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineEnemyDamagePct;
+    }
+    return s_hostDamagePct ? s_hostDamagePct : 150;
 }
 
 int ShNet_CoopFriendlyFire(void)
