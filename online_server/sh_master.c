@@ -119,6 +119,8 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
 #define SRV_MAX_MEMOS     20000
 #define SRV_MEMOS_PER_MAP 400
 #define SRV_MEMOS_PER_USER 40
+#define SRV_MEMOS_PER_LEVEL 5      /* messages one player keeps on one map; the oldest goes */
+#define SRV_DEATH_TTL_S   86400    /* death markers last a day */
 #define SRV_MAP_COUNT     64   /* e_MapIdx tops out at 42; 64 covers it */
 
 #define SRV_TICK_MS       100  /* snapshot rate; matches the client's STATE rate */
@@ -301,6 +303,7 @@ static int           g_dbDirty;
 static unsigned int  g_lastSaveMs;
 static volatile int  g_running = 1;
 static int           g_verbose;
+static long          g_startUnix; /* when this run began, for the console's uptime */
 
 /* Build allow-list (-b ID, --builds FILE). Empty = any build may connect
  * (the default). Entries are the short id the client sends in HELLO (the first
@@ -948,6 +951,27 @@ static void SrvEvictOnMap(int mapIdx)
     }
 }
 
+/* Death markers older than a day go; one from before markers were dated
+ * counts as old. Run at load and once a minute. */
+static void SrvPurgeDeaths(void)
+{
+    const long cutoff = (long)time(NULL) - SRV_DEATH_TTL_S;
+    int        i, removed = 0;
+    for (i = 0; i < g_memoCount; i++)
+    {
+        if ((g_memos[i].kind & 0x0F) == SHNET_MARK_DEATH && g_memos[i].placedUnix < cutoff)
+        {
+            g_memos[i--] = g_memos[--g_memoCount];
+            removed++;
+        }
+    }
+    if (removed)
+    {
+        g_dbDirty = 1;
+        SrvLog("purged %d death marker(s) older than a day", removed);
+    }
+}
+
 static void SrvSaveDb(void)
 {
     FILE* f;
@@ -1577,6 +1601,37 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     /* Keyed on the address, not the playerId: a playerId is new on every
      * HELLO, so a per-id cap was reset by simply reconnecting. */
     ip = c->addr.sin_addr.s_addr;
+
+    /* A player keeps SRV_MEMOS_PER_LEVEL messages on a map: one more retires
+     * their oldest there (as many as it takes). Owned by the persistent uid when the client has one
+     * (two players behind one router keep their own), else by the address. */
+    while ((m.kind & 0x0F) != SHNET_MARK_DEATH)
+    {
+        int here = 0, oldest = -1;
+        for (i = 0; i < g_memoCount; i++)
+        {
+            const Memo* o = &g_memos[i];
+            if (o->mapIdx != m.mapIdx || (o->kind & 0x0F) == SHNET_MARK_DEATH ||
+                !(c->uid ? o->ownerId == c->uid : o->ownerIp == ip))
+            {
+                continue;
+            }
+            here++;
+            if (oldest < 0 || o->placedUnix < g_memos[oldest].placedUnix)
+            {
+                oldest = i;
+            }
+        }
+        if (here >= SRV_MEMOS_PER_LEVEL && oldest >= 0)
+        {
+            SrvLog("  %s has %d messages on map %d; retiring the oldest (id %u)", c->name, here, m.mapIdx,
+                   g_memos[oldest].memoId);
+            g_memos[oldest] = g_memos[--g_memoCount];
+            g_dbDirty = 1;
+            continue; /* a store from before this limit can hold more: down to it */
+        }
+        break;
+    }
     for (i = 0; i < g_memoCount; i++)
     {
         if (g_memos[i].ownerIp == ip) mine++;
@@ -3236,7 +3291,10 @@ static void AdmCmdPlayers(void)
                   (unsigned)c->room, c->pingMs, c->uid, c->build, (now - c->joinMs) / 1000u);
         n++;
     }
-    AdmPrintf("%d player(s)\n", n);
+    {
+        long up = g_startUnix ? (long)time(NULL) - g_startUnix : 0;
+        AdmPrintf("%d player(s); server up %ldd %02ldh %02ldm\n", n, up / 86400, (up / 3600) % 24, (up / 60) % 60);
+    }
 }
 
 /* Marker owners match by persistent id (a number) or by the name they placed
@@ -3871,7 +3929,9 @@ int ShMaster_Serve(void)
 #endif
 
     SrvLoadDb();
+    SrvPurgeDeaths();
     g_lastSaveMs = SrvMillis();
+    g_startUnix  = (long)time(NULL);
 #ifndef SH_MASTER_EMBED
     AdmLoadBans();
     if (g_adminPort && !AdmListen())
@@ -3952,8 +4012,14 @@ int ShMaster_Serve(void)
 
         if (now - lastExpire >= 1000u)
         {
+            static unsigned int s_lastPurge;
             lastExpire = now;
             SrvExpire(now);
+            if (now - s_lastPurge >= 60000u)
+            {
+                s_lastPurge = now;
+                SrvPurgeDeaths();
+            }
 #ifndef SH_MASTER_EMBED
             WsExpire(now);
 #endif
