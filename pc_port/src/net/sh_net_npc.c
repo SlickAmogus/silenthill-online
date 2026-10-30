@@ -1305,6 +1305,105 @@ static void Npc_SendWorldFlags(int isHost)
     ShSession_SendGame(SHNET_MSG_S_WORLD_FL, b, o, 0, 0);
 }
 
+/* Flags each player set themselves, sent one by one as SHNET_MSG_S_FLAG_SET.
+ *
+ * S_WORLD_FL is host-only on the way in (the session and the room server both
+ * drop it from a guest), so a guest's progress never reached the host that
+ * way: a guest who took the Key of Woodman (its own script, not
+ * Event_ItemTake, which sends its flag) left the host without the pickup
+ * flag, the Eclipse door skipped that lock on the host, and the key could not
+ * go in. Now every flag a player sets is sent, reliably, and a partner's is
+ * applied at the next moment of plain gameplay, as S_WORLD_FL's are.
+ * s_flagSeen is what we already know of (ours and the partners'), so nothing
+ * is sent back; it is rebuilt without sending after every load, except the
+ * first time in each session, when every flag we have goes out once: a game
+ * saved while this was missing gets the progress its host never heard of.
+ * The session's outgoing queue holds a handful a tick, shared with everything
+ * else, so a few go each frame and a full queue is tried again next frame. */
+#define FLAG_SENDS_PER_TICK 2
+static shn_u32 s_flagSeen[EVENT_FLAG_WORDS];
+static shn_u32 s_flagPend[EVENT_FLAG_WORDS];
+static int     s_flagSeenInit;
+static int     s_flagCaughtUp;
+
+static int Npc_SendFlag(int idx)
+{
+    shn_u8 b[4];
+    int    o = 0;
+    ShnPutU16(b, &o, (shn_u16)idx);
+    ShnPutU16(b, &o, 0);
+    return ShSession_SendGame(SHNET_MSG_S_FLAG_SET, b, o, 0, 1);
+}
+
+static int Npc_PlainGameplay(void)
+{
+    return g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
+           !(g_SysWork.sysFlags & SysFlag_CutsceneActive);
+}
+
+static void Npc_FlagsTick(int role)
+{
+    int i, bit, sent = 0;
+
+    if (!ShSession_Active())
+    {
+        s_flagCaughtUp = 0;
+    }
+    if (role == PC_NETNPC_NONE)
+    {
+        s_flagSeenInit = 0;
+        memset(s_flagPend, 0, sizeof(s_flagPend));
+        return;
+    }
+    if (!s_flagSeenInit)
+    {
+        if (s_flagCaughtUp)
+            memcpy(s_flagSeen, g_SavegamePtr->eventFlags, sizeof(s_flagSeen));
+        else
+            memset(s_flagSeen, 0, sizeof(s_flagSeen));
+        s_flagSeenInit = 1;
+        s_flagCaughtUp = 1;
+    }
+    if (Npc_PlainGameplay())
+    {
+        for (i = 0; i < EVENT_FLAG_WORDS; i++)
+        {
+            shn_u32 add = s_flagPend[i] & ~g_SavegamePtr->eventFlags[i];
+            g_SavegamePtr->eventFlags[i] |= add;
+            s_flagSeen[i] |= add;
+            s_flagPend[i] = 0;
+        }
+    }
+    for (i = 0; i < EVENT_FLAG_WORDS && sent < FLAG_SENDS_PER_TICK; i++)
+    {
+        shn_u32 nw = g_SavegamePtr->eventFlags[i] & ~s_flagSeen[i];
+        for (bit = 0; nw && bit < 32 && sent < FLAG_SENDS_PER_TICK; bit++)
+        {
+            if (!(nw & (1u << bit)))
+            {
+                continue;
+            }
+            if (!Npc_FlagLocal(i * 32 + bit))
+            {
+                if (!Npc_SendFlag(i * 32 + bit))
+                {
+                    sent = FLAG_SENDS_PER_TICK; /* the queue is full: next frame */
+                    break;
+                }
+                sent++;
+            }
+            nw &= ~(1u << bit);
+            s_flagSeen[i] |= 1u << bit;
+        }
+        if (nw == 0)
+        {
+            /* A cleared bit leaves s_flagSeen too, so a flag set again later
+             * is sent again. */
+            s_flagSeen[i] &= g_SavegamePtr->eventFlags[i];
+        }
+    }
+}
+
 static void Npc_WorldFlagsIn(unsigned long long from, const shn_u8* p, int len)
 {
     int o = 0, i, ne, no;
@@ -1330,6 +1429,7 @@ static void Npc_WorldFlagsIn(unsigned long long from, const shn_u8* p, int len)
             if ((add & (1u << bit)) && Npc_FlagLocal(i * 32 + (int)bit)) add &= ~(1u << bit);
         }
         g_SavegamePtr->eventFlags[i] |= add;
+        s_flagSeen[i] |= add;
     }
     /* A kill clears a bit; the host's word is the truth for every map. */
     if (from != ShSession_HostId()) return;
@@ -1355,7 +1455,9 @@ static void Npc_FlagSetIn(const shn_u8* p, int len)
     if (len < 2) return;
     idx = ShnGetU16(p, &o);
     if (idx < 0 || idx >= EVENT_FLAG_WORDS * 32 || Npc_FlagLocal(idx)) return;
-    Savegame_EventFlagSet(idx);
+    /* Applied by Npc_FlagsTick in plain gameplay: a flag landing mid-cutscene
+     * or mid-menu would change what that script does next. */
+    s_flagPend[idx >> 5] |= 1u << (idx & 31);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1423,6 +1525,7 @@ void Pc_NetNpc_GameTick(void)
     {
         Npc_SendWorldFlags(role == PC_NETNPC_HOST);
     }
+    Npc_FlagsTick(role);
 
     /* Puppets outlive nothing: gone from the snapshots, out of the session,
      * or wiped by a room load, they are released. */
