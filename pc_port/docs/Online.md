@@ -159,10 +159,12 @@ on a touchscreen, tap and drag the same way. **Leave Message** places it and
 the X in the corner closes the window. There are 52 phrases, about 170 words
 in thirteen groups (people, monsters, items, landmarks and more) and 56
 emoji. Stand on somebody's message to read it; two messages a couple of steps
-apart can each be read.
+apart can each be read. You keep up to five messages on each level: leaving
+another removes your oldest one there.
 
 **Death markers.** Placed automatically where you die, and visible to
-everyone. Turn them off with `online_deaths = 0` if you would rather not know.
+everyone for a day. Turn them off with `online_deaths = 0` if you would
+rather not know.
 
 **The player list.** `F11`. Everyone connected, the area they are in, and
 their ping.

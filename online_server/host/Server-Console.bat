@@ -9,7 +9,10 @@ for /f "usebackq tokens=1,* delims==" %%a in (`findstr /b /i /c:"host" "%~dp0ser
 if defined HOST for /f "tokens=* delims= " %%a in ("%HOST%") do set "HOST=%%a"
 if not defined HOST goto local
 echo %HOST% | findstr "@" >nul || set "HOST=root@%HOST%"
-ssh -t -o StrictHostKeyChecking=accept-new %HOST% "sh_master --console 2>/dev/null || /root/sh_master --console"
+REM Keepalives: a console left quiet was dropped by routers along the way
+REM ("client_loop: send disconnect: Connection reset"). The server itself
+REM keeps running; this only keeps the window's connection to it open.
+ssh -t -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes %HOST% "sh_master --console 2>/dev/null || /root/sh_master --console"
 goto end
 :local
 "%~dp0sh_master.exe" --console
