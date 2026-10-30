@@ -582,6 +582,8 @@ typedef struct {
                                * (online_ghost_model); 0 = silhouette (default, proven) */
     int  onlineEvents;        /* 1 = show the server's join/leave/death feed (online_events) */
     float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
+    int   onlineEnemyDamagePct; /* host: co-op monsters' damage, percent, steps of 25 (online_enemy_damage, 150) */
+    int   onlineEnemyHealthPct; /* host: co-op monsters' health, percent, steps of 25 (online_enemy_health, 150) */
     int   onlineFriendlyFire; /* 1 = players can hit each other in co-op (online_friendly_fire). Both
                                * sides must have it on: you only take damage if YOU enabled it. */
     int   onlineGuestConsole; /* host: 1 = guests in my game may use the console and debug keys
