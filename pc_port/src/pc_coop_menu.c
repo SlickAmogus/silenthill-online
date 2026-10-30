@@ -911,7 +911,7 @@ int Pc_CoopMenu_RowCount(void)
     switch (s_page)
     {
     case COOP_PAGE_ROOT:       { int r[5]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Back */
-    case COOP_PAGE_SETTINGS:   return 5; /* Living World IP, Living World, Name, Restart Connection, Back */
+    case COOP_PAGE_SETTINGS:   return 7; /* Living World IP, Living World, Name, Join Messages, Chat, Restart Connection, Back */
     case COOP_PAGE_HOST_SETUP: return 8; /* Host on, Players, Visibility, Living World, FPS, Load, Open, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
@@ -1001,7 +1001,9 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         if (i == 0)      snprintf(out, cap, "Living World IP:  %s", g_PcConfig.onlineServer[0] ? g_PcConfig.onlineServer : COOP_DEFAULT_SERVER);
         else if (i == 1) snprintf(out, cap, "Living World:  %s", g_PcConfig.onlineEnabled ? "On" : "Off");
         else if (i == 2) snprintf(out, cap, "Name:  %s", ShNet_LocalName());
-        else if (i == 3) snprintf(out, cap, "Restart Connection");
+        else if (i == 3) snprintf(out, cap, "Join Messages:  %s", g_PcConfig.onlineJoinsHidden ? "Hidden" : "Shown");
+        else if (i == 4) snprintf(out, cap, "Chat:  %s", ShNetChat_Hidden() ? "Hidden" : "Shown");
+        else if (i == 5) snprintf(out, cap, "Restart Connection");
         else             snprintf(out, cap, "Back");
         break;
 
@@ -1410,7 +1412,13 @@ static void Coop_Confirm(void)
             ShNet_ApplySettings();
         }
         else if (s_sel == 2) { Coop_BeginEdit(COOP_EDIT_NAME); }
-        else if (s_sel == 3) { ShNet_ApplySettings(); } /* the status line follows the connection from here */
+        else if (s_sel == 3)
+        {
+            g_PcConfig.onlineJoinsHidden = !g_PcConfig.onlineJoinsHidden;
+            PcConfig_SaveKeyValue("online_joins_hidden", g_PcConfig.onlineJoinsHidden ? "1" : "0");
+        }
+        else if (s_sel == 4) { ShNetChat_SetHidden(!ShNetChat_Hidden()); }
+        else if (s_sel == 5) { ShNet_ApplySettings(); } /* the status line follows the connection from here */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
