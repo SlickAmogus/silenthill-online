@@ -37,6 +37,7 @@
 #include "bodyprog/collision/collision.h"
 #include "bodyprog/events/bgm.h"   /* Game_MapRoomIdxUpdate */
 #include "bodyprog/view/vc_util.h" /* vcSetCameraUseWarp */
+#include "bodyprog/text/text_draw.h" /* the guest's "Waiting for the host" */
 #include "pc_config.h"
 #include "pc_coop_menu.h"          /* g_PcCoopGame */
 #include "sh_net_proto.h"
@@ -68,6 +69,10 @@ static int     s_entryMap, s_entryRoom;
 static VECTOR3 s_entryPos;
 static short   s_entryRot;
 static int     s_lastMap = -1, s_lastRoom = -1;
+
+/* Guest: the host's game over has begun (SHNET_CTRL_GAMEOVER); our held death
+ * goes to the game's own game over too. */
+static int     s_hostGameOver;
 
 /* What the dead player is waiting for, for the status line. */
 static int     s_waitWhy;  /* 0 none, 1 everyone in combat, 2 nobody alive */
@@ -203,7 +208,7 @@ static void Abort(void)
 
 int Pc_Respawn_HoldDeath(void)
 {
-    if (!InCoop() || HostGameOver())
+    if (!InCoop() || HostGameOver() || s_hostGameOver)
     {
         if (s_phase == RS_HOLD || s_phase == RS_BLINK)
         {
@@ -615,4 +620,38 @@ int ShNetRespawn_HideModel(void)
 int ShNetRespawn_BlocksGameOver(void)
 {
     return InCoop();
+}
+
+void ShNetRespawn_HostGameOver(void)
+{
+    if (ShSession_IsHost() || !InCoop() || !(s_phase == RS_HOLD || s_phase == RS_BLINK))
+    {
+        return;
+    }
+    SH_DBG("[RESPAWN] the host's game over: ours plays too");
+    s_hostGameOver = 1;
+}
+
+/* The end of the game over (SysState_GameOver_Update's last step). In co-op
+ * the session stays: the host is asked how to go on (Pc_CoopMenu_OpenGameOver)
+ * and a guest waits on black until the host's choice reboots everyone
+ * (SHNET_CTRL_RESTART) or the session ends, when the vanilla title follows. */
+int Pc_CoopGameOver_Hold(void)
+{
+    s_hostGameOver = 0;
+    if (!InCoop())
+    {
+        return 0;
+    }
+    if (ShSession_IsHost())
+    {
+        if (!Pc_CoopMenu_GameOverDecided() && !Pc_CoopMenu_IsOpen())
+        {
+            Pc_CoopMenu_OpenGameOver(g_GameWork.autosave.playerHealth > Q12(0.0f));
+        }
+        return 1;
+    }
+    Gfx_StringSetPosition(SCREEN_POSITION_X(25.0f), SCREEN_POSITION_Y(43.5f));
+    Gfx_StringDraw("Waiting_for_the_host...", DEFAULT_MAP_MESSAGE_LENGTH);
+    return 1;
 }

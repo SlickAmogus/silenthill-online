@@ -43,6 +43,8 @@ int   ShNetRespawn_HideModel(void);
 
 /* 1 while the engine must not enter its game-over sequence for this death. */
 int   ShNetRespawn_BlocksGameOver(void);
+/* Guest: the host's game over began; a held death goes to the game over too. */
+void  ShNetRespawn_HostGameOver(void);
 
 /* Engine hooks (player_control.c). HoldDeath is called where a death handler
  * would enter SysState_GameOver: returns 1 (and starts the countdown) when the
