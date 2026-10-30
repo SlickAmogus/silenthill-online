@@ -21,6 +21,10 @@ extern int g_PcCoopGame;
 
 void Pc_CoopMenu_Open(void);        /* main-menu popup (Host / Join) */
 void Pc_CoopMenu_OpenInGame(void);  /* in-game M menu (Resume / players / leave) */
+/* Host, at the end of a co-op game over: Yes (when canContinue) / Load Game /
+ * Quit Without Saving. Decided once one is picked, until the title boots it. */
+void Pc_CoopMenu_OpenGameOver(int canContinue);
+int  Pc_CoopMenu_GameOverDecided(void);
 void Pc_CoopMenu_OpenSplitGuest(void); /* split screen Player 2: the lobby, joining Player 1 */
 /* Split screen host: starts the game the moment Player 2's window has joined. */
 void Pc_CoopMenu_SplitAutoStart(void);
