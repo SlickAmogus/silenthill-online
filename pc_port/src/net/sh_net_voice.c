@@ -129,6 +129,9 @@ static int          s_sel = -1;    /* slot under the pointer, -1 none */
 static int          s_heldPrev;
 static int          s_tapMode;     /* opened by a touch button: a tap picks, not a key release */
 static unsigned int s_tapOpenMs;
+static int          s_tapNewTouch;       /* a finger came down after the wheel opened */
+static int          s_tapSlid;           /* the finger left the line it started on */
+static int          s_tapStartSlot = -2; /* the line under the finger when it was first seen; -2 not yet */
 static unsigned int s_lastSentMs;
 static struct { unsigned long long id; unsigned int ms; } s_lastHeard[SHSESSION_MAX_MEMBERS];
 
@@ -363,10 +366,13 @@ void ShNetVoice_TouchToggle(void)
         return;
     }
     if (!Voice_InGame()) return;
-    s_open      = 1;
-    s_sel       = -1;
-    s_tapMode   = 1;
-    s_tapOpenMs = SDL_GetTicks();
+    s_open         = 1;
+    s_sel          = -1;
+    s_tapMode      = 1;
+    s_tapOpenMs    = SDL_GetTicks();
+    s_tapNewTouch  = 0;
+    s_tapSlid      = 0;
+    s_tapStartSlot = -2;
 }
 
 int ShNetVoice_MenuTapMode(void)
@@ -388,6 +394,48 @@ void ShNetVoice_Tick(void)
         {
             s_open = 0; s_sel = -1; s_tapMode = 0;
         }
+#if defined(__ANDROID__) || defined(SH_IOS) || defined(__EMSCRIPTEN__)
+        /* A finger is read as itself, not through the synthetic mouse: a quick
+         * tap's press and release can land in one frame, and the mouse's
+         * press edge never saw it. A line is said when the finger lifts off
+         * it, so a tap on it says it and so does a finger that opened the
+         * wheel and slid onto it; the opening finger lifting where it began
+         * (the button sits under the top line) leaves the wheel up. */
+        else if (Pc_MouseCursor_TouchDriving())
+        {
+            if (Pc_MouseCursor_TouchPressed() && SDL_GetTicks() - s_tapOpenMs > 150u)
+            {
+                s_tapNewTouch = 1;
+                s_tapStartSlot = -2;
+            }
+            if (Pc_MouseCursor_TouchViewportPos(&nx, &ny))
+            {
+                float dx = nx - 0.5f, dy = ny - 0.5f;
+                int   at = (dx * dx + dy * dy < 0.2025f) ? Voice_SlotAt(nx, ny) : -1;
+                if (s_tapStartSlot == -2) s_tapStartSlot = at;
+                if (at != s_tapStartSlot) s_tapSlid = 1;
+                if (Pc_MouseCursor_TouchDown(NULL, NULL))
+                {
+                    s_sel = at;
+                }
+                else
+                {
+                    if (at >= 0 && (s_tapNewTouch || s_tapSlid))
+                    {
+                        s_open = 0; s_sel = -1; s_tapMode = 0;
+                        Voice_Say(at);
+                    }
+                    else if (s_tapNewTouch)
+                    {
+                        s_open = 0; s_sel = -1; s_tapMode = 0;
+                    }
+                    s_tapNewTouch  = 0;
+                    s_tapSlid      = 0;
+                    s_tapStartSlot = -2;
+                }
+            }
+        }
+#endif
         else if (SDL_GetTicks() - s_tapOpenMs > 300u && Pc_MouseCursor_LeftClicked() &&
                  Pc_MouseCursor_ViewportPos(&nx, &ny))
         {
