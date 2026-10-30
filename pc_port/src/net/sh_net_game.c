@@ -773,10 +773,57 @@ static int          s_restartGen;
 static int          s_restartSendsLeft;
 static unsigned int s_restartNextMs;
 static int          s_sawLoadScreen;
+/* Host: the game over's Yes or Load Game rebooted us through the title, which
+ * clears g_PcCoopGame while it is up, so this outlives that. */
+static int          s_restartAfterBoot;
+
+/* Host: nobody is left alive and our game over has begun; the guests' play too. */
+static int          s_gameOverGen, s_gameOverSendsLeft, s_gameOverSeenGen = -1, s_wasGameOver;
+static unsigned int s_gameOverNextMs;
+
+void ShNetG_RestartAfterBoot(void)
+{
+    s_restartAfterBoot = 1;
+}
+
+static void ShNetG_GameOverTick(void)
+{
+    extern int g_PcCoopGame;
+    int        over = g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_GameOver;
+    if (!g_PcCoopGame || !ShSession_Active() || !ShSession_IsHost())
+    {
+        s_wasGameOver      = 0;
+        s_gameOverSendsLeft = 0;
+        return;
+    }
+    if (over && !s_wasGameOver)
+    {
+        s_gameOverGen       = (s_gameOverGen + 1) & 0xFFFF;
+        s_gameOverSendsLeft = 3;
+        s_gameOverNextMs    = 0;
+        SH_DBG("[COOP] game over: telling the room (gen %d)", s_gameOverGen);
+    }
+    s_wasGameOver = over;
+    if (s_gameOverSendsLeft > 0 && ShNetPlat_Millis() >= s_gameOverNextMs)
+    {
+        unsigned char b[3];
+        int           o = 1;
+        b[0] = SHNET_CTRL_GAMEOVER;
+        ShnPutU16(b, &o, (shn_u16)s_gameOverGen);
+        ShSession_SendGame(SHNET_MSG_S_CTRL, b, o, 0, 1);
+        s_gameOverSendsLeft--;
+        s_gameOverNextMs = ShNetPlat_Millis() + 400;
+    }
+}
 
 static void ShNetG_RestartTick(int inWorld)
 {
     extern int g_PcCoopGame;
+    ShNetG_GameOverTick();
+    if (!ShSession_Active() || !ShSession_IsHost())
+    {
+        s_restartAfterBoot = 0;
+    }
     if (!g_PcCoopGame || !ShSession_Active() || !ShSession_IsHost())
     {
         s_sawLoadScreen    = 0;
@@ -787,9 +834,10 @@ static void ShNetG_RestartTick(int inWorld)
     {
         s_sawLoadScreen = 1;
     }
-    if (inWorld && s_sawLoadScreen)
+    if (inWorld && (s_sawLoadScreen || s_restartAfterBoot))
     {
         s_sawLoadScreen    = 0;
+        s_restartAfterBoot = 0;
         s_restartGen       = (s_restartGen + 1) & 0xFFFF;
         s_restartSendsLeft = 3;
         s_restartNextMs    = 0;
@@ -866,6 +914,15 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
             ShNetG_SetMemberSkin(from, tok);
             break;
         }
+        case SHNET_CTRL_GAMEOVER:
+            if (!fromHost || ShSession_IsHost() || len < 3) return;
+            {
+                int o = 1, gen = ShnGetU16(p, &o);
+                if (gen == s_gameOverSeenGen) return;
+                s_gameOverSeenGen = gen;
+                ShNetRespawn_HostGameOver();
+            }
+            break;
         case SHNET_CTRL_ITEM_USED:
             if (len < 3) return;
             ShNetG_ItemUsedIn(p[1], p[2]);

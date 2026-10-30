@@ -52,6 +52,7 @@ typedef enum
     COOP_PAGE_PLAYER,       /* one member: allow cheats / remove (host) */
     COOP_PAGE_INVITE,       /* accepting an invite: save first, or go */
     COOP_PAGE_SAVES,        /* Start From: every save to pick from */
+    COOP_PAGE_GAMEOVER,     /* host, after a co-op game over: Yes / Load Game / Quit Without Saving */
     COOP_PAGE_SETTINGS      /* phones and the browser: server, living world, name */
 } CoopPage;
 
@@ -452,6 +453,14 @@ static void Coop_SaveRowText(char* out, int cap)
 /* The Start From list, opened from a row of `from`; it comes back there. */
 static int s_savesFrom, s_savesFromRow;
 
+/* The co-op game over prompt: whether Continue has a game to boot, and
+ * whether the host has chosen (until the title takes the start request). */
+static int s_goCanContinue, s_goDecided;
+static int Coop_GoRow(int i) { return s_goCanContinue ? i : i + 1; } /* 0 Yes, 1 Load Game, 2 Quit */
+/* The save list opened to load a game now (the game over, or the host's
+ * in-game Load Game) rather than to pick the lobby's Start From. */
+static int Coop_SavesLoadNow(void) { return s_savesFrom == COOP_PAGE_GAMEOVER || s_savesFrom == COOP_PAGE_INGAME; }
+
 static void Coop_OpenSaves(int from, int row)
 {
     s_savesFrom    = from;
@@ -490,6 +499,35 @@ void Pc_CoopMenu_SaveEntry(int row, char* line1, int cap1, char* line2, int cap2
         /* Short enough for one line at the small size: no scrolling. */
         snprintf(line2, (size_t)cap2, "Save %d - %s%s - %s", e->saveNo, diff, extra, e->card);
     }
+}
+
+void Pc_CoopMenu_OpenGameOver(int canContinue)
+{
+    s_open          = 1;
+    s_inGame        = 1;
+    s_page          = COOP_PAGE_GAMEOVER;
+    s_sel           = 0;
+    s_msg[0]        = '\0';
+    s_goCanContinue = canContinue;
+    SH_DBG("[COOP] game over prompt (continue %s)", canContinue ? "available" : "not available");
+}
+
+int Pc_CoopMenu_GameOverDecided(void)
+{
+    return s_goDecided;
+}
+
+/* The game over's Yes and Load Game, and the in-game Load Game, reboot
+ * through the title as the co-op host, and the guests are told to start from
+ * what we load (SHNET_CTRL_RESTART). */
+static void Coop_HostReloadBoot(void)
+{
+    extern void ShNetG_RestartAfterBoot(void);
+    s_goDecided  = 1;
+    g_PcCoopGame = 1;
+    ShNetG_RestartAfterBoot();
+    g_SysWork.sysFlags |= SysFlag_DoWarmReset;
+    Pc_CoopMenu_Close();
 }
 
 void Pc_CoopMenu_Open(void)
@@ -644,6 +682,7 @@ void Pc_CoopMenu_RequestHostReboot(void)
 int Pc_CoopMenu_TakeStartRequest(char* outName, int cap)
 {
     int req = s_startReq;
+    s_goDecided = 0; /* the title is up: the game over's choice is made */
     s_startReq = 0;
     if (outName && cap > 0)
     {
@@ -794,7 +833,7 @@ enum
 {
     COOP_IG_RESUME = 0, COOP_IG_MESSAGE, COOP_IG_SAVE, COOP_IG_CHARACTER, COOP_IG_NAMEPLATES,
     COOP_IG_HEALTHBARS, COOP_IG_FRIENDLY, COOP_IG_CHEATS, COOP_IG_TELEPORT, COOP_IG_PLAYERS, COOP_IG_LEAVE,
-    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE, COOP_IG_CHAT
+    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE, COOP_IG_CHAT, COOP_IG_LOAD
 };
 #define COOP_IG_MAX 20
 
@@ -826,6 +865,10 @@ static int Coop_InGameRows(int* rows)
         return n;
     }
     rows[n++] = COOP_IG_SAVE;
+    if (!guest)
+    {
+        rows[n++] = COOP_IG_LOAD; /* the way out of a soft lock, for everyone */
+    }
     rows[n++] = COOP_IG_CHARACTER;
     rows[n++] = COOP_IG_NAMEPLATES;
     rows[n++] = COOP_IG_HEALTHBARS;
@@ -880,6 +923,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_PLAYER:     return 4; /* Allow Cheats, Bring Here, Remove, Back */
     case COOP_PAGE_INVITE:     return 3; /* Save First, Join Without Saving, Back */
     case COOP_PAGE_SAVES:      return s_saveCount + 2; /* New Game, the saves, Back */
+    case COOP_PAGE_GAMEOVER:   return s_goCanContinue ? 3 : 2; /* [Yes,] Load Game, Quit Without Saving */
     default:                   return 1;
     }
 }
@@ -893,6 +937,7 @@ int Pc_CoopMenu_View(void)
     case COOP_PAGE_SPLIT_ONLINE: return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INVITE:     return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_GAMEOVER:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_SETTINGS:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
@@ -925,7 +970,8 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
     case COOP_PAGE_PLAYER:     return s_playerName;
     case COOP_PAGE_INVITE:     return "ACCEPT INVITE";
-    case COOP_PAGE_SAVES:      return "START FROM";
+    case COOP_PAGE_GAMEOVER:   return "GAME OVER";
+    case COOP_PAGE_SAVES:      return Coop_SavesLoadNow() ? "LOAD GAME" : "START FROM";
     case COOP_PAGE_SETTINGS:   return "MULTIPLAYER SETTINGS";
     default:                   return "MULTIPLAYER";
     }
@@ -1036,6 +1082,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_IG_RESUME:     snprintf(out, cap, "Resume"); break;
         case COOP_IG_MESSAGE:    snprintf(out, cap, "Leave a Message"); break;
         case COOP_IG_SAVE:       snprintf(out, cap, "Save"); break;
+        case COOP_IG_LOAD:       snprintf(out, cap, "Load Game"); break;
         case COOP_IG_CHARACTER:  snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current())); break;
         case COOP_IG_NAMEPLATES: snprintf(out, cap, "Nameplates:  %s", g_PcConfig.onlineNameplates ? "On" : "Off"); break;
         case COOP_IG_CHAT:       snprintf(out, cap, "Chat:  %s", ShNetChat_Hidden() ? "Hidden" : "Shown"); break;
@@ -1106,6 +1153,15 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         }
         else
             snprintf(out, cap, "Back");
+        break;
+
+    case COOP_PAGE_GAMEOVER:
+        switch (Coop_GoRow(i))
+        {
+        case 0:  snprintf(out, cap, "Yes"); break;
+        case 1:  snprintf(out, cap, "Load Game"); break;
+        default: snprintf(out, cap, "Quit Without Saving"); break;
+        }
         break;
 
     case COOP_PAGE_INVITE:
@@ -1265,8 +1321,16 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         if (s_saveCount == 0)
             snprintf(out, cap, "No saves found in gamedata/save. Start a New Game, or save in single player first.");
         else
-            snprintf(out, cap, "%d save%s, newest first. Pick one to start the game from.", s_saveCount,
-                     s_saveCount == 1 ? "" : "s");
+            snprintf(out, cap, "%d save%s, newest first. %s", s_saveCount, s_saveCount == 1 ? "" : "s",
+                     Coop_SavesLoadNow() ? "Everyone starts again from the one you pick."
+                                         : "Pick one to start the game from.");
+        break;
+
+    case COOP_PAGE_GAMEOVER:
+        if (s_goCanContinue)
+            snprintf(out, cap, "Do you want to continue?  Everyone starts again from where you continue.");
+        else
+            snprintf(out, cap, "There is no game to continue. Load a save?  Everyone starts again from it.");
         break;
 
     case COOP_PAGE_INVITE:
@@ -1428,6 +1492,7 @@ static void Coop_Confirm(void)
             break;
         }
         case COOP_IG_SAVE:       Coop_DoSave(); break;
+        case COOP_IG_LOAD:       Coop_RefreshSaves(); Coop_OpenSaves(COOP_PAGE_INGAME, s_sel); break;
         case COOP_IG_CHARACTER:  Pc_PlayAs_Cycle(1); break; /* reloads the body in place */
         case COOP_IG_NAMEPLATES: g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; break;
         case COOP_IG_CHAT:       ShNetChat_SetHidden(!ShNetChat_Hidden()); break;
@@ -1505,8 +1570,38 @@ static void Coop_Confirm(void)
         if (s_sel <= s_saveCount)
         {
             s_loadIdx = s_sel - 1; /* row 0 is New Game */
+            if (Coop_SavesLoadNow())
+            {
+                SH_DBG("[COOP] host loads %s for everyone", s_loadIdx >= 0 ? s_saves[s_loadIdx].key : "a new game");
+                Coop_RequestStart();
+                Coop_HostReloadBoot();
+                break;
+            }
         }
         Coop_CloseSaves();
+        break;
+
+    case COOP_PAGE_GAMEOVER:
+        switch (Coop_GoRow(s_sel))
+        {
+        case 0:
+            /* The title's Continue, booted as the co-op host. */
+            SH_DBG("[COOP] game over: continue");
+            s_startReq = 4;
+            Coop_HostReloadBoot();
+            break;
+        case 1:
+            Coop_RefreshSaves();
+            Coop_OpenSaves(COOP_PAGE_GAMEOVER, s_sel);
+            break;
+        default:
+            SH_DBG("[COOP] game over: quit without saving");
+            s_goDecided = 1;
+            ShSession_RequestLeave();
+            g_SysWork.sysFlags |= SysFlag_DoWarmReset;
+            Pc_CoopMenu_Close();
+            break;
+        }
         break;
 
     case COOP_PAGE_INVITE:
@@ -1805,6 +1900,10 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int
         else if (s_page == COOP_PAGE_SAVES)
         {
             Coop_CloseSaves(); /* the pick stays as it was */
+        }
+        else if (s_page == COOP_PAGE_GAMEOVER)
+        {
+            /* A choice has to be made: there is no game to go back to. */
         }
         else if (s_page == COOP_PAGE_SPLIT_ONLINE)
         {

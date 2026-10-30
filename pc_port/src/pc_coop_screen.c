@@ -218,7 +218,8 @@ void Pc_CoopScreen_Draw(void)
                         (view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_SAVES) ? n - 1 : 0;
     const int small   = cs_interlaced() ? NM_TEXT_SMALL : NM_TEXT_TALL;
     int       rowY[CS_MAX_ROWS], rowH[CS_MAX_ROWS];
-    int       listY   = CS_LIST_Y + (table ? 16 : 0);
+    /* An empty table says so under its header, with its rows below that. */
+    int       listY   = CS_LIST_Y + (table ? 16 : 0) + (table && entries == 0 ? 28 : 0);
     int       shown, y, i, hover = -1, dragged;
     char      text[NM_LINE_MAX], clean[NM_LINE_MAX];
     NmInput   in;
@@ -349,7 +350,7 @@ void Pc_CoopScreen_Draw(void)
         cs_rule(hy + 15);
         if (entries == 0)
         {
-            Nm_TextDrawCentered(160, listY + 24, NM_TEXT_TALL, StringColorId_DarkGrey,
+            Nm_TextDrawCentered(160, CS_LIST_Y + 22, NM_TEXT_TALL, StringColorId_DarkGrey,
                                 view == PC_COOP_VIEW_ROOMS ? "NO_OPEN_GAMES_YET" : "NOBODY_HERE");
         }
     }

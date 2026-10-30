@@ -1901,6 +1901,18 @@ void SysState_GameOver_Update(void) // 0x8003A52C
             break;
 
         default:
+#ifdef SH_PC_PORT
+            /* Co-op: the session stays up. The host chooses how the shared
+             * game goes on and the guests wait for that, instead of everyone
+             * landing on the title as a single-player game. */
+            {
+                extern int Pc_CoopGameOver_Hold(void);
+                if (Pc_CoopGameOver_Hold())
+                {
+                    break;
+                }
+            }
+#endif
             g_MapOverlayHdr.playerControlUnfreeze(0);
             SysWork_StateSetNext(SysState_Gameplay);
             Game_WarmBoot();
