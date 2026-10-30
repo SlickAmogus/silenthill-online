@@ -2030,9 +2030,16 @@ void DbgOverlay_Update(void)
         static SDL_Scancode s_scChatC = SDL_SCANCODE_UNKNOWN;
         static int          s_chatRes  = 0;
         static int          s_prevChatG = 0, s_prevChatC = 0;
+        extern int Pc_CoopMenu_Editing(void);
+        extern int Pc_BindPanel_IsOpen(void);
+        extern int ShNetChat_Available(void);
         int online = g_PcConfig.onlineEnabled || g_PcConfig.onlineSteam;
         int inWorld = g_GameWork.gameState == GameState_InGame &&
                       !(g_SysWork.sysFlags & SysFlag_DemoActive);
+        /* The main menu and the multiplayer lobby over it: Global chat, and
+         * the room's, unless a field there is taking the keyboard. */
+        int inMenus = g_GameWork.gameState == GameState_MainMenu && ShNetChat_Available() &&
+                      !Pc_CoopMenu_Editing() && !Pc_BindPanel_IsOpen();
 
         if (!s_chatRes) {
             s_scChatG = SDL_GetScancodeFromName(g_PcConfig.keyChatGame);
@@ -2042,7 +2049,7 @@ void DbgOverlay_Update(void)
 
         if (ShNetChat_IsOpen()) {
             ShNetChat_FeedKeys(ks);
-        } else if (online && inWorld && !g_PcConsoleInputActive && !ctrlHeld) {
+        } else if (online && (inWorld || inMenus) && !g_PcConsoleInputActive && !ctrlHeld) {
             int curG = (s_scChatG != SDL_SCANCODE_UNKNOWN) ? ks[s_scChatG] : 0;
             int curC = (s_scChatC != SDL_SCANCODE_UNKNOWN) ? ks[s_scChatC] : 0;
             if (curG && !s_prevChatG) { ShNetChat_Open(); }
