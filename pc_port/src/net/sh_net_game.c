@@ -1558,6 +1558,23 @@ void ShNet_GameTick(void)
         {
             s_lastMap = -1;
         }
+        /* The lobby: the room's messages are drained in a game only
+         * (Pc_NetNpc_GameTick), so at the title its chat lines and skin
+         * announcements are read here; the rest is about a world that is not
+         * loaded and is dropped. */
+        if (g_GameWork.gameState == GameState_MainMenu && ShSession_Active())
+        {
+            shn_u8             buf[SHNET_MAX_PAYLOAD];
+            int                type, len;
+            unsigned long long from;
+            while ((len = ShSession_TakeGame(&type, &from, buf, (int)sizeof(buf))) >= 0)
+            {
+                if (type == SHNET_MSG_S_CTRL && len >= 1 && (buf[0] == SHNET_CTRL_CHAT || buf[0] == SHNET_CTRL_SKIN))
+                {
+                    ShNet_CoopCtrlIn(from, buf, len);
+                }
+            }
+        }
         ShSession_PublishLocalPos(-1, 0, 0, NULL); /* no pose outside a map */
         ShSession_PublishPresence("In the menus", -1);
         ShNet_PumpToGameThread();
