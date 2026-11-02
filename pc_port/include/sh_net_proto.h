@@ -82,7 +82,7 @@ typedef char shn_static_assert_widths[
  * can join a PC: the executable's hash differed per platform, and on Android
  * was the system's own app_process. Bump it whenever the co-op wire format or
  * the shared game logic changes in a way the previous build cannot follow. */
-#define SHNET_COOP_BUILD   "coop-2026-10-30"
+#define SHNET_COOP_BUILD   "coop-2026-11-02"
 #define SHNET_SERVER_MAX   32
 #define SHNET_MOTD_MAX     128
 #define SHNET_REJECT_MAX   96
@@ -473,7 +473,10 @@ enum
     SHNET_CTRL_RESTART   = 9, /* host -> all: u16 gen, u8 map, s_Savegame; I loaded a save, start from it with me */
     SHNET_CTRL_ITEM_USED = 10, /* member -> all: u8 item, u8 count; I used up this key item, drop yours too */
     SHNET_CTRL_CHAT      = 11, /* member -> all: a Coop chat line, NUL-terminated, at most SHNET_CHAT_MAX */
-    SHNET_CTRL_RULES     = 14, /* host -> all: u8 damage, u8 health, in quarters (6 = 1.5x); the monsters' toughness */
+    SHNET_CTRL_RULES     = 14, /* host -> all: u8 damage, u8 health, in quarters (6 = 1.5x); then u8 sync consumables
+                                *  (SHNET_SYNC_*), u8 keep items on death (SHNET_KEEP_*), and the host's six
+                                *  consumable counts (SHNET_CONSUMABLE_IDS order) */
+    SHNET_CTRL_EXAMINE   = 15, /* member -> all: u8 map, u8 row, u8 state; 1 I am looking at this pickup, 0 done */
     SHNET_CTRL_GAMEOVER  = 13, /* host -> all: u16 gen; nobody is left alive, the game over plays for everyone */
     SHNET_CTRL_SKIN      = 12  /* member -> all: the Harry swap worn (its lowercase play-as token, NUL-terminated,
                                 * at most 24; empty = none). A partner with the same file draws it; anyone
@@ -494,6 +497,17 @@ static inline unsigned long long ShnGetU64(const shn_u8* b, int* off)
     *off += 8;
     return v;
 }
+
+/* The host's item rules (Host a Game). Sync consumables: how health items and
+ * ammo reach the guests. Keep items on death: what a respawn keeps. */
+#define SHNET_SYNC_START 0 /* the host's at the start; each player's own after */
+#define SHNET_SYNC_NO    1 /* only key items; a guest starts with the basics */
+#define SHNET_SYNC_YES   2 /* at the start, on every pickup, and on a guest's respawn */
+#define SHNET_KEEP_HOST   0 /* only the host keeps consumables through a death */
+#define SHNET_KEEP_NO     1 /* key items and the basics only */
+#define SHNET_KEEP_HALF   2 /* half of each */
+#define SHNET_KEEP_YES    3 /* everything */
+#define SHNET_CONSUMABLE_COUNT 6 /* health drink, first aid kit, ampoule, handgun bullets, rifle shells, shotgun shells */
 
 #define SHNET_MSG_S_FIRST 0x50
 #define SHNET_MSG_S_LAST  0x5F

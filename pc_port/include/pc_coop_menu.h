@@ -48,6 +48,7 @@ int         Pc_CoopMenu_Selected(void);
 const char* Pc_CoopMenu_Title(void);
 void        Pc_CoopMenu_RowText(int i, char* out, int cap);
 void        Pc_CoopMenu_StatusText(char* out, int cap);
+const char* Pc_CoopMenu_HintText(void); /* top-left note for the highlighted row, or "" */
 
 /* How the current page lays out: plain buttons, label/value settings, the
  * server room table, or the member list. */

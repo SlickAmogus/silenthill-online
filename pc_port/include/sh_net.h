@@ -229,6 +229,17 @@ int ShNet_PopEvent(char* out, int cap);
 /* A line of our own for the same toast feed (game or worker thread). */
 void ShNet_PostLocalEvent(const char* line);
 
+/* The host's item rules in this co-op game (SHNET_SYNC_* / SHNET_KEEP_*): the
+ * host's settings, or for a guest what the host said. */
+int  ShNet_CoopSyncMode(void);
+int  ShNet_CoopKeepMode(void);
+/* A guest adopting the host's save (an s_Savegame): the rules applied to its
+ * inventory before it boots. */
+void ShNet_CoopFilterHostSave(void* save);
+/* Standing up from a death, or leaving for a partner's map after one: the
+ * inventory the rules say we respawn with. */
+void ShNet_CoopDeathInventory(void);
+
 /* ------------------------------------------------------------------ */
 /* Chat                                                                */
 /* ------------------------------------------------------------------ */

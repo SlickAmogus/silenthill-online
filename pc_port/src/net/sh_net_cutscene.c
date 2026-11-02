@@ -180,6 +180,18 @@ static unsigned long long s_gateToldBy;
 static int          s_gateToldMap = -1, s_gateToldRow = -1;
 static unsigned int s_gateToldMs;
 
+/* A pickup or examine (an EventCallback row with a trigger) is one player's at
+ * a time: the first to use it says so (SHNET_CTRL_EXAMINE, repeated while the
+ * script runs), and a partner's use of the same row is refused with a note
+ * until it ends. What the script gives (the item, its flag) reaches everyone
+ * through the item and flag syncs. */
+#define CUT_EXAM_FRESH_MS  6000u
+#define CUT_EXAM_RESEND_MS 2000u
+typedef struct { unsigned long long id; int map, row; unsigned int ms; } CutExam;
+static CutExam      s_exam[SHSESSION_MAX_MEMBERS];
+static int          s_examMap = -1, s_examRow = -1; /* ours */
+static unsigned int s_examSentMs, s_examSince, s_examToldMs;
+
 /* The alley death. */
 static int          s_dieReq;
 static unsigned int s_dieMs;
@@ -624,6 +636,77 @@ static void Cut_GateRelease(unsigned int now, const char* why)
 static int          s_warnMap = -1, s_warnRow = -1;
 static unsigned int s_warnMs;
 
+static void Cut_ExamineTell(int map, int row, int state)
+{
+    unsigned char b[4];
+    b[0] = SHNET_CTRL_EXAMINE;
+    b[1] = (unsigned char)map;
+    b[2] = (unsigned char)row;
+    b[3] = (unsigned char)state;
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 4, 0, 1);
+}
+
+static const char* Cut_ExaminedBy(int map, int row, unsigned int now)
+{
+    int i;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_exam[i].id && s_exam[i].map == map && s_exam[i].row == row && now - s_exam[i].ms < CUT_EXAM_FRESH_MS)
+        {
+            return Cut_NameOf(s_exam[i].id);
+        }
+    }
+    return NULL;
+}
+
+static void Cut_ExamineEnd(void)
+{
+    if (s_examRow >= 0)
+    {
+        Cut_ExamineTell(s_examMap, s_examRow, 0);
+    }
+    s_examMap = s_examRow = -1;
+}
+
+static void Cut_ExamineTick(unsigned int now)
+{
+    if (s_examRow < 0) return;
+    if (Cut_MyMap() != s_examMap || g_GameWork.gameState != GameState_InGame || Cut_SceneLive() ||
+        (now - s_examSince > CUT_PRESS_GRACE_MS && !Cut_HandlerRunning()))
+    {
+        Cut_ExamineEnd(); /* done, or it turned out to be a scene (those have their own sync) */
+        return;
+    }
+    if (now - s_examSentMs >= CUT_EXAM_RESEND_MS)
+    {
+        Cut_ExamineTell(s_examMap, s_examRow, 1);
+        s_examSentMs = now;
+    }
+}
+
+void ShNetCut_ExamineIn(unsigned long long from, const unsigned char* p, int len)
+{
+    const unsigned int now = ShNetPlat_Millis();
+    int                i, at = -1;
+
+    if (len < 4 || !Cut_Coop() || from == ShSession_SelfId()) return;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_exam[i].id == from) { at = i; break; }
+        if (at < 0 && (s_exam[i].id == 0 || now - s_exam[i].ms >= CUT_EXAM_FRESH_MS)) at = i;
+    }
+    if (at < 0) return;
+    if (p[3] == 0)
+    {
+        if (s_exam[at].id == from) s_exam[at].id = 0;
+        return;
+    }
+    s_exam[at].id  = from;
+    s_exam[at].map = p[1];
+    s_exam[at].row = p[2];
+    s_exam[at].ms  = now;
+}
+
 /* The door's row is about to dispatch. */
 static int Cut_GateHold(int map, int row, int kind, unsigned int now)
 {
@@ -1019,6 +1102,29 @@ int ShNetCut_HoldDispatch(void)
             return Cut_GateHold(map, row, kind, now);
         }
     }
+    if (g_MapEventSysState == SysState_EventCallback && g_MapEventData->triggerType != TriggerType_None &&
+        g_SysWork.sysState == SysState_Gameplay)
+    {
+        const char* who = Cut_ExaminedBy(map, row, now);
+        if (who != NULL)
+        {
+            if (now - s_examToldMs > 3000u)
+            {
+                char line[96];
+                snprintf(line, sizeof(line), "%s is already looking at the item", who);
+                ShNet_PostLocalEvent(line);
+                s_examToldMs = now;
+            }
+            g_MapEventSysState = SysState_Invalid;
+            return 1;
+        }
+        s_examMap    = map;
+        s_examRow    = row;
+        s_examSince  = now;
+        s_examSentMs = now;
+        Cut_ExamineTell(map, row, 1);
+        return 0;
+    }
     if (g_MapEventSysState != SysState_EventCallback || g_MapEventData->triggerType != TriggerType_None)
     {
         return 0;
@@ -1194,6 +1300,8 @@ void ShNetCut_Tick(void)
         s_joinRow = -1;
         s_dieReq  = 0;
         s_playedMap = -1;
+        s_examMap = s_examRow = -1;
+        memset(s_exam, 0, sizeof(s_exam));
         Cut_Unhold();
         Cut_GateEnd();
         Cut_WaitEnd("no game");
@@ -1206,6 +1314,7 @@ void ShNetCut_Tick(void)
         memset(s_played, 0, sizeof(s_played));
         s_playedMap = Cut_MyMap();
     }
+    Cut_ExamineTick(now);
 
     /* The hold is asserted by the dispatch site each frame it applies; a
      * frame without it means the row went away (its flag arrived, the map
