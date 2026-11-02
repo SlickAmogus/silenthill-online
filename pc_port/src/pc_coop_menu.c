@@ -470,6 +470,39 @@ static void Coop_OpenSaves(int from, int row)
     s_msg[0]       = '\0';
 }
 
+/* The item rules' names, by SHNET_SYNC_* / SHNET_KEEP_*. */
+static const char* const s_syncNames[4] = { "Start Only", "No", "Yes", "Start Only" };
+static const char* const s_keepNames[4] = { "Host Only", "No", "Halved", "Yes" };
+static const char* const s_syncHints[3] = {
+    "Items are synced at the start, but independent afterwards",
+    "Only key items are synced",
+    "Items are synced at start and on pick up"
+};
+static const char* const s_keepHints[4] = {
+    "Only the host keeps consumables when respawning",
+    "Everyone respawns with key items and the basics only",
+    "Everyone respawns with half their consumables",
+    "Everyone respawns with everything they had"
+};
+
+/* A row of n choices, stepping and wrapping, saved under its key. */
+static void Coop_StepChoice(int* v, int n, const char* key, int dir)
+{
+    char s[8];
+    *v = (*v + n + dir) % n;
+    snprintf(s, sizeof(s), "%d", *v);
+    PcConfig_SaveKeyValue(key, s);
+}
+
+/* The small note at the top left while an item rule is highlighted. */
+const char* Pc_CoopMenu_HintText(void)
+{
+    if (!s_open || s_page != COOP_PAGE_HOST_SETUP) return "";
+    if (s_sel == 7) return s_syncHints[g_PcConfig.onlineSyncConsumables > 2 ? 0 : g_PcConfig.onlineSyncConsumables];
+    if (s_sel == 8) return s_keepHints[g_PcConfig.onlineKeepItems & 3];
+    return "";
+}
+
 /* Enemy Damage / Enemy Health: 0.25x steps from 0.25x to 4x, wrapping. */
 static void Coop_StepScale(int* pct, const char* key, int dir)
 {
@@ -637,6 +670,10 @@ void Pc_CoopMenu_RequestReboot(const void* savegame)
     if (g_GameWork.autosave.playerHealth <= 0)
     {
         g_GameWork.autosave.playerHealth = Q12(100.0f);
+    }
+    if (!ShSession_IsHost())
+    {
+        ShNet_CoopFilterHostSave(&g_GameWork.autosave);
     }
     s_startReq = 3;
     g_SysWork.sysFlags |= SysFlag_DoWarmReset;
@@ -923,7 +960,7 @@ int Pc_CoopMenu_RowCount(void)
     {
     case COOP_PAGE_ROOT:       { int r[5]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Back */
     case COOP_PAGE_SETTINGS:   return 7; /* Living World IP, Living World, Name, Join Messages, Chat, Restart Connection, Back */
-    case COOP_PAGE_HOST_SETUP: return 10; /* Host on, Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Load, Open, Back */
+    case COOP_PAGE_HOST_SETUP: return 12; /* Host on, Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Sync Consumables, Keep Items, Load, Open, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
@@ -1032,8 +1069,10 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 4) snprintf(out, cap, "FPS Lock:  %d", s_setFps);
         else if (i == 5) snprintf(out, cap, "Enemy Damage:  %d.%02dx", g_PcConfig.onlineEnemyDamagePct / 100, g_PcConfig.onlineEnemyDamagePct % 100);
         else if (i == 6) snprintf(out, cap, "Enemy Health:  %d.%02dx", g_PcConfig.onlineEnemyHealthPct / 100, g_PcConfig.onlineEnemyHealthPct % 100);
-        else if (i == 7) Coop_SaveRowText(out, cap);
-        else if (i == 8) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
+        else if (i == 7) snprintf(out, cap, "Sync Consumables:  %s", s_syncNames[g_PcConfig.onlineSyncConsumables & 3]);
+        else if (i == 8) snprintf(out, cap, "Keep Items On Death:  %s", s_keepNames[g_PcConfig.onlineKeepItems & 3]);
+        else if (i == 9) Coop_SaveRowText(out, cap);
+        else if (i == 10) snprintf(out, cap, s_hostMode == COOP_HOST_STEAM ? "Open Lobby" : "Open Room");
         else snprintf(out, cap, "Back");
         break;
 
@@ -1444,8 +1483,10 @@ static void Coop_Confirm(void)
         else if (s_sel == 4) { s_setFps = (s_setFps == 60) ? 30 : 60; }
         else if (s_sel == 5) { Coop_StepScale(&g_PcConfig.onlineEnemyDamagePct, "online_enemy_damage", 1); }
         else if (s_sel == 6) { Coop_StepScale(&g_PcConfig.onlineEnemyHealthPct, "online_enemy_health", 1); }
-        else if (s_sel == 7) { Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 7); }
-        else if (s_sel == 8) { Coop_StartHosting(); } /* Open Room / Lobby */
+        else if (s_sel == 7) { Coop_StepChoice(&g_PcConfig.onlineSyncConsumables, 3, "online_sync_consumables", 1); }
+        else if (s_sel == 8) { Coop_StepChoice(&g_PcConfig.onlineKeepItems, 4, "online_keep_items", 1); }
+        else if (s_sel == 9) { Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 9); }
+        else if (s_sel == 10) { Coop_StartHosting(); } /* Open Room / Lobby */
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
@@ -1791,7 +1832,9 @@ static int Coop_Adjust(int dir)
         case 4: s_setFps = (s_setFps == 60) ? 30 : 60; return 1;
         case 5: Coop_StepScale(&g_PcConfig.onlineEnemyDamagePct, "online_enemy_damage", dir); return 1;
         case 6: Coop_StepScale(&g_PcConfig.onlineEnemyHealthPct, "online_enemy_health", dir); return 1;
-        case 7: Coop_StepSave(dir); return 1;
+        case 7: Coop_StepChoice(&g_PcConfig.onlineSyncConsumables, 3, "online_sync_consumables", dir); return 1;
+        case 8: Coop_StepChoice(&g_PcConfig.onlineKeepItems, 4, "online_keep_items", dir); return 1;
+        case 9: Coop_StepSave(dir); return 1;
         default: return 0;
         }
     case COOP_PAGE_SPLIT_ONLINE:
