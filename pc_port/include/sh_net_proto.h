@@ -477,6 +477,7 @@ enum
                                 *  (SHNET_SYNC_*), u8 keep items on death (SHNET_KEEP_*), and the host's six
                                 *  consumable counts (SHNET_CONSUMABLE_IDS order) */
     SHNET_CTRL_EXAMINE   = 15, /* member -> all: u8 map, u8 row, u8 state; 1 I am looking at this pickup, 0 done */
+    SHNET_CTRL_PICKUP    = 16, /* member -> all: u8 item, u8 taken; I answered the pickup prompt (a sound and a note for the room) */
     SHNET_CTRL_GAMEOVER  = 13, /* host -> all: u16 gen; nobody is left alive, the game over plays for everyone */
     SHNET_CTRL_SKIN      = 12  /* member -> all: the Harry swap worn (its lowercase play-as token, NUL-terminated,
                                 * at most 24; empty = none). A partner with the same file draws it; anyone
