@@ -75,7 +75,8 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_SPU,
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
-       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM };
+       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM,
+       QO_X_CROSSHAIRMELEE };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -213,6 +214,7 @@ static const QoRowDef s_page1[] = {
     /* Quick menu only: crosshair_style has no row in the PC Options table and
      * does not get one, that page keeps its slack for the next HUD setting. */
     { ROW_EXTRA, NULL, QO_X_CROSSHAIRSTYLE,  "Crosshair Style" },
+    { ROW_EXTRA, NULL, QO_X_CROSSHAIRMELEE,  "Hide Crosshair for Melee" },
     { ROW_OPT,   "text_size",            0, NULL },
     { ROW_OPT,   "low_health_glow",      0, NULL },
 /* Not on mobile: it would not do anything. PsyX_SPUAL_SetOutputMode is an
@@ -2480,16 +2482,16 @@ void Pc_QuickOptions_Draw(void)
 #if !defined(QO_MOBILE)
     if (!s_texHint)
     {
-        char  hint[384];
+        char  hint[384], hint2[384], key[64];
         float avail = panelW - 2.0f * pad;
         int   hpx   = (int)(hintH * 0.42f);
 
         if (hpx < 7) hpx = 7;
-        snprintf(hint, sizeof(hint), "%s    %s    %s    %s    %s    %s",
-                 Pc_LangQuick("Up/Down select"), Pc_LangQuick("Left/Right adjust"),
-                 Pc_LangQuick("Q/E or PgUp/PgDn page"), Pc_LangQuick("Drag the title to move"),
-                 Pc_LangQuickFill("{key} or Esc close", "{key}",
-                                  g_PcConfig.keyQuickOptions[0] ? g_PcConfig.keyQuickOptions : "F10"),
+        BindInput_KeyLabel(g_PcConfig.keyQuickOptions[0] ? g_PcConfig.keyQuickOptions : "F10", key, sizeof(key));
+        snprintf(hint, sizeof(hint), "%s    %s    %s", Pc_LangQuick("Up/Down select"),
+                 Pc_LangQuick("Left/Right adjust"), Pc_LangQuick("Q/E or PgUp/PgDn page"));
+        snprintf(hint2, sizeof(hint2), "%s    %s    %s", Pc_LangQuick("Drag the title to move"),
+                 Pc_LangQuickFill("{key} or Esc close", "{key}", key),
                  Pc_LangQuick("* needs restart"));
         s_texHint = qo_bake(hint, (float)hpx, &s_hintW, &s_hintH);
         if (s_texHint && s_hintW > avail && s_hintW > 0 && avail > 0.0f)

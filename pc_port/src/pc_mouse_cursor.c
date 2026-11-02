@@ -871,8 +871,8 @@ void Pc_MouseCursor_GlDraw(void)
         return;
 
     /* Touch drives menus through this same hover/click path (SDL synthesizes
-     * mouse events from taps), but an arrow parked wherever the last tap
-     * landed represents a pointer a touchscreen does not have. Keep the input
+     * mouse events from taps), but an arrow parked wherever the last tap landed
+     * represents a pointer a touchscreen does not have. Keep the input
      * behaviour, drop the drawing. Recency-based rather than compile-time so a
      * device with both a touchscreen and a mouse follows whichever is in use. */
     {

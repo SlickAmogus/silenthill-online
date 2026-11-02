@@ -1359,6 +1359,11 @@ int main(int argc, char* argv[])
              * Generated fresh each build by cmake/gen_build_info.cmake. */
             #include "sh_build_info.h"
             SH_DBG("[SH] build " SH_BUILD_GIT_HASH " (" SH_BUILD_STAMP ")");
+            {
+                /* The [PERF] line's GPU time: only measured when there is a log to read it. */
+                extern int g_PsyX_GpuTimerWanted;
+                g_PsyX_GpuTimerWanted = 1;
+            }
         }
         /* Say WHERE this log and the config actually are. The log is the one
          * thing a remote user is asked to find, and when it silently lands in a

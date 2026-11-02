@@ -980,7 +980,8 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        /* Quick menu only: the PC Options graphics page is at its row limit. */
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
-       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM };
+       QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM,
+       QO_X_CROSSHAIRMELEE };
 
 /* display_aspect = crt puts the picture on (4:3 x trim), so one framebuffer
  * pixel lands on screen this many times wider than tall at trim 1.0. It is the
@@ -1104,6 +1105,8 @@ const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz)
         return Pc_LangQuickMenu(g_PcConfig.heroLightWithFlashlight ? "On" : "Off");
     case QO_X_FACEANIM:
         return Pc_LangQuickMenu(g_PcConfig.charaFaceAnim ? "On" : "Off");
+    case QO_X_CROSSHAIRMELEE:
+        return Pc_LangQuickMenu(g_PcConfig.crosshairHideMelee ? "On" : "Off");
     case QO_X_LINEGAP: {
         int i = PcOpt_LineGapIndex();
         return (i == 0) ? Pc_LangQuickMenu("Off") : Pc_LangQuick(QO_LINEGAP_LBL[i]);
@@ -1632,6 +1635,12 @@ void PcOpt_QuickExtraAdjust(int which, int dir)
     case QO_X_DPADMOVE:
         g_PcConfig.disableDpadMovement = !g_PcConfig.disableDpadMovement;
         PcConfig_SaveKeyValue("disable_dpad_movement", g_PcConfig.disableDpadMovement ? "1" : "0");
+        Sd_PlaySfx(Sfx_MenuMove, 0, 64);
+        break;
+    /* Pc_CrosshairDraw reads it each frame, so it applies live. */
+    case QO_X_CROSSHAIRMELEE:
+        g_PcConfig.crosshairHideMelee = !g_PcConfig.crosshairHideMelee;
+        PcConfig_SaveKeyValue("crosshair_hide_melee", g_PcConfig.crosshairHideMelee ? "1" : "0");
         Sd_PlaySfx(Sfx_MenuMove, 0, 64);
         break;
     /* Wraps both ways through the four shapes. Pc_CrosshairBuild reads the
