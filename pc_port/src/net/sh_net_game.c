@@ -1079,6 +1079,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_EXAMINE:
             ShNetCut_ExamineIn(from, p, len);
             break;
+        case SHNET_CTRL_PICKUP:
+            ShNetCut_PickupIn(from, p, len);
+            break;
         case SHNET_CTRL_SUMMON:
             ShNetCut_SummonIn(from, p, len);
             break;

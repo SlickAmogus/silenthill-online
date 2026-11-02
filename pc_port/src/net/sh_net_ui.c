@@ -827,8 +827,8 @@ static void Nu_DrawEvents(int px)
         {
             continue;
         }
-        Nu_DrawTextRight(s_events[i].text, s_vpW - s_vpH * 0.03f, y, px,
-                         0.78f, 0.76f, 0.70f, a);
+        /* Top left, under the connection line when that is up. */
+        Nu_DrawText(s_events[i].text, s_vpH * 0.03f, y, px, 0.78f, 0.76f, 0.70f, a);
         y += (float)px * 1.3f;
     }
 }

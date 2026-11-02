@@ -26,6 +26,8 @@ void ShNetCut_CtrlIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_DieIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_GateIn(unsigned long long from, const unsigned char* p, int len);
 void ShNetCut_ExamineIn(unsigned long long from, const unsigned char* p, int len);
+void ShNetCut_PickupIn(unsigned long long from, const unsigned char* p, int len);
+void ShNetCut_PickupShown(int itemId); /* Gfx_PickupItemAnimate: this item's prompt is up */
 void ShNetCut_SummonIn(unsigned long long from, const unsigned char* p, int len);
 /* Host: bring that guest to where we stand (another map included). */
 void ShNetCut_Summon(unsigned long long id);
