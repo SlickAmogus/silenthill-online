@@ -175,8 +175,11 @@ selection back.
   open for all.
 - **Items.** Picking something up is one player's doing at a time: a partner
   who tries the same item while you are looking at it is told "X is already
-  looking at the item". A key item taken is everyone's, and so are the flags
-  it sets, as when one is used. Health items and ammo follow the host's two
+  looking at the item". When they answer the prompt, everyone hears the
+  confirm or cancel from where they stand and sees "X picked up the Key" (or
+  left it) in the top-left notes; a taken item is gone from the world for
+  everyone. A key item taken is everyone's, and so are the flags it sets, as
+  when one is used. Health items and ammo follow the host's two
   settings on the Host a Game page. **Sync Consumables**: Start Only (the
   host's at the start, each player's own after; the default), No (only key
   items; a guest starts with the basics and the host's weapons), or Yes (the

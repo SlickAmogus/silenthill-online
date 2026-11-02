@@ -1286,6 +1286,8 @@ static int Npc_FlagLocal(int idx)
 /* Everyone sends their event flags: progress is the union of what every
  * player has done (a guest who solves a puzzle or takes a key item first
  * sets the host's flag too). Only the host sends monster states. */
+static int Npc_PlainGameplay(void);
+
 static void Npc_SendWorldFlags(int isHost)
 {
     static unsigned int s_lastMs;
@@ -1294,7 +1296,7 @@ static void Npc_SendWorldFlags(int isHost)
     int                 o = 0, i;
     const int           no = isHost ? OVL_STATE_WORDS : 0;
 
-    if (now - s_lastMs < WORLD_FL_MS) return;
+    if (now - s_lastMs < WORLD_FL_MS || !Npc_PlainGameplay()) return; /* a script's flags wait for its end */
     s_lastMs = now;
     ShnPutU8(b, &o, (shn_u8)g_SavegamePtr->mapIdx);
     ShnPutU8(b, &o, EVENT_FLAG_WORDS);
@@ -1374,7 +1376,10 @@ static void Npc_FlagsTick(int role)
             s_flagPend[i] = 0;
         }
     }
-    for (i = 0; i < EVENT_FLAG_WORDS && sent < FLAG_SENDS_PER_TICK; i++)
+    /* Sent from plain gameplay only: a pickup script sets its flag while
+     * "Take it?" is still up and clears it on No, so a flag that left
+     * mid-script would take the item away from everyone for nothing. */
+    for (i = 0; Npc_PlainGameplay() && i < EVENT_FLAG_WORDS && sent < FLAG_SENDS_PER_TICK; i++)
     {
         shn_u32 nw = g_SavegamePtr->eventFlags[i] & ~s_flagSeen[i];
         for (bit = 0; nw && bit < 32 && sent < FLAG_SENDS_PER_TICK; bit++)

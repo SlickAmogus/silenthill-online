@@ -558,6 +558,9 @@ static const char* s_ItemName(u8 id) {
         return lang;
     return (idx >= 0 && idx < n && INVENTORY_ITEM_NAMES[idx]) ? INVENTORY_ITEM_NAMES[idx] : "";
 }
+
+/* The same name for the co-op room's pickup notes (sh_net_cutscene.c). */
+const char* Pc_ItemDisplayName(u8 id) { return s_ItemName(id); }
 static const char* s_ItemDesc(u8 id) {
     int idx = (int)id - 32;
     int n   = (int)(sizeof(g_ItemDescriptions) / sizeof(g_ItemDescriptions[0]));
@@ -4510,6 +4513,8 @@ bool Gfx_PickupItemAnimate(u8 itemId) // 0x80054AD8
     if (_pickAnimSameItemCount < 8) {
         _pickAnimSameItemCount++;
     }
+    /* Co-op: the room is told how the prompt was answered once the script ends. */
+    { extern void ShNetCut_PickupShown(int itemId); ShNetCut_PickupShown(itemId); }
 #endif
     q19_12         scale;
     s16            rotX;
