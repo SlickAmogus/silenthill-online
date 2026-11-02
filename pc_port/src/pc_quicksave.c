@@ -189,14 +189,11 @@ void Pc_QuickSaveLoadUpdate(void)
         } else if (wantSave) {
             SH_DBG("[QUICK] opening save screen (%s)",
                    touchSave ? "touch" : g_PcConfig.keyQuickSave);
-            Pc_Save_OpenSaveScreen();
+            Pc_QuickSave_OpenSaveScreen();
         } else if (wantLoad) {
             SH_DBG("[QUICK] opening load screen (%s)",
                    touchLoad ? "touch" : g_PcConfig.keyQuickLoad);
-            Screen_Refresh(320, 0);
-            GameFs_SaveLoadBinLoad();
-            Fs_QueueWaitForEmpty();
-            Game_StateSetNext(GameState_LoadSavegameScreen);
+            Pc_QuickSave_OpenLoadScreen();
         }
     }
 
