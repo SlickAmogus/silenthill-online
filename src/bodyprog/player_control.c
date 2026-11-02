@@ -3077,6 +3077,52 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                      * original path set — classic is not this shim's business. */
                 }
 
+                /* Katana lunge. Retail's Player_LowerBodyUpdate (case Attack)
+                 * steps the stab forward through moveSpeed, and the alternate
+                 * cameras never run that machine, so the katana stood still in
+                 * all of them. Same numbers and triggers: the tap stab on its
+                 * first Attack tick (stateStep 0, which nothing else advances
+                 * here), the hold thrust once the swing passes its hit
+                 * keyframe; 0x444 per tick in Attack, the aim rate after. */
+                if (g_DebugThirdPersonCam)
+                {
+                    static q19_12 s_pcKatanaLunge = Q12(0.0f);
+                    int inAttack = (extra->lowerBodyState == PlayerLowerBodyState_Attack);
+                    s32 wa       = g_SysWork.playerCombat.weaponAttack;
+
+                    if (inAttack && wa < WEAPON_ATTACK(EquippedWeaponId_Handgun, AttackInputType_Tap) &&
+                        WEAPON_ATTACK_ID_GET(wa) == EquippedWeaponId_Katana)
+                    {
+                        if (wa == WEAPON_ATTACK(EquippedWeaponId_Katana, AttackInputType_Hold))
+                        {
+                            if (s_pcKatanaLunge == Q12(0.0f) &&
+                                extra->model.anim.keyframeIdx >= D_800C44F0[D_800AF220].field_4 + 7)
+                            {
+                                s_pcKatanaLunge = Q12(5.0f);
+                            }
+                        }
+                        else if (player->model.stateStep == 0 && !g_Player_IsAttacking)
+                        {
+                            s_pcKatanaLunge = Q12(5.0f);
+                        }
+                        if (player->model.stateStep == 0)
+                        {
+                            player->model.stateStep++;
+                        }
+                    }
+
+                    if (s_pcKatanaLunge != Q12(0.0f))
+                    {
+                        s_pcKatanaLunge -= TIMESTEP_SCALE_30_FPS(g_DeltaTime, inAttack ? 0x444 : Q12(0.4f));
+                        if (s_pcKatanaLunge < Q12(0.0f))
+                        {
+                            s_pcKatanaLunge = Q12(0.0f);
+                        }
+                        D_800C4550            = s_pcKatanaLunge;
+                        g_Player_HeadingAngle = Q12_ANGLE(0.0f);
+                    }
+                }
+
                 /* Trigger footstep sounds based on animation keyframes.
                  * Save/restore D_800C4550 because func_8007B924 overwrites it
                  * with moveDistance which isn't set on PC. */
@@ -4822,7 +4868,7 @@ static void Pc_FreeAimGunUpperBody(s_SubCharacter* player, s_PlayerExtra* extra,
              * move rounds out of the inventory while the cheat is on. A reload
              * the player asks for by hand still works. */
             if (!isHyperBlaster && reserve > 0 &&
-                (reloadReq || (fireEdge && ammo == 0 && !g_PcInfiniteAmmo)))
+                (reloadReq || (fireEdge && ammo == 0 && !g_PcInfiniteAmmo && Pc_AutoReloadEnabled())))
             {
                 /* Begin reload: play the reload anim (blend->active track) from the
                  * proven per-weapon keyframes, firing locked out. */
@@ -4888,7 +4934,7 @@ static void Pc_FreeAimGunUpperBody(s_SubCharacter* player, s_PlayerExtra* extra,
             else if (fireEdge && ammo == 0 && !g_PcInfiniteAmmo)
             {
                 /* Dry fire. Reaching here means the reload branch above declined
-                 * it — no reserve left — so this is the genuinely empty click,
+                 * it — no reserve left, or auto_reload off — so this is the empty click,
                  * and the native path plays it (Player_CombatAnimUpdate, the
                  * else of the same ammo test). This FSM replaces that function
                  * wholesale for the alternate cameras, so without this the gun
@@ -7204,7 +7250,15 @@ void Player_CombatStateUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0
                     extra->model.controlState                = 0;
                     player->properties.player.field_100 = 0;
 
+#ifdef SH_PC_PORT
+                    /* Retail fills the clip from the reserve the moment the gun is
+                     * raised, with no animation: every aim is a free, silent
+                     * reload, which makes the reload button and the dry-fire
+                     * reload meaningless. Kept only under auto_reload = 2. */
+                    if (g_SysWork.playerCombat.totalWeaponAmmo != 0 && g_PcConfig.autoReload == 2)
+#else
                     if (g_SysWork.playerCombat.totalWeaponAmmo != 0)
+#endif
                     {
                         if (g_SysWork.playerCombat.weaponAttack >= WEAPON_ATTACK(EquippedWeaponId_Handgun, AttackInputType_Tap))
                         {
@@ -7614,9 +7668,16 @@ void Player_CombatStateUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0
 
                 if (g_SysWork.playerCombat.weaponAttack >= WEAPON_ATTACK(EquippedWeaponId_Handgun, AttackInputType_Tap))
                 {
+                    /* With the automatic reload off this falls through to the
+                     * Attack state set above, whose empty-clip branch plays the
+                     * dry click, as it does with no reserve at all. */
                     if (g_SysWork.playerCombat.currentWeaponAmmo == 0 &&
                         INV_ITEM_GROUP(g_SavegamePtr->equippedWeapon) == InvItemGroup_GunWeapons &&
-                        g_SysWork.playerCombat.totalWeaponAmmo != 0)
+                        g_SysWork.playerCombat.totalWeaponAmmo != 0
+#ifdef SH_PC_PORT
+                        && Pc_AutoReloadEnabled()
+#endif
+                        )
                     {
                         g_SysWork.playerWork.extra.upperBodyState              = PlayerUpperBodyState_Reload;
                         playerProps.flags &= ~PlayerFlag_Unk9;

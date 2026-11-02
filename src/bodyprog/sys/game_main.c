@@ -2611,7 +2611,9 @@ void MainLoop(void) // 0x80032EE0
          * FMV_Play and fades back in afterwards. */
         {
             extern void Pc_ConsoleFmvUpdate(void);
+            extern void Pc_ConsoleGpuBenchUpdate(void);
             Pc_ConsoleFmvUpdate();
+            Pc_ConsoleGpuBenchUpdate();
         }
 
 #endif
@@ -2949,6 +2951,7 @@ void MainLoop(void) // 0x80032EE0
          * and DMS chunk loads. Tick the queue every frame on PC. */
         ML_TRACE("Fs_QueueUpdate");
         Fs_QueueUpdate();
+        s_sfFsqEnd = (unsigned int)SDL_GetTicks();
 #else
         if (!Sd_AudioStreamingCheck())
         {
@@ -3203,6 +3206,10 @@ void MainLoop(void) // 0x80032EE0
             {
                 static Uint32 s_perfLastMs = 0, s_perfAccumMs = 0, s_perfWorstMs = 0;
                 static u32    s_perfFrames = 0, s_perfVbAccum = 0;
+                /* The same phases as [SLOWFRAME], summed over the window, so an
+                 * area that is slow throughout says whether the game (update)
+                 * or the GPU (present, sync) is holding it back. */
+                static u32    s_perfPhase[6], s_perfPhaseFrames;
                 Uint32        perfNowMs = SDL_GetTicks();
                 if (s_perfLastMs != 0)
                 {
@@ -3236,6 +3243,18 @@ void MainLoop(void) // 0x80032EE0
                                    (int)g_GameWork.gameState, (int)g_SysWork.sysState);
                         }
                     }
+                    if (s_sfSwapEnd != 0 && s_sfSwapEnd >= (unsigned int)s_perfLastMs && s_sfTop >= s_sfSwapEnd &&
+                        s_sfUpdStart >= s_sfTop && s_sfUpdEnd >= s_sfUpdStart && s_sfFsqEnd >= s_sfUpdEnd &&
+                        (unsigned int)perfNowMs >= s_sfFsqEnd)
+                    {
+                        s_perfPhase[0] += s_sfSwapEnd - (unsigned int)s_perfLastMs;
+                        s_perfPhase[1] += s_sfTop - s_sfSwapEnd;
+                        s_perfPhase[2] += s_sfUpdStart - s_sfTop;
+                        s_perfPhase[3] += s_sfUpdEnd - s_sfUpdStart;
+                        s_perfPhase[4] += s_sfFsqEnd - s_sfUpdEnd;
+                        s_perfPhase[5] += (unsigned int)perfNowMs - s_sfFsqEnd;
+                        s_perfPhaseFrames++;
+                    }
                     s_perfVbAccum += (u32)g_UncappedVBlanks;
                     /* A 30-second window, not 256 frames: at 240 fps the frame count
                      * logged every second and was the third-largest source in the log. */
@@ -3248,6 +3267,28 @@ void MainLoop(void) // 0x80032EE0
                                (unsigned long)s_perfWorstMs,
                                (double)s_perfVbAccum / s_perfFrames,
                                (unsigned long)s_perfFrames);
+                        if (s_perfPhaseFrames > 0)
+                        {
+                            extern double g_PsyX_GpuMsSum;
+                            extern int    g_PsyX_GpuMsCount;
+                            double n = (double)s_perfPhaseFrames;
+                            /* gpu: GPU time from one swap to the next (desktop GL only, -1
+                             * elsewhere). It includes any wait for the game's commands, so
+                             * it reads as GPU-bound only when well above update. */
+                            SH_DBG("[PERF]   per frame: present=%.1f tail=%.1f top=%.1f update=%.1f fsq=%.1f sync=%.1f gpu=%.1f ms | mapIdx %d",
+                                   s_perfPhase[0] / n, s_perfPhase[1] / n, s_perfPhase[2] / n, s_perfPhase[3] / n,
+                                   s_perfPhase[4] / n, s_perfPhase[5] / n,
+                                   g_PsyX_GpuMsCount > 0 ? g_PsyX_GpuMsSum / g_PsyX_GpuMsCount : -1.0,
+                                   g_SavegamePtr != NULL ? (int)g_SavegamePtr->mapIdx : -1);
+                        }
+                        {
+                            extern double g_PsyX_GpuMsSum;
+                            extern int    g_PsyX_GpuMsCount;
+                            g_PsyX_GpuMsSum = 0.0;
+                            g_PsyX_GpuMsCount = 0;
+                        }
+                        memset(s_perfPhase, 0, sizeof(s_perfPhase));
+                        s_perfPhaseFrames = 0;
                         s_perfFrames = 0; s_perfAccumMs = 0; s_perfWorstMs = 0; s_perfVbAccum = 0;
                     }
                 }

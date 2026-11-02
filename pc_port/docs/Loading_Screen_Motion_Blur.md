@@ -97,8 +97,8 @@ Console: `FBSCREEN`, `FBDAMP`, `FBEXACT`, `LOADPACE`, `LOADMIN`.
 ## Applying the PsyCross side
 
 The renderer half lives in PsyCross. Until it is merged there, the commit is
-kept as `pc_port/patches/PsyCross-feedback-blur.patch` (made against the
-`online` branch); from the PsyCross checkout:
+kept as `pc_port/patches/PsyCross-feedback-blur.patch`; from the PsyCross
+checkout:
 
 ```bash
 git am path/to/pc_port/patches/PsyCross-feedback-blur.patch
