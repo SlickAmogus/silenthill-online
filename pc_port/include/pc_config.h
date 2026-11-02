@@ -12,8 +12,10 @@
  *   3: menu_fps_unlock default 1 -> 0 (menus count input per frame).
  *   4: allow_loose_files default 0 -> 1, mobile only (no launcher to turn it on).
  *      Desktop configs are stamped to 4 with no value change.
- *   5: fps_cap default 30 -> 60, mobile only. Desktop keeps 30. */
-#define PC_CONFIG_VERSION 5
+ *   5: fps_cap default 30 -> 60, mobile only. Desktop keeps 30.
+ *   6: pad_reload / pad_quick_turn default to the shoulders where still unbound
+ *      (desktop's version 4; the phones had taken 4 and 5 already). */
+#define PC_CONFIG_VERSION 6
 
 /* Minimap size range, as a percentage of the built-in MM_SIZE. The top end is a
  * little larger than the stock panel; the bottom end is a bit over half of it. */
@@ -578,6 +580,8 @@ typedef struct {
                                * (online_ghost_model); 0 = silhouette (default, proven) */
     int  onlineEvents;        /* 1 = show the server's join/leave/death feed (online_events) */
     float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
+    int   onlineSyncConsumables; /* host: SHNET_SYNC_* (online_sync_consumables, 0 = start only) */
+    int   onlineKeepItems;       /* host: SHNET_KEEP_* (online_keep_items, 2 = halved) */
     int   onlineEnemyDamagePct; /* host: co-op monsters' damage, percent, steps of 25 (online_enemy_damage, 150) */
     int   onlineEnemyHealthPct; /* host: co-op monsters' health, percent, steps of 25 (online_enemy_health, 150) */
     int   onlineFriendlyFire; /* 1 = players can hit each other in co-op (online_friendly_fire). Both
@@ -682,6 +686,13 @@ typedef struct {
     /* 1 = no crosshair while a melee weapon, or nothing, is equipped, in every
      * camera; guns keep it. (config key: crosshair_hide_melee) */
     int crosshairHideMelee;
+
+    /* Reloading a gun. 0 = only the reload button reloads (a touchscreen,
+     * which has no reload button, still reloads after a dry fire); 1 = a dry
+     * fire on an empty clip reloads, with the animation, in every camera (the
+     * default); 2 = the original game: 1, and the clip also fills from the
+     * reserve the moment the gun is raised, silently. (config key: auto_reload) */
+    int autoReload;
 } s_PcConfig;
 
 extern s_PcConfig g_PcConfig;

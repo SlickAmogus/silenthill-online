@@ -1874,7 +1874,7 @@ public partial class Form1 : Form
                 SetText(lblUpdateStatus, "Up to date ({0}).", plan.RemoteVersion);
                 /* The update online players take, before Play: their
                  * Additional Characters follow it, as after Check for Updates. */
-                await UpdateCharacterModsAsync();
+                await UpdateEssentialModsAsync();
             }
             return true;
         }

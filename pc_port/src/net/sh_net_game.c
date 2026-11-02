@@ -208,10 +208,86 @@ static int ShNetG_BuildFlags(void)
 /* What a partner's pickup may add to OUR inventory: real items only (no
  * cutscene props, no ids the item tables do not cover), at most what one
  * pickup could carry. Returns the count to grant, 0 to refuse. */
+static int ShNetG_IsConsumable(int id)
+{
+    return (id >= InvItemId_HealthDrink && id <= InvItemId_Ampoule) ||
+           (id >= InvItemId_HandgunBullets && id <= InvItemId_ShotgunShells);
+}
+
+/* Health items and ammo, in the order SHNET_CTRL_RULES carries their counts. */
+static const unsigned char s_consumableIds[SHNET_CONSUMABLE_COUNT] = {
+    InvItemId_HealthDrink, InvItemId_FirstAidKit, InvItemId_Ampoule,
+    InvItemId_HandgunBullets, InvItemId_RifleShells, InvItemId_ShotgunShells
+};
+
+static int ShNetG_InvTotal(const s_Savegame* sg, int id)
+{
+    int i, n = 0;
+    for (i = 0; i < INV_ITEM_COUNT_MAX; i++)
+    {
+        if (sg->items[i].id_0 == id) n += sg->items[i].count_1;
+    }
+    return n;
+}
+
+/* One item's total in a save, set in place: the first stack takes it, the
+ * rest empty; none left empties them all. Then the game's own recount, which
+ * also derives the equipped weapon's ammo total. */
+static void ShNetG_InvSetTotal(s_Savegame* sg, int id, int total)
+{
+    int i, at = -1;
+    if (total > 255) total = 255;
+    for (i = 0; i < INV_ITEM_COUNT_MAX; i++)
+    {
+        if (sg->items[i].id_0 != id) continue;
+        if (at < 0 && total > 0)
+        {
+            at = i;
+            sg->items[i].count_1 = (u8)total;
+        }
+        else
+        {
+            sg->items[i].id_0    = (u8)InvItemId_Empty;
+            sg->items[i].count_1 = 0;
+        }
+    }
+    if (at < 0 && total > 0)
+    {
+        for (i = 0; i < INV_ITEM_COUNT_MAX; i++)
+        {
+            if (sg->items[i].id_0 == (u8)InvItemId_Empty || sg->items[i].id_0 == InvItemId_Unequipped)
+            {
+                sg->items[i].id_0    = (u8)id;
+                sg->items[i].count_1 = (u8)total;
+                break;
+            }
+        }
+    }
+    sg->inventorySlotCount = func_8004F190(sg);
+}
+
+/* Key items and the basics: no health items, and the New Game's 15 rounds so
+ * the handgun is not left empty. */
+static void ShNetG_InvBasics(s_Savegame* sg)
+{
+    int k;
+    for (k = 0; k < SHNET_CONSUMABLE_COUNT; k++)
+    {
+        ShNetG_InvSetTotal(sg, s_consumableIds[k], s_consumableIds[k] == InvItemId_HandgunBullets ? 15 : 0);
+    }
+}
+
+
 static int ShNetG_ShareableCount(int id, int cnt)
 {
     int i, have = 0, used = 0;
 
+    /* Health items and ammo are each player's own unless the host's Sync
+     * Consumables says Yes. */
+    if (ShNetG_IsConsumable(id) && ShNet_CoopSyncMode() != SHNET_SYNC_YES)
+    {
+        return 0;
+    }
     if (!((id >= InvItemId_HealthDrink && id <= InvItemId_Ampoule) ||
           (id >= InvItemId_LobbyKey && id <= InvItemId_ChannelingStone && id != 86) ||
           (id >= InvItemId_Chemical && id <= InvItemId_DiskOfOuroboros && id != 111) ||
@@ -750,11 +826,19 @@ static void ShNetG_CtrlTick(void)
     }
     if (s_permDirty || now - s_permSentMs >= 2000u)
     {
-        unsigned char r[3];
+        unsigned char r[5 + SHNET_CONSUMABLE_COUNT];
+        int           k;
         r[0] = SHNET_CTRL_RULES;
         r[1] = (unsigned char)(g_PcConfig.onlineEnemyDamagePct / 25);
         r[2] = (unsigned char)(g_PcConfig.onlineEnemyHealthPct / 25);
-        ShSession_SendGame(SHNET_MSG_S_CTRL, r, 3, 0, 1);
+        r[3] = (unsigned char)g_PcConfig.onlineSyncConsumables;
+        r[4] = (unsigned char)g_PcConfig.onlineKeepItems;
+        for (k = 0; k < SHNET_CONSUMABLE_COUNT; k++)
+        {
+            int n = (g_SavegamePtr != NULL) ? ShNetG_InvTotal(g_SavegamePtr, s_consumableIds[k]) : 0;
+            r[5 + k] = (unsigned char)(n > 255 ? 255 : n);
+        }
+        ShSession_SendGame(SHNET_MSG_S_CTRL, r, (int)sizeof(r), 0, 1);
     }
     if (s_permDirty || now - s_permSentMs >= 2000u)
     {
@@ -778,6 +862,100 @@ static void ShNetG_CtrlTick(void)
  * relay being best-effort, with a generation so a repeat is ignored. */
 static int          s_restartSeenGen = -1;
 static int          s_hostDamagePct; /* guest: the host's SHNET_CTRL_RULES damage, 0 before it is heard */
+static int          s_hostRulesHeard, s_hostSync, s_hostKeep; /* guest: the host's item rules, once heard */
+static unsigned char s_hostCons[SHNET_CONSUMABLE_COUNT];    /* guest: the host's consumable counts, for Sync = Yes respawns */
+
+/* The host's rules as a guest knows them: SHNET_CTRL_RULES once heard, else
+ * what came with the save it booted from (S_WORLD's flags), else the default. */
+static int ShNetG_HostRule(int which)
+{
+    int wf = ShSession_WorldFlags(), v;
+    if (s_hostRulesHeard)
+    {
+        return which == 0 ? s_hostSync : s_hostKeep;
+    }
+    v = which == 0 ? ((wf >> SHSESSION_WF_SYNC_SHIFT) & 3) : ((wf >> SHSESSION_WF_KEEP_SHIFT) & 7);
+    if (v == 0)
+    {
+        return which == 0 ? SHNET_SYNC_START : SHNET_KEEP_HALF;
+    }
+    return v - 1;
+}
+
+int ShNet_CoopSyncMode(void)
+{
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineSyncConsumables;
+    }
+    return ShNetG_HostRule(0);
+}
+
+int ShNet_CoopKeepMode(void)
+{
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineKeepItems;
+    }
+    return ShNetG_HostRule(1);
+}
+
+void ShNet_CoopFilterHostSave(void* save)
+{
+    s_Savegame* sg = (s_Savegame*)save;
+    if (sg == NULL || !ShSession_Active() || ShSession_IsHost()) return;
+    if (ShNet_CoopSyncMode() == SHNET_SYNC_NO)
+    {
+        ShNetG_InvBasics(sg);
+        SH_DBG("[COOP] the host's save, without their consumables (Sync Consumables: No)");
+    }
+}
+
+void ShNet_CoopDeathInventory(void)
+{
+    extern int g_PcCoopGame;
+    const int  host = ShSession_IsHost();
+    const int  keep = ShNet_CoopKeepMode();
+    int        k;
+
+    if (!g_PcCoopGame || !ShSession_Active() || g_SavegamePtr == NULL) return;
+    if (!host && ShNet_CoopSyncMode() == SHNET_SYNC_YES && s_hostRulesHeard)
+    {
+        /* The host's counts, as they stand. */
+        for (k = 0; k < SHNET_CONSUMABLE_COUNT; k++)
+        {
+            ShNetG_InvSetTotal(g_SavegamePtr, s_consumableIds[k], s_hostCons[k]);
+        }
+        SH_DBG("[COOP] respawn: consumables synced to the host's");
+    }
+    else if (keep == SHNET_KEEP_YES || (keep == SHNET_KEEP_HOST && host))
+    {
+        /* Everything stays. */
+    }
+    else if (keep == SHNET_KEEP_HALF)
+    {
+        for (k = 0; k < SHNET_CONSUMABLE_COUNT; k++)
+        {
+            int n = ShNetG_InvTotal(g_SavegamePtr, s_consumableIds[k]);
+            ShNetG_InvSetTotal(g_SavegamePtr, s_consumableIds[k], n / 2);
+        }
+        SH_DBG("[COOP] respawn: consumables halved");
+    }
+    else
+    {
+        ShNetG_InvBasics(g_SavegamePtr);
+        SH_DBG("[COOP] respawn: key items and the basics");
+    }
+    /* What the snapshot knows, so the change is not read as a pickup to share
+     * or a key item used. */
+    if (s_snapInit)
+    {
+        for (k = 0; k < SHNET_CONSUMABLE_COUNT; k++)
+        {
+            s_snap[s_consumableIds[k]] = (unsigned short)ShNetG_InvTotal(g_SavegamePtr, s_consumableIds[k]);
+        }
+    }
+}
 static int          s_restartGen;
 static int          s_restartSendsLeft;
 static unsigned int s_restartNextMs;
@@ -898,6 +1076,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_GATE:
             ShNetCut_GateIn(from, p, len);
             break;
+        case SHNET_CTRL_EXAMINE:
+            ShNetCut_ExamineIn(from, p, len);
+            break;
         case SHNET_CTRL_SUMMON:
             ShNetCut_SummonIn(from, p, len);
             break;
@@ -926,6 +1107,14 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_RULES:
             if (!fromHost || ShSession_IsHost() || len < 3 || p[1] == 0 || p[2] == 0) return;
             s_hostDamagePct = p[1] * 25;
+            if (len >= 5 + SHNET_CONSUMABLE_COUNT)
+            {
+                int k;
+                s_hostSync = p[3] > SHNET_SYNC_YES ? SHNET_SYNC_START : p[3];
+                s_hostKeep = p[4] > SHNET_KEEP_YES ? SHNET_KEEP_HALF : p[4];
+                for (k = 0; k < SHNET_CONSUMABLE_COUNT; k++) s_hostCons[k] = p[5 + k];
+                s_hostRulesHeard = 1;
+            }
             break;
         case SHNET_CTRL_GAMEOVER:
             if (!fromHost || ShSession_IsHost() || len < 3) return;
@@ -1468,7 +1657,9 @@ void ShNet_GameTick(void)
     ShNetG_CtrlTick();
 
     /* The host's word on the game, for S_WORLD. */
-    ShSession_RequestWorldFlags(g_PcConfig.onlineCoopLiving ? SHSESSION_WF_LIVING : 0);
+    ShSession_RequestWorldFlags((g_PcConfig.onlineCoopLiving ? SHSESSION_WF_LIVING : 0) |
+                                ((g_PcConfig.onlineSyncConsumables + 1) << SHSESSION_WF_SYNC_SHIFT) |
+                                ((g_PcConfig.onlineKeepItems + 1) << SHSESSION_WF_KEEP_SHIFT));
 
     /* A partner's skin needs its own skeleton proportions to draw right;
      * load them off the disc the moment a partner shows up wearing one. */

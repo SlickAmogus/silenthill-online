@@ -173,6 +173,17 @@ selection back.
   drink heals you, a bullet is yours. Keys and puzzle items are the
   exception: using one up uses up everyone's copy, and the door it opened is
   open for all.
+- **Items.** Picking something up is one player's doing at a time: a partner
+  who tries the same item while you are looking at it is told "X is already
+  looking at the item". A key item taken is everyone's, and so are the flags
+  it sets, as when one is used. Health items and ammo follow the host's two
+  settings on the Host a Game page. **Sync Consumables**: Start Only (the
+  host's at the start, each player's own after; the default), No (only key
+  items; a guest starts with the basics and the host's weapons), or Yes (the
+  host's at the start, on every pickup, and on every respawn). **Keep Items
+  On Death**: what a respawn keeps of health items and ammo: Host Only, No
+  (key items and the basics), Halved (the default) or Yes. Key items are
+  always kept.
 - **Difficulty.** With partners to lean on, monsters have 1.5 times their
   health and hit 1.5 times as hard. The host sets both before opening the
   room (Enemy Damage, Enemy Health), from 0.25x to 4x in steps of 0.25.
