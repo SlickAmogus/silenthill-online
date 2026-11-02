@@ -827,8 +827,10 @@ static void Nu_DrawEvents(int px)
         {
             continue;
         }
-        /* Top left, under the connection line when that is up. */
-        Nu_DrawText(s_events[i].text, s_vpH * 0.03f, y, px, 0.78f, 0.76f, 0.70f, a);
+        /* Top right: the room's own news (joins, pickups, doors, the host's
+         * actions). Settings hints belong to the co-op menu, top left. */
+        Nu_DrawTextRight(s_events[i].text, s_vpW - s_vpH * 0.03f, y, px,
+                         0.78f, 0.76f, 0.70f, a);
         y += (float)px * 1.3f;
     }
 }

@@ -177,7 +177,7 @@ selection back.
   who tries the same item while you are looking at it is told "X is already
   looking at the item". When they answer the prompt, everyone hears the
   confirm or cancel from where they stand and sees "X picked up the Key" (or
-  left it) in the top-left notes; a taken item is gone from the world for
+  left it) in the top-right notes; a taken item is gone from the world for
   everyone. A key item taken is everyone's, and so are the flags it sets, as
   when one is used. Health items and ammo follow the host's two
   settings on the Host a Game page. **Sync Consumables**: Start Only (the
