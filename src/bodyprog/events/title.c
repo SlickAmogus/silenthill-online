@@ -501,6 +501,10 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                         {
                             g_GameWork.autosave.playerHealth = Q12(100.0f);
                         }
+                        {
+                            extern void ShNet_CoopFilterHostSave(void* save);
+                            ShNet_CoopFilterHostSave(&g_GameWork.autosave);
+                        }
                         g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
                         g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
                     }

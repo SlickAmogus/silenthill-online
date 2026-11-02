@@ -308,6 +308,16 @@ void Pc_CoopScreen_Draw(void)
     cs_clean(Pc_CoopMenu_Title(), clean, sizeof(clean));
     Nm_TextDrawCentered(160, CS_HEADING_Y, NM_TEXT_TALL, StringColorId_White, clean);
 
+    /* A highlighted item rule explains itself in the top-left corner, beside
+     * the heading, scrolling when it is longer than the room there. */
+    if (Pc_CoopMenu_HintText()[0])
+    {
+        const int maxW = 160 - cs_w(clean) / 2 - 12;
+        char      hint[NM_LINE_MAX];
+        cs_clean(Pc_CoopMenu_HintText(), hint, sizeof(hint));
+        cs_text_box(4, CS_HEADING_Y, maxW, small, StringColorId_LightGrey, hint);
+    }
+
     /* The pointer: a row under it is the selected row (the model confirms on
      * click through Pc_MouseCursor_LeftHeld). */
     if (in.mouseOk && !editing)

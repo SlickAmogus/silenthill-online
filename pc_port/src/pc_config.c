@@ -79,6 +79,8 @@ s_PcConfig g_PcConfig = {
     .onlineEvents     = 1,
     .onlineUiScale    = 1.0f,
     .onlineFriendlyFire = 0,
+    .onlineSyncConsumables = 0,
+    .onlineKeepItems       = 2,
     .onlineEnemyDamagePct = 150,
     .onlineEnemyHealthPct = 150,
     .onlineGuestConsole = 0,
@@ -910,6 +912,16 @@ void PcConfig_Load(const char* path)
             if (v > 400) v = 400;
             if (key[13] == 'd') g_PcConfig.onlineEnemyDamagePct = v;
             else                g_PcConfig.onlineEnemyHealthPct = v;
+        }
+        else if (strcmp(key, "online_sync_consumables") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.onlineSyncConsumables = (v < 0) ? 0 : (v > 2 ? 2 : v);
+        }
+        else if (strcmp(key, "online_keep_items") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.onlineKeepItems = (v < 0) ? 0 : (v > 3 ? 3 : v);
         }
         else if (strcmp(key, "online_friendly_fire") == 0)
         {

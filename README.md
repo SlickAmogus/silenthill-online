@@ -49,7 +49,7 @@ Open **Multiplayer**, then **Join Game**, and use the same three routes from the
 
 ### How co-op plays
 
-- **Shared progress.** Everyone starts with a copy of the host's inventory, and anything one player picks up goes to everyone. Ammo and items are your own: each player has their own ammo count and uses their own items.
+- **Shared progress.** Everyone starts with a copy of the host's inventory, and any key item one player picks up goes to everyone, along with the progress it unlocks. Only one player can look at an item at a time. Health items and ammo follow two host settings: **Sync Consumables** (Start Only, No or Yes) and **Keep Items On Death** (Host Only, No, Halved or Yes).
 - **Story moments.** You can't run ahead into a major story event alone. The game either waits for the others or brings everyone along.
 - **Saving and loading.** Anyone can save. The host can also load a save from the multiplayer menu (`M` on a keyboard), and everyone starts again from it. That's the way out of a soft lock.
 - **Dying.** A player who dies respawns next to a partner who is alive and not in a fight. If everyone dies, everyone sees the game over, and the host chooses to continue, load a save or quit.

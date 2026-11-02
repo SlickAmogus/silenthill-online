@@ -40,6 +40,7 @@
 #include "bodyprog/text/text_draw.h" /* the guest's "Waiting for the host" */
 #include "pc_config.h"
 #include "pc_coop_menu.h"          /* g_PcCoopGame */
+#include "sh_net.h"   /* ShNet_CoopDeathInventory */
 #include "sh_net_proto.h"
 #include "sh_net_session.h"
 #include "sh_net_platform.h"
@@ -337,6 +338,7 @@ static int FindSpot(VECTOR3* pos, short* rot, char* how, int howCap)
     {
         extern void Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY);
         SH_DBG("[RESPAWN] no safe partner here; going to %s on map %d", far->name, far->mapIdx);
+        ShNet_CoopDeathInventory(); /* the warp boots our savegame as it stands */
         Pc_CoopMenu_RequestWarp(far->mapIdx, far->x, far->z, far->rotY);
         SetVisible(1);
         s_phase   = RS_ALIVE; /* the reboot takes it from here */
@@ -389,8 +391,9 @@ static void Respawn(void)
     func_8007E9C4(); /* state machine reset: IsDead off, damage cleared, prev position = here */
     Game_MapRoomIdxUpdate();
 
-    /* Stand up. */
+    /* Stand up, with what the host's Keep Items On Death leaves us. */
     p->health = Q12(100.0f);
+    ShNet_CoopDeathInventory();
     g_MapOverlayHdr.playerControlUnfreeze(true);
     Player_AnimFlagsSet(AnimFlag_Unlocked | AnimFlag_Visible);
 

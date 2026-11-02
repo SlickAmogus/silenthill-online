@@ -195,6 +195,10 @@ void ShSession_RequestInvite(void);
 /* Host: what S_WORLD says about the game besides the map (SHSESSION_WF_*).
  * Guest: what the host said. */
 #define SHSESSION_WF_LIVING 1  /* this co-op game is part of the living world */
+/* The host's item rules travel with the save a guest boots from, so the boot
+ * can apply them before any other message is heard: 0 = not said. */
+#define SHSESSION_WF_SYNC_SHIFT 1 /* 2 bits: sync consumables + 1 */
+#define SHSESSION_WF_KEEP_SHIFT 3 /* 3 bits: keep items on death + 1 */
 void ShSession_RequestWorldFlags(int flags);
 int  ShSession_WorldFlags(void);
 
