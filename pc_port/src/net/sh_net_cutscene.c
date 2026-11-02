@@ -70,6 +70,8 @@
 #include "bodyprog/math/math.h"
 #include "bodyprog/events/bodyprog_data_800A99B4.h" /* g_MapEventSysState, g_MapEventParam */
 #include "bodyprog/screen/cutscene_border.h"
+#include "bodyprog/sound/sound_system.h" /* the pickup prompt's confirm and cancel, for the room */
+#include "bodyprog/sound/sfx_id_enum.h"
 
 #include "sh_net.h"
 #include "sh_net_proto.h"
@@ -191,6 +193,11 @@ typedef struct { unsigned long long id; int map, row; unsigned int ms; } CutExam
 static CutExam      s_exam[SHSESSION_MAX_MEMBERS];
 static int          s_examMap = -1, s_examRow = -1; /* ours */
 static unsigned int s_examSentMs, s_examSince, s_examToldMs;
+
+/* The item a pickup prompt is showing (Gfx_PickupItemAnimate), and how many
+ * we had: when the script ends, more means Yes, the same means No, and the
+ * room hears the answer (SHNET_CTRL_PICKUP). */
+static int          s_pickItem = -1, s_pickHad;
 
 /* The alley death. */
 static int          s_dieReq;
@@ -659,6 +666,71 @@ static const char* Cut_ExaminedBy(int map, int row, unsigned int now)
     return NULL;
 }
 
+static int Cut_InvTotal(int id)
+{
+    int i, n = 0;
+    if (g_SavegamePtr == NULL) return 0;
+    for (i = 0; i < INV_ITEM_COUNT_MAX; i++)
+    {
+        if (g_SavegamePtr->items[i].id_0 == id) n += g_SavegamePtr->items[i].count_1;
+    }
+    return n;
+}
+
+void ShNetCut_PickupShown(int itemId)
+{
+    if (!Cut_Coop() || itemId <= 0 || itemId >= 255) return;
+    if (s_pickItem != itemId)
+    {
+        s_pickItem = itemId;
+        s_pickHad  = Cut_InvTotal(itemId);
+    }
+}
+
+static void Cut_PickupSettle(void)
+{
+    unsigned char b[3];
+    if (s_pickItem < 0) return;
+    b[0] = SHNET_CTRL_PICKUP;
+    b[1] = (unsigned char)s_pickItem;
+    b[2] = (unsigned char)(Cut_InvTotal(s_pickItem) > s_pickHad);
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 3, 0, 1);
+    SH_DBG("[CUTSCENE] pickup of item %d: %s; told the room", s_pickItem, b[2] ? "taken" : "left");
+    s_pickItem = -1;
+}
+
+void ShNetCut_PickupIn(unsigned long long from, const unsigned char* p, int len)
+{
+    extern const char* Pc_ItemDisplayName(u8 id);
+    extern void        func_8005DC1C(e_SfxId sfxId, const VECTOR3* pos, q23_8 vol, s32 soundType);
+    const ShSessionMember* m;
+    const char*            item;
+    char                   line[128];
+    int                    i, n, taken;
+
+    if (len < 3 || !Cut_Coop() || from == ShSession_SelfId()) return;
+    taken = p[2] != 0;
+    item  = Pc_ItemDisplayName(p[1]);
+    if (item == NULL || item[0] == '\0') item = "an item";
+    snprintf(line, sizeof(line), taken ? "%s picked up %s" : "%s left %s", Cut_NameOf(from), item);
+    ShNet_PostLocalEvent(line);
+    /* The prompt's own confirm or cancel, from where they stand. */
+    m = Cut_MemberById(from);
+    n = ShSession_MemberCount();
+    for (i = 0; m != NULL && i < n; i++)
+    {
+        ShSessionPoseNow pn;
+        if (ShSession_Member(i) == m && m->mapIdx == Cut_MyMap() && ShSession_MemberPoseNow(i, &pn))
+        {
+            VECTOR3 pos;
+            pos.vx = pn.x; pos.vy = pn.y; pos.vz = pn.z;
+            func_8005DC1C(taken ? Sfx_MenuConfirm : Sfx_MenuCancel, &pos, Q8(0.5f), 0);
+            return;
+        }
+    }
+    Sd_PlaySfx(taken ? Sfx_MenuConfirm : Sfx_MenuCancel, 0, Q8(0.25f));
+}
+
 static void Cut_ExamineEnd(void)
 {
     if (s_examRow >= 0)
@@ -666,10 +738,16 @@ static void Cut_ExamineEnd(void)
         Cut_ExamineTell(s_examMap, s_examRow, 0);
     }
     s_examMap = s_examRow = -1;
+    Cut_PickupSettle();
 }
 
 static void Cut_ExamineTick(unsigned int now)
 {
+    /* A prompt that ran outside a tracked examine still reports its answer. */
+    if (s_examRow < 0 && s_pickItem >= 0 && !Cut_HandlerRunning())
+    {
+        Cut_PickupSettle();
+    }
     if (s_examRow < 0) return;
     if (Cut_MyMap() != s_examMap || g_GameWork.gameState != GameState_InGame || Cut_SceneLive() ||
         (now - s_examSince > CUT_PRESS_GRACE_MS && !Cut_HandlerRunning()))
@@ -1301,6 +1379,7 @@ void ShNetCut_Tick(void)
         s_dieReq  = 0;
         s_playedMap = -1;
         s_examMap = s_examRow = -1;
+        s_pickItem = -1;
         memset(s_exam, 0, sizeof(s_exam));
         Cut_Unhold();
         Cut_GateEnd();
