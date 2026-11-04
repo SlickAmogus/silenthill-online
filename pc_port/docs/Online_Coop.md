@@ -40,8 +40,9 @@ the host, with the host's game: the same inventory, health and progress. It
 is one playthrough, the host's, and guests follow it.
 
 **Invite someone you meet.** In the living world, `M` opens the same menu
-over a single-player game, with **Invite <name>** for the nearest other
-player on your map. They get a note and **Accept** / **Decline** rows in
+over a single-player game, with **Invite: <name>**. It starts on the nearest
+other player on your map; left and right step through everyone else online
+(their area is shown beside the name), wherever they are. They get a note and **Accept** / **Decline** rows in
 their own `M` menu. On Accept a private room opens on the server, your game
 is saved on the spot (the save that a Continue boots, not a slot on your
 memory card), you continue from it where you stand as the host, and they
@@ -55,7 +56,10 @@ on the map, or a scene playing. An invite lasts 30 seconds (**Cancel Invite**
 withdraws it sooner); a player weighing one is busy to everyone else; and
 after a decline the asker waits two minutes before asking that player again.
 A host whose room has a free seat can invite the same way from inside a
-game. The server's room list pages, so a browser full of games scrolls:
+game: the player joins the game in progress and boots in beside the host.
+**F11** shows the game you are in: its room code, how many are playing, who
+hosts, whether the living world sees it, and each player's area and health;
+living-world players who are in your game are marked. The server's room list pages, so a browser full of games scrolls:
 arrow keys or the mouse wheel on PC, hold and drag on phones.
 
 **Saves.** Multiplayer uses your normal single-player saves; there are no
@@ -159,9 +163,16 @@ selection back.
   as on their own screen, with their weapon, 60 times a second. Footsteps,
   shots, reloads and swings play from where they stand. Partners show on the
   minimap and the paper map, on the right floor.
-- **Monsters.** The host runs them. Everyone sees the same monsters in the
-  same places doing the same things, hears them, can shoot and hit them, and
-  can be attacked by them. A kill is a kill for everyone. This covers every
+- **Monsters.** Each player's game runs the monsters around that player and
+  shares them with the room. Everyone sees the same monsters in the same
+  places doing the same things, hears them, can shoot and hit them, and can
+  be attacked by them. A kill is a kill for everyone. A monster is never
+  doubled: when two players arrive together, or a host walks back into a room
+  a guest stayed in, the copy that has been alive longest stays and the other
+  player sees it. When the player running a monster leaves (another room,
+  another map, out of the game), the partner standing with it takes it over
+  where it is, with the health it has left, instead of it vanishing. Bosses
+  stay the host's. This covers every
   monster from the map's spawn table (including Split Head, Floatstinger and
   Twinfeeler) and the scripted ones with a spawn slot. Grabs are real grabs:
   a Grey Child, dog, Romper or Hanged Scratcher that gets hold of a guest
@@ -273,18 +284,20 @@ is over. A grab in a map that has no reaction animations for that monster
 
 ## How it works
 
-Each player's game runs the full simulation for the player's own character.
-The host's game is the only one that runs monster AI: it streams map chunks
-and keeps collision around every partner, spawns monsters near them as it
-would near itself, and sends each monster's position, pose and health about
-30 times a second. A guest's game shows those as puppets in its own NPC
-slots, so lighting, shadows, the radio and bullet hits all work through the
-game's own code. A guest's hit on a puppet is sent to the host, which applies
-it to the real monster. When a monster goes for a guest, the host runs that
-monster's AI against a stand-in placed where the guest is, and sends the
-guest what landed. While a monster holds a guest, each pose the guest sends
-carries its state and the attack it is reacting to, so the host's monster
-sees exactly what a local victim would show it.
+Each player's game runs the full simulation for the player's own character,
+and the AI of the monsters it spawned or took over. It sends each of those
+monsters' position, pose, health and age about 30 times a second; the other
+players' games show them as puppets in their own NPC slots, so lighting,
+shadows, the radio and bullet hits all work through the game's own code. A
+spawn point a partner is sharing is not spawned again. Two copies of one
+monster settle on the older; a puppet whose owner stops sending it is taken
+over by the player nearest it. A hit on a puppet is sent to the player
+running it, which applies it to the real monster. When a monster goes for
+another player, its owner runs that monster's AI against a stand-in placed
+where that player is, and sends them what landed. While a monster holds a
+player, each pose they send carries its state and the attack it is reacting
+to, so the monster sees exactly what a local victim would show it. The host
+also streams map chunks and keeps collision around every partner.
 
 Messages travel over the community server relay or Steam's relay, so no
 player learns another's IP address (Join by IP and This PC hosting excepted,

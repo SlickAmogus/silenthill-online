@@ -184,9 +184,12 @@ their ping.
 Those are `key_online_players`, `key_online_memo`, `key_chat_game` and
 `key_chat_cycle` in `config.cfg`.
 
-**Chat channels.** **All** (the default) shows every channel together, each
-line coloured and prefixed `[Global]`, `[Level]` or `[Coop]`; a line typed on
-All is sent as Global. **Global** reaches everyone on the server; **Level**
+**Chat channels.** The channel you pick is where your line goes; every line
+from every channel is shown either way, coloured, and prefixed `[Global]`,
+`[Level]` or `[Coop]` when it is not on the channel you picked. **All** (the
+default) prefixes them all, and a line typed on All is sent as Global. While
+the box is open, Page Up, Page Down and the mouse wheel scroll back through
+the last 160 lines. **Global** reaches everyone on the server; **Level**
 everyone on your map; **Coop** the players in your co-op game, and only them:
 a Coop line travels inside the room, never through the server, so it works in
 a Steam or Join-by-IP game too and is nobody else's to read. The first time
