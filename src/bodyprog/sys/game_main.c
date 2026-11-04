@@ -661,10 +661,12 @@ static void Pc_TpsCamera_Apply(void)
         extern int g_PcQuickOptionsActive;
         extern int ShNet_LiveWorld(void);
         extern int Pc_CoopMenu_InGame(void);
+        extern int ShNetVoice_MenuOpen(void);
         /* The co-op menu leaves the world running, but the view is ours: it
-         * holds still while the menu has the mouse. */
+         * holds still while the menu has the mouse. The voice wheel too: the
+         * pointer is picking a line, not looking. */
         int frozen = ((g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
-                      !ShNet_LiveWorld()) || Pc_CoopMenu_InGame();
+                      !ShNet_LiveWorld()) || Pc_CoopMenu_InGame() || ShNetVoice_MenuOpen();
 
         SDL_GetRelativeMouseState(&mdx, &mdy);
         if (frozen) { mdx = 0; mdy = 0; }
