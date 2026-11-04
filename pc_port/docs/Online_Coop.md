@@ -140,7 +140,11 @@ no Steam identity of its own.
 
 **Lobby music.** The title screen is silent, so the multiplayer menu and a
 room being waited in play the piece heard over the results screen after
-the credits. It stops when the menu closes or the game starts.
+the credits. The **Music** row at the bottom of the Multiplayer menu picks
+any other track from the game: left and right (or a tap) step through them,
+the pick is kept in config (`online_menu_music`) and plays next time, and R
+with the row highlighted puts the results theme back. It stops when the menu
+closes or the game starts.
 
 **Mouse and keyboard in menus.** As soon as a key or a controller is used,
 the pointer hides and stops selecting the row under it until the mouse

@@ -530,6 +530,7 @@ typedef struct {
     float onlineUiScale;      /* co-op/world overlay text size multiplier (online_ui_scale, 1.0 = default) */
     int   onlineSyncConsumables; /* host: SHNET_SYNC_* (online_sync_consumables, 0 = start only) */
     int   onlineKeepItems;       /* host: SHNET_KEEP_* (online_keep_items, 2 = halved) */
+    int   onlineMenuBgm;         /* BGM track the multiplayer menu plays, 2..41 (online_menu_music, 5 = the results theme) */
     int   onlineEnemyDamagePct; /* host: co-op monsters' damage, percent, steps of 25 (online_enemy_damage, 150) */
     int   onlineEnemyHealthPct; /* host: co-op monsters' health, percent, steps of 25 (online_enemy_health, 150) */
     int   onlineFriendlyFire; /* 1 = players can hit each other in co-op (online_friendly_fire). Both
