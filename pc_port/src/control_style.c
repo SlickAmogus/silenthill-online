@@ -347,7 +347,10 @@ void Pc_ControlStyleUpdate(void)
      * not the 3D camera, regardless of the active camera mode). */
     {
         extern int Pc_MouseCursor_PuzzleActive(void);
-        wantCapture = ((g_DebugThirdPersonCam || g_DebugCamEnabled) && inGameplay && !Pc_MouseCursor_PuzzleActive());
+        extern int ShNetVoice_MenuOpen(void);
+        /* The voice wheel picks by pointer: the mouse is its while it is up. */
+        wantCapture = ((g_DebugThirdPersonCam || g_DebugCamEnabled) && inGameplay &&
+                       !Pc_MouseCursor_PuzzleActive() && !ShNetVoice_MenuOpen());
     }
 #if defined(SH_IOS) || defined(__ANDROID__)
     /* The glass is not a mouse. Touch look comes through pc_touch, and on

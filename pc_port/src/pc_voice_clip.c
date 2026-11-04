@@ -6,12 +6,13 @@
  * it cuts the cutscene line that is playing and tells the scene script the
  * line finished. Generated lines therefore get their own small set of voices.
  *
- * Two ways out, picked on first use:
+ * Three ways out, picked on first use:
  *   - OpenAL sources on PsyCross's context, when the legacy SPU made one;
- *   - otherwise our own SDL output device, mixed here. The software SPU never
- *     creates an OpenAL context (it renders through its own backend, and its
- *     only way in is the XA queue the cutscenes own), so without this every
- *     clip was silent there. Shared-mode output mixes the two streams.
+ *   - the software SPU's aux mix (PsyX_AudioSetAuxMix): our clips added to
+ *     each block it renders, on its audio thread. The browser and the phones
+ *     allow one output device, so a device of our own fails there and every
+ *     clip was silent;
+ *   - otherwise our own SDL output device, mixed here.
  */
 
 #include <stdlib.h>
@@ -48,6 +49,7 @@ enum { AL_NO_ERROR = 0, AL_TRUE = 1, AL_BUFFER, AL_GAIN, AL_PITCH, AL_POSITION, 
 #endif
 
 #include "pc_voice_clip.h"
+#include "PsyX/PsyX_audio.h"
 #include "sh_log.h"
 
 #define VC_SOURCES 4
@@ -59,24 +61,87 @@ typedef struct
     int          busy;
     unsigned int serial; /* bumped on every start, so old handles go stale */
 
-    /* SDL mixer */
+    /* SDL mixer and the aux mix */
     short*       pcm;
     unsigned int frames;
     int          stereo;
-    double       pos, step;
+    int          rate;      /* the clip's, for the aux mix's step */
+    float        pitch;
+    double       pos, step; /* step: SDL mixer, at s_devRate */
     float        gain;
 } VcSlot;
 
-enum { VC_NONE = 0, VC_OPENAL, VC_SDL, VC_FAILED };
+enum { VC_NONE = 0, VC_OPENAL, VC_SDL, VC_PSYX, VC_FAILED };
 
 static VcSlot            s_slots[VC_SOURCES];
 static int               s_backend;
 static unsigned int      s_serial;
 static SDL_AudioDeviceID s_dev;
 static int               s_devRate;
+static SDL_mutex*        s_auxLock; /* the aux mix runs on the SPU's audio thread */
 
 /* The game's voice volume slider, so these sit at the level of the XA lines. */
 extern float g_PcXaVolume;
+
+/* The slot table is shared with whichever thread mixes it. */
+static void Vc_Lock(void)
+{
+    if (s_backend == VC_SDL) SDL_LockAudioDevice(s_dev);
+    else if (s_backend == VC_PSYX && s_auxLock) SDL_LockMutex(s_auxLock);
+}
+
+static void Vc_Unlock(void)
+{
+    if (s_backend == VC_SDL) SDL_UnlockAudioDevice(s_dev);
+    else if (s_backend == VC_PSYX && s_auxLock) SDL_UnlockMutex(s_auxLock);
+}
+
+/* Added to a block the software SPU just rendered: int16 stereo at rate. */
+static void Vc_AuxMix(void* user, short* out, unsigned int frames, unsigned int rate)
+{
+    int i;
+    unsigned int f;
+    (void)user;
+    if (!s_auxLock || rate == 0) return;
+    SDL_LockMutex(s_auxLock);
+    for (i = 0; i < VC_SOURCES; i++)
+    {
+        VcSlot* s = &s_slots[i];
+        float   g;
+        double  step;
+        if (!s->busy || !s->pcm)
+            continue;
+        g    = s->gain * g_PcXaVolume;
+        step = (double)s->rate * s->pitch / (double)rate;
+        for (f = 0; f < frames; f++)
+        {
+            unsigned int k = (unsigned int)s->pos;
+            float        t = (float)(s->pos - (double)k);
+            float        l, r;
+            int          vl, vr;
+            if (k + 1 >= s->frames)
+            {
+                s->busy = 0;
+                break;
+            }
+            if (s->stereo)
+            {
+                l = s->pcm[k * 2]     + (s->pcm[k * 2 + 2] - s->pcm[k * 2])     * t;
+                r = s->pcm[k * 2 + 1] + (s->pcm[k * 2 + 3] - s->pcm[k * 2 + 1]) * t;
+            }
+            else
+            {
+                l = r = s->pcm[k] + (s->pcm[k + 1] - s->pcm[k]) * t;
+            }
+            vl = (int)out[f * 2]     + (int)(l * g);
+            vr = (int)out[f * 2 + 1] + (int)(r * g);
+            out[f * 2]     = (short)(vl > 32767 ? 32767 : (vl < -32768 ? -32768 : vl));
+            out[f * 2 + 1] = (short)(vr > 32767 ? 32767 : (vr < -32768 ? -32768 : vr));
+            s->pos += step;
+        }
+    }
+    SDL_UnlockMutex(s_auxLock);
+}
 
 /* OpenAL's error flag is one sticky value for the whole context and the SPU
  * code leaves its own errors in it, so our calls are judged by what they
@@ -185,6 +250,13 @@ static int Vc_Ready(void)
         }
         SH_DBG("[VOICECLIP] OpenAL context present but sources failed; trying SDL output");
     }
+    if (!s_auxLock) s_auxLock = SDL_CreateMutex();
+    if (s_auxLock && PsyX_AudioSetAuxMix(Vc_AuxMix, NULL))
+    {
+        s_backend = VC_PSYX;
+        SH_DBG("[VOICECLIP] mixed into the software SPU's output");
+        return 1;
+    }
     s_backend = Vc_OpenSdl() ? VC_SDL : VC_FAILED;
     return s_backend == VC_SDL;
 }
@@ -236,14 +308,14 @@ unsigned int Pc_VoiceClip_PlayEx(const short* pcm, unsigned int samples, int rat
     if (pitch < 0.5f) pitch = 0.5f;
     if (pitch > 2.0f) pitch = 2.0f;
 
-    if (s_backend == VC_SDL)
+    if (s_backend == VC_SDL || s_backend == VC_PSYX)
     {
         short* copy = (short*)malloc(samples * sizeof(short));
         short* old  = NULL;
         if (!copy)
             return 0;
         memcpy(copy, pcm, samples * sizeof(short));
-        SDL_LockAudioDevice(s_dev);
+        Vc_Lock();
         for (i = 0; i < VC_SOURCES; i++)
             if (!s_slots[i].busy) { pick = i; break; }
         if (pick < 0)
@@ -252,11 +324,13 @@ unsigned int Pc_VoiceClip_PlayEx(const short* pcm, unsigned int samples, int rat
         s_slots[pick].pcm    = copy;
         s_slots[pick].frames = stereo ? samples / 2 : samples;
         s_slots[pick].stereo = stereo;
+        s_slots[pick].rate   = rate;
+        s_slots[pick].pitch  = pitch;
         s_slots[pick].pos    = 0.0;
-        s_slots[pick].step   = (double)rate * pitch / (double)s_devRate;
+        s_slots[pick].step   = (double)rate * pitch / (double)(s_devRate > 0 ? s_devRate : 48000);
         s_slots[pick].gain   = gain;
         s_slots[pick].busy   = 1;
-        SDL_UnlockAudioDevice(s_dev);
+        Vc_Unlock();
         free(old);
         return Vc_Handle(pick);
     }
@@ -308,7 +382,7 @@ void Pc_VoiceClip_SetGain(unsigned int handle, float gain)
         return;
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 1.0f) gain = 1.0f;
-    if (s_backend == VC_SDL)
+    if (s_backend == VC_SDL || s_backend == VC_PSYX)
         s->gain = gain; /* one aligned float: the mixer may read either value */
     else
         alSourcef(s->source, AL_GAIN, gain * g_PcXaVolume);
@@ -320,7 +394,7 @@ int Pc_VoiceClip_Playing(unsigned int handle)
     ALint   st = AL_STOPPED;
     if (!s)
         return 0;
-    if (s_backend == VC_SDL)
+    if (s_backend == VC_SDL || s_backend == VC_PSYX)
         return s->busy;
     alGetSourcei(s->source, AL_SOURCE_STATE, &st);
     return st == AL_PLAYING || st == AL_PAUSED;
@@ -331,7 +405,7 @@ float Pc_VoiceClip_Progress(unsigned int handle)
     VcSlot* s = Vc_FromHandle(handle);
     if (!s)
         return 1.0f;
-    if (s_backend == VC_SDL)
+    if (s_backend == VC_SDL || s_backend == VC_PSYX)
         return s->frames ? (float)(s->pos / (double)s->frames) : 1.0f;
     {
         ALint off = 0, size = 0, bits = 16, ch = 1;
@@ -349,11 +423,11 @@ void Pc_VoiceClip_Stop(unsigned int handle)
     VcSlot* s = Vc_FromHandle(handle);
     if (!s)
         return;
-    if (s_backend == VC_SDL)
+    if (s_backend == VC_SDL || s_backend == VC_PSYX)
     {
-        SDL_LockAudioDevice(s_dev);
+        Vc_Lock();
         s->busy = 0;
-        SDL_UnlockAudioDevice(s_dev);
+        Vc_Unlock();
         return;
     }
     alSourceStop(s->source);
