@@ -100,6 +100,7 @@ s_PcConfig g_PcConfig = {
     .onlineFriendlyFire = 0,
     .onlineSyncConsumables = 0,
     .onlineKeepItems       = 2,
+    .onlineMenuBgm         = 5,
     .onlineEnemyDamagePct = 150,
     .onlineEnemyHealthPct = 150,
     .onlineGuestConsole = 0,
@@ -968,6 +969,11 @@ void PcConfig_Load(const char* path)
         {
             int v = atoi(value);
             g_PcConfig.onlineKeepItems = (v < 0) ? 0 : (v > 3 ? 3 : v);
+        }
+        else if (strcmp(key, "online_menu_music") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.onlineMenuBgm = (v < 2 || v > 41) ? 5 : v;
         }
         else if (strcmp(key, "online_friendly_fire") == 0)
         {
