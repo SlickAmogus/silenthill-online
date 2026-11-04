@@ -2315,6 +2315,22 @@ void Map_WorldObjectsUpdate(void) // 0x800EC080
             break;
     }
 
+#ifdef SH_PC_PORT
+    /* Co-op: the lighting below is applied on entering a cell, so 159 (the
+     * dark after the Door of Eclipse) or 134 arriving from a partner later
+     * left the street as it was until the next special cell. Either one
+     * changing re-applies it where we stand. */
+    {
+        extern int g_PcCoopGame;
+        static int s_lit = -1;
+        const int  lit = Savegame_EventFlagGet(EventFlag_134) || !Savegame_EventFlagGet(EventFlag_159);
+        if (g_PcCoopGame && s_lit >= 0 && lit != s_lit)
+        {
+            D_800F56E4 = 0;
+        }
+        s_lit = lit;
+    }
+#endif
     cellZ2 = g_SysWork.playerWork.player.position.vz / CHUNK_CELL_SIZE;
     cellX2 = g_SysWork.playerWork.player.position.vx / CHUNK_CELL_SIZE;
 

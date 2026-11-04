@@ -15,6 +15,7 @@
 #include "sh_net_chat_filter.h"
 #include "sh_net_session.h"
 #include "pc_config.h"
+#include "pc_mouse_cursor.h" /* the wheel reads back through the history */
 #include "sh_log.h"
 
 /* How long a line stays fully lit, then how long it fades, once nothing new
@@ -22,7 +23,7 @@
  * is held at full. */
 #define CHAT_SHOW_MS 9000
 #define CHAT_FADE_MS 1500
-#define CHAT_LOG_MAX 48       /* lines kept across every channel; the last few of the chosen one are shown */
+#define CHAT_LOG_MAX 160      /* lines kept across every channel: the history scrolled while composing */
 #define CHAT_SHOWN   6        /* lines drawn when idle */
 #define CHAT_SHOWN_OPEN 10    /* lines drawn while composing */
 #define CHAT_SHOWN_TOUCH 5    /* lines drawn while typing on a touchscreen */
@@ -43,7 +44,8 @@ static int      s_logCount;
 static int  s_open;
 static int  s_hintShown;                 /* "Press Tab..." once per run */
 static int  s_scope = SHNET_CHAT_ALL;    /* the channel shown, and sent to (All sends to Global) */
-static int  s_vis[CHAT_LOG_MAX];         /* indices into s_log on the chosen channel, this frame */
+static int  s_vis[CHAT_LOG_MAX];         /* indices into s_log shown this frame */
+static int  s_scroll;                    /* composing: lines scrolled back from the newest */
 static int  s_visCount;
 static char s_input[CHAT_INPUT_MAX];
 static int  s_inputLen;
@@ -86,6 +88,11 @@ static void Chat_Push(int scope, const char* line)
     SDL_strlcpy(l->text, line, sizeof(l->text));
     l->scope = scope;
     l->ms    = SDL_GetTicks();
+    if (scope != CHAT_SYSTEM)
+    {
+        SH_DBG("[CHAT] %s %s", ShNetChat_ScopeName(scope), line);
+    }
+    if (s_open && s_scroll > 0) s_scroll++; /* reading back: the view stays where it is */
 }
 
 void ShNetChat_AddSystem(const char* text)
@@ -220,6 +227,7 @@ void ShNetChat_Open(void)
         return;
     }
     s_open      = 1;
+    s_scroll    = 0;
     s_inputLen  = 0;
     s_input[0]  = '\0';
     s_haveKeys  = 0; /* so the key that opened us is not read as a keystroke */
@@ -552,6 +560,16 @@ void ShNetChat_FeedKeys(const unsigned char* ks)
         goto done; /* consume it: don't also type 'u' */
     }
 
+    /* Page Up / Page Down and the wheel read back through the history. */
+    {
+        int step = Pc_MouseCursor_WheelNotches() * 3;
+        if (ks[SDL_SCANCODE_PAGEUP] && !s_prevKeys[SDL_SCANCODE_PAGEUP])     step += CHAT_SHOWN_OPEN - 1;
+        if (ks[SDL_SCANCODE_PAGEDOWN] && !s_prevKeys[SDL_SCANCODE_PAGEDOWN]) step -= CHAT_SHOWN_OPEN - 1;
+        s_scroll += step;
+        if (s_scroll > s_logCount - 1) s_scroll = s_logCount - 1;
+        if (s_scroll < 0) s_scroll = 0;
+    }
+
     if (ks[SDL_SCANCODE_BACKSPACE] && !s_prevKeys[SDL_SCANCODE_BACKSPACE] && s_inputLen > 0)
     {
         s_input[--s_inputLen] = '\0';
@@ -599,21 +617,26 @@ static float Chat_Alpha(const ChatLine* l)
     return 1.0f - (float)(age - CHAT_SHOW_MS) / (float)CHAT_FADE_MS;
 }
 
+/* The channel chosen is where a line is SENT. Every line is shown, whatever
+ * its channel (tagged with it when it is not the one chosen): a Level line
+ * that arrived while Coop was chosen was never drawn, nor in the history,
+ * and showed only for the moment Tab passed through All. */
 static int Chat_OnChannel(const ChatLine* l)
 {
-    const int sc = Chat_Scope();
-    return l->scope == CHAT_SYSTEM || sc == SHNET_CHAT_ALL || l->scope == sc;
+    (void)l;
+    return 1;
 }
 
-/* The lines of the chosen channel to draw this frame: the newest few, minus
- * the ones that have faded out while the box is closed. */
+/* The lines to draw this frame: the newest few (scrolled back while
+ * composing), minus the ones that have faded out while the box is closed. */
 static int Chat_Collect(void)
 {
     /* Typing on a touchscreen, the box sits above the keyboard: fewer lines. */
     const int shown = s_open ? (s_touchText ? CHAT_SHOWN_TOUCH : CHAT_SHOWN_OPEN) : CHAT_SHOWN;
+    const int last  = s_logCount - (s_open ? s_scroll : 0);
     int       i;
     s_visCount = 0;
-    for (i = 0; i < s_logCount; i++)
+    for (i = 0; i < last; i++)
     {
         if (!Chat_OnChannel(&s_log[i])) continue;
         if (!s_open && Chat_Alpha(&s_log[i]) <= 0.0f) continue;
