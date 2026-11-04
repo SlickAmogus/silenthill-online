@@ -638,7 +638,9 @@
 	 * launcher, before the game has loaded and mounted it, so they read and
 	 * write those records directly, in the shape IDBFS stores them; the next
 	 * Play loads them like any other file. */
-	var IDB_NAME = "/game", IDB_VERSION = 21, IDB_STORE = "FILE_DATA";
+	/* "sh-online" + the mount point: the name the online game gives its
+	 * database (see the IDBFS.getDB wrap below), not the single-player /play one. */
+	var IDB_NAME = "sh-online/game", IDB_VERSION = 21, IDB_STORE = "FILE_DATA";
 	var SAVE_DIR = "/game/gamedata/save";
 	var MODE_FILE = 33206, MODE_DIR = 16895;   /* S_IFREG|0666, S_IFDIR|0777: what FS.writeFile/mkdir give */
 	var saveUi = { exp: $("saveExport"), imp: $("saveImport"), status: $("saveStatus") };
