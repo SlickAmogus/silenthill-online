@@ -108,7 +108,8 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 
 #define COOP_DEFAULT_SERVER "server.sh1pc.com"
 
-enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_BACK };
+enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_MUSIC, COOP_ROOT_BACK };
+#define COOP_ROOT_MAX 6
 
 /* The title-menu rows this platform shows, in order. */
 static int Coop_RootRows(int* rows)
@@ -118,13 +119,14 @@ static int Coop_RootRows(int* rows)
     rows[n++] = COOP_ROOT_JOIN;
     if (!COOP_MOBILE && !COOP_WEB) rows[n++] = COOP_ROOT_SPLIT;
     if (COOP_HAS_SETTINGS) rows[n++] = COOP_ROOT_SETTINGS;
+    rows[n++] = COOP_ROOT_MUSIC;
     rows[n++] = COOP_ROOT_BACK;
     return n;
 }
 
 static int Coop_RootRow(int i)
 {
-    int rows[5];
+    int rows[COOP_ROOT_MAX];
     int n = Coop_RootRows(rows);
     return (i >= 0 && i < n) ? rows[i] : COOP_ROOT_BACK;
 }
@@ -958,7 +960,7 @@ int Pc_CoopMenu_RowCount(void)
 {
     switch (s_page)
     {
-    case COOP_PAGE_ROOT:       { int r[5]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Back */
+    case COOP_PAGE_ROOT:       { int r[COOP_ROOT_MAX]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Music, Back */
     case COOP_PAGE_SETTINGS:   return 7; /* Living World IP, Living World, Name, Join Messages, Chat, Restart Connection, Back */
     case COOP_PAGE_HOST_SETUP: return 12; /* Host on, Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Sync Consumables, Keep Items, Load, Open, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
@@ -1041,6 +1043,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_ROOT_JOIN:     snprintf(out, cap, "Join Game"); break;
         case COOP_ROOT_SPLIT:    snprintf(out, cap, "Split Screen"); break;
         case COOP_ROOT_SETTINGS: snprintf(out, cap, "Multiplayer Settings"); break;
+        case COOP_ROOT_MUSIC:    Pc_CoopMusic_RowText(out, cap); break;
         default:                 snprintf(out, cap, "Back"); break;
         }
         break;
@@ -1450,6 +1453,7 @@ static void Coop_Confirm(void)
         case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); break;
         case COOP_ROOT_SPLIT:    Coop_EnterSplit(); break;
         case COOP_ROOT_SETTINGS: s_page = COOP_PAGE_SETTINGS; s_sel = 0; s_msg[0] = '\0'; break;
+        case COOP_ROOT_MUSIC:    Pc_CoopMusic_Step(1); break; /* a tap or Enter: the next track */
         default:                 Pc_CoopMenu_Close(); break;
         }
         break;
@@ -1822,6 +1826,9 @@ static int Coop_Adjust(int dir)
 {
     switch (s_page)
     {
+    case COOP_PAGE_ROOT:
+        if (Coop_RootRow(s_sel) == COOP_ROOT_MUSIC) { Pc_CoopMusic_Step(dir); return 1; }
+        return 0;
     case COOP_PAGE_HOST_SETUP:
         switch (s_sel)
         {
@@ -1904,6 +1911,21 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int
         s_sel  = 0;
     }
     rows = Pc_CoopMenu_RowCount();
+
+    /* R on the Music row puts the results theme back. Read from the keyboard
+     * here: the title hands this menu pad bits only, and R is bound to none. */
+    {
+        static int   s_rHeld;
+        const Uint8* ks = SDL_GetKeyboardState(NULL);
+        int          r  = ks != NULL && ks[SDL_SCANCODE_R];
+        if (r && !s_rHeld && s_page == COOP_PAGE_ROOT && Coop_RootRow(s_sel) == COOP_ROOT_MUSIC &&
+            !Pc_CoopMusic_IsDefault())
+        {
+            Pc_CoopMusic_Reset();
+            Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
+        }
+        s_rHeld = r;
+    }
 
     /* A click confirms the row the renderer said was under the pointer when
      * it went down, on the release: a finger that drags the list instead
