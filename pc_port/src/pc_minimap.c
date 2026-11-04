@@ -594,9 +594,11 @@ void Pc_MinimapUpdate(void)
 
 
     /* Co-op turns the minimap on by default: it is how partners find each
-     * other. The config value still wins when it is set. */
+     * other. A value the player chose wins, Off included: 0 alone cannot
+     * tell Off from never set, so the config module says which it is. */
     extern int g_PcCoopGame;
-    const int  minimapMode = g_PcConfig.minimap ? g_PcConfig.minimap : (g_PcCoopGame ? 1 : 0);
+    const int  minimapMode = g_PcConfig.minimap ? g_PcConfig.minimap
+                           : ((g_PcCoopGame && !PcConfig_MinimapChosen()) ? 1 : 0);
     if (!minimapMode) return;
     if (g_GameWork.gameState != GameState_InGame ||
         g_SysWork.sysState   != SysState_Gameplay) return;

@@ -1991,6 +1991,12 @@ void PcConfig_SaveKeyValues(const char* const* keys, const char* const* values, 
 
     if (keys == NULL || values == NULL || count <= 0)
         return;
+    /* A saved minimap value is a choice, the same as one read from the file:
+     * co-op stops defaulting the minimap on from here (PcConfig_MinimapChosen). */
+    for (k = 0; k < count; k++)
+    {
+        if (keys[k] != NULL && strcmp(keys[k], "minimap") == 0) s_minimapSeen = 1;
+    }
     if (g_PcConfigReadOnly)
         return;
     if (count > (int)sizeof(found))
@@ -2111,6 +2117,11 @@ void PcConfig_SaveBindLines(const char* const* lines, int count)
     }
     fclose(f);
     PcConfig_FreeLines(buf, n);
+}
+
+int PcConfig_MinimapChosen(void)
+{
+    return s_minimapSeen;
 }
 
 void PcConfig_SaveKeyValue(const char* cfgKey, const char* cfgValue)
