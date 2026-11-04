@@ -45,5 +45,6 @@ int  Pc_NetNpc_PartnerSpawnOk(s32 x, s32 z, int cond);
 
 /* Any member: we took a pickup (its event flag), so nobody else can. */
 void Pc_NetNpc_PickupTaken(int eventFlagIdx);
+void Pc_NetNpc_MergePendingFlags(void* savegame); /* a warp's savegame takes the partners' flags still waiting */
 
 #endif /* SH_NET_NPC_H */

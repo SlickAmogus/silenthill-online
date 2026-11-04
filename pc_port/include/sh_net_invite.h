@@ -43,7 +43,11 @@ int  ShNetInvite_Incoming(char* name, int cap);
 /* The player we invited is in their save screen before joining. */
 int  ShNetInvite_OutgoingSaving(void);
 
-void ShNetInvite_Send(void);    /* to the nearest player */
+void ShNetInvite_Send(void);
+/* The Invite row's player: anyone online not in our game, the nearest on our
+ * map first; left and right move it. 0 when there is no one. */
+unsigned int ShNetInvite_Target(char* name, int cap, int* outMap, int* outCooldownSec);
+void         ShNetInvite_Cycle(int dir);    /* to the nearest player */
 void ShNetInvite_Cancel(void);
 void ShNetInvite_Accept(void);
 /* Accept, but open the save screen first; the accept goes out when it closes.

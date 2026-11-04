@@ -850,7 +850,7 @@ static void Nu_DrawPlayerList(int px)
     const int   sess  = ShSession_MemberCount();
     const float h     = pad * 2.0f + (float)big * 1.5f + (float)px * 1.4f +
                         rowH * (float)(shown + 2) +
-                        (sess > 0 ? rowH * (float)(sess + 2) : 0.0f);
+                        (sess > 0 ? rowH * (float)(sess + 3) : 0.0f);
     const float x     = (s_vpW - w) * 0.5f;
     const float y     = s_vpH * 0.12f;
     float       ty;
@@ -912,8 +912,18 @@ static void Nu_DrawPlayerList(int px)
             continue;
         }
         Nu_DrawText(p->name, x + pad, ty, px, r, g, b, 1.0f);
-        Nu_DrawText(p->mapIdx >= 0 && p->mapIdx < 64 ? Pc_MapAreaName(p->mapIdx) : "-",
-                    x + w * 0.38f, ty, px, 0.56f, 0.56f, 0.54f, 1.0f);
+        {
+            /* Ours: the member of our game this living-world player is. */
+            int k, inOurs = 0;
+            for (k = 0; k < sess; k++)
+            {
+                const ShSessionMember* m = ShSession_Member(k);
+                if (m && (unsigned int)m->steamId == p->playerId) inOurs = 1;
+            }
+            snprintf(buf, sizeof(buf), "%s%s", p->mapIdx >= 0 && p->mapIdx < 64 ? Pc_MapAreaName(p->mapIdx) : "-",
+                     inOurs ? "   (in your game)" : "");
+            Nu_DrawText(buf, x + w * 0.38f, ty, px, 0.56f, 0.56f, 0.54f, 1.0f);
+        }
         snprintf(buf, sizeof(buf), "%d ms", p->pingMs);
         Nu_DrawTextRight(buf, x + w - pad, ty, px, 0.45f, 0.45f, 0.43f, 1.0f);
         ty += rowH;
@@ -949,6 +959,27 @@ static void Nu_DrawPlayerList(int px)
         Nu_DrawText(sline, x + pad, ty, px, 0.62f, 0.66f, 0.58f, 1.0f);
         ty += rowH;
 
+        /* The game in progress: its room, how full, whose it is, and whether
+         * the living world sees it. */
+        {
+            extern int ShNet_CoopLivingWorld(void);
+            const char* host = "";
+            char        code[24];
+            for (k = 0; k < n; k++)
+            {
+                const ShSessionMember* m = ShSession_Member(k);
+                if (m && m->steamId == ShSession_HostId()) host = m->name;
+            }
+            if (ShSession_LobbyId() != 0 && ShSession_LobbyId() < 100000ull)
+                snprintf(code, sizeof(code), "Room %llu   ", ShSession_LobbyId());
+            else
+                code[0] = '\0';
+            snprintf(sline, sizeof(sline), "%s%d player%s   Host: %s   Living World: %s", code, n, n == 1 ? "" : "s",
+                     host[0] ? host : "-", ShNet_CoopLivingWorld() ? "shown" : "private");
+            Nu_DrawText(sline, x + pad, ty, px, 0.55f, 0.58f, 0.52f, 1.0f);
+            ty += rowH;
+        }
+
         for (k = 0; k < n; k++)
         {
             const ShSessionMember* m = ShSession_Member(k);
@@ -962,8 +993,14 @@ static void Nu_DrawPlayerList(int px)
                         m->linked ? 0.62f : 0.43f, 1.0f);
             if (m->mapIdx >= 0 && m->mapIdx < 64)
             {
-                Nu_DrawText(Pc_MapAreaName(m->mapIdx), x + w * 0.38f, ty, px,
-                            0.52f, 0.52f, 0.50f, 1.0f);
+                char where[96];
+                if (m->healthPct1 > 0)
+                    snprintf(where, sizeof(where), "%s   %d%%%s", Pc_MapAreaName(m->mapIdx), m->healthPct1 - 1,
+                             m->steamId == ShSession_HostId() ? "   host" : "");
+                else
+                    snprintf(where, sizeof(where), "%s%s", Pc_MapAreaName(m->mapIdx),
+                             m->steamId == ShSession_HostId() ? "   host" : "");
+                Nu_DrawText(where, x + w * 0.38f, ty, px, 0.52f, 0.52f, 0.50f, 1.0f);
             }
             if (m->pingMs >= 0)
             {
@@ -1501,12 +1538,13 @@ static void Nu_ChatColor(int scope, float* r, float* g, float* b)
     }
 }
 
-/* The line as drawn: on All every line says where it came from. */
+/* The line as drawn: one from another channel than the chosen one (and on
+ * All, every one) says where it came from. */
 static const char* Nu_ChatLine(int i, char* buf, int cap)
 {
     const char* t  = ShNetChat_LineText(i);
     const int   sc = ShNetChat_LineScope(i);
-    if (ShNetChat_Scope() == SHNET_CHAT_ALL && sc >= 0)
+    if (sc >= 0 && (ShNetChat_Scope() == SHNET_CHAT_ALL || sc != ShNetChat_Scope()))
     {
         snprintf(buf, (size_t)cap, "[%s] %s", ShNetChat_ScopeName(sc), t);
         return buf;

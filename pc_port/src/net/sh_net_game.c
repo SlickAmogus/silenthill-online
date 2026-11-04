@@ -862,6 +862,7 @@ static void ShNetG_CtrlTick(void)
  * relay being best-effort, with a generation so a repeat is ignored. */
 static int          s_restartSeenGen = -1;
 static int          s_hostDamagePct; /* guest: the host's SHNET_CTRL_RULES damage, 0 before it is heard */
+static int          s_hostHealthPct; /* guest: the host's SHNET_CTRL_RULES health, 0 before it is heard */
 static int          s_hostRulesHeard, s_hostSync, s_hostKeep; /* guest: the host's item rules, once heard */
 static unsigned char s_hostCons[SHNET_CONSUMABLE_COUNT];    /* guest: the host's consumable counts, for Sync = Yes respawns */
 
@@ -1110,6 +1111,7 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_RULES:
             if (!fromHost || ShSession_IsHost() || len < 3 || p[1] == 0 || p[2] == 0) return;
             s_hostDamagePct = p[1] * 25;
+            s_hostHealthPct = p[2] * 25;
             if (len >= 5 + SHNET_CONSUMABLE_COUNT)
             {
                 int k;
@@ -1222,9 +1224,9 @@ int ShNet_CoopGuestConsole(void)
     return 0;
 }
 
-/* Monsters' damage in this co-op game: the host's setting. A guest uses what
- * the host last sent (SHNET_CTRL_RULES), the default until it is heard. Health
- * needs no such thing: the host runs the monsters. */
+/* Monsters' damage and health in this co-op game: the host's settings. A
+ * guest uses what the host last sent (SHNET_CTRL_RULES), the default until it
+ * is heard; health matters to a guest too, which runs the monsters around it. */
 int ShNet_CoopEnemyDamagePct(void)
 {
     if (!ShSession_Active() || ShSession_IsHost())
@@ -1232,6 +1234,15 @@ int ShNet_CoopEnemyDamagePct(void)
         return g_PcConfig.onlineEnemyDamagePct;
     }
     return s_hostDamagePct ? s_hostDamagePct : 150;
+}
+
+int ShNet_CoopEnemyHealthPct(void)
+{
+    if (!ShSession_Active() || ShSession_IsHost())
+    {
+        return g_PcConfig.onlineEnemyHealthPct;
+    }
+    return s_hostHealthPct ? s_hostHealthPct : 150;
 }
 
 int ShNet_CoopFriendlyFire(void)

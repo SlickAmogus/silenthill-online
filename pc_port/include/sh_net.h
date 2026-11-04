@@ -232,6 +232,7 @@ void ShNet_PostLocalEvent(const char* line);
 /* The host's item rules in this co-op game (SHNET_SYNC_* / SHNET_KEEP_*): the
  * host's settings, or for a guest what the host said. */
 int  ShNet_CoopSyncMode(void);
+int  ShNet_CoopEnemyHealthPct(void); /* the host's Enemy Health, as this machine knows it */
 int  ShNet_CoopKeepMode(void);
 /* A guest adopting the host's save (an s_Savegame): the rules applied to its
  * inventory before it boots. */

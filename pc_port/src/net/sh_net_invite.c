@@ -167,6 +167,78 @@ unsigned int ShNetInvite_Nearest(char* name, int cap, int* outCooldownSec)
     }
 }
 
+/* Who the Invite row asks: anyone online who is not in our game, picked with
+ * left and right; the nearest player on our map until one is picked. Only
+ * the nearest on the map could be asked before, so a living-world player
+ * anywhere else could not be invited at all. */
+static unsigned int s_pickId;
+
+static int Inv_Candidate(unsigned int id)
+{
+    return id != 0 && id != ShNet_WorldSelfId() && id != ShNet_SelfId() && !Inv_IsMember(id);
+}
+
+/* Candidates in order: the nearest on our map, then the roster. */
+static int Inv_Candidates(unsigned int* ids, char (*names)[SHNET_NAME_MAX], int* maps, int cap)
+{
+    int          n = 0, i, k, cnt;
+    char         nm[SHNET_NAME_MAX];
+    unsigned int g = ShNetInvite_Nearest(nm, (int)sizeof(nm), NULL);
+    if (g != 0 && Inv_Candidate(g) && n < cap)
+    {
+        ids[n] = g;
+        snprintf(names[n], SHNET_NAME_MAX, "%s", nm);
+        maps[n] = (g_SavegamePtr != NULL) ? (int)g_SavegamePtr->mapIdx : -1;
+        n++;
+    }
+    cnt = ShNet_PeerCount();
+    for (i = 0; i < cnt && n < cap; i++)
+    {
+        const ShNetPeer* p = ShNet_Peer(i);
+        if (!p || !Inv_Candidate(p->playerId)) continue;
+        for (k = 0; k < n && ids[k] != p->playerId; k++) {}
+        if (k < n) continue;
+        ids[n] = p->playerId;
+        snprintf(names[n], SHNET_NAME_MAX, "%s", p->name[0] ? p->name : "a player");
+        maps[n] = p->mapIdx;
+        n++;
+    }
+    return n;
+}
+
+unsigned int ShNetInvite_Target(char* name, int cap, int* outMap, int* outCooldownSec)
+{
+    unsigned int ids[32];
+    char         names[32][SHNET_NAME_MAX];
+    int          maps[32], n, i = 0;
+
+    if (name && cap > 0) name[0] = '\0';
+    if (outMap) *outMap = -1;
+    if (outCooldownSec) *outCooldownSec = 0;
+    if (!Inv_InGame()) return 0;
+    n = Inv_Candidates(ids, names, maps, 32);
+    if (n == 0) return 0;
+    while (i < n && ids[i] != s_pickId) i++;
+    if (i == n) i = 0; /* nothing picked, or they left: the first one */
+    if (name && cap > 0) snprintf(name, (size_t)cap, "%s", names[i]);
+    if (outMap) *outMap = maps[i];
+    if (outCooldownSec) *outCooldownSec = Inv_CooldownSec(ids[i], SDL_GetTicks());
+    return ids[i];
+}
+
+void ShNetInvite_Cycle(int dir)
+{
+    unsigned int ids[32];
+    char         names[32][SHNET_NAME_MAX];
+    int          maps[32], n, i = 0;
+    n = Inv_Candidates(ids, names, maps, 32);
+    if (n == 0) return;
+    while (i < n && ids[i] != s_pickId) i++;
+    if (i == n) i = 0;
+    i = (i + n + dir) % n;
+    s_pickId = ids[i];
+}
+
 int ShNetInvite_Outgoing(char* name, int cap)
 {
     const unsigned int now = SDL_GetTicks();
@@ -216,7 +288,7 @@ void ShNetInvite_Send(void)
         ShNet_PostLocalEvent("Can't invite during a boss fight");
         return;
     }
-    id = ShNetInvite_Nearest(name, (int)sizeof(name), &cool);
+    id = ShNetInvite_Target(name, (int)sizeof(name), NULL, &cool);
     if (id == 0) return;
     if (cool > 0)
     {
@@ -320,6 +392,8 @@ static void Inv_Handle(unsigned int from, int action, int code, const char* name
         }
         if (ShSession_Active() || s_inFrom || s_outPhase || s_joinPhase || s_acceptFrom || s_saveFrom || !Inv_CanSaveHere())
         {
+            SH_DBG("[INVITE] %s invited us; busy (%s)", name[0] ? name : "a player",
+                   ShSession_Active() ? "in a co-op game" : !Inv_CanSaveHere() ? "not in plain gameplay" : "another invite open");
             ShNet_SendInvite(from, SHNET_INV_BUSY, 0);
             break;
         }
@@ -405,7 +479,8 @@ static void Inv_Handle(unsigned int from, int action, int code, const char* name
     case SHNET_INV_BUSY:
         if (s_outPhase && s_outTo == from)
         {
-            Inv_Toast("%s is busy right now", s_outName);
+            SH_DBG("[INVITE] %s is busy", s_outName);
+            Inv_Toast("%s is busy right now (in a game, a menu or a scene)", s_outName);
             Inv_ClearOut();
         }
         break;
