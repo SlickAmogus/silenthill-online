@@ -744,6 +744,10 @@ extern int g_PcConfigReadOnly;
 
 void PcConfig_SaveKeyValue(const char* key, const char* value);
 
+/* 1 once `minimap` has been read from config.cfg or saved to it: the player
+ * has chosen, and Off means off even in a co-op game (pc_minimap.c). */
+int PcConfig_MinimapChosen(void);
+
 /* Set the FMV/voice (XA) master volume [0,1]: clamps, updates g_PcConfig +
  * the live XA source gain, and persists `xa_volume`. Used by the options menu
  * and the `xavolume` console command. */
