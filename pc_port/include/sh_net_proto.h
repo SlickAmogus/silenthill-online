@@ -82,7 +82,13 @@ typedef char shn_static_assert_widths[
  * can join a PC: the executable's hash differed per platform, and on Android
  * was the system's own app_process. Bump it whenever the co-op wire format or
  * the shared game logic changes in a way the previous build cannot follow. */
-#define SHNET_COOP_BUILD   "coop-2026-11-02"
+#define SHNET_COOP_BUILD   "coop-2026-11-04"
+
+/* SHNET_MSG_S_NPC kinds. Not host-only: every player shares the monsters it
+ * runs (sh_net_npc.c), so these ride the one type the room server relays
+ * from anyone. */
+#define SHNET_NPC_SNAP 1
+#define SHNET_NPC_ATK  2
 #define SHNET_SERVER_MAX   32
 #define SHNET_MOTD_MAX     128
 #define SHNET_REJECT_MAX   96
@@ -147,6 +153,7 @@ enum
     SHNET_MSG_S_NPC_ATK  = 0x5B, /* P2P  host -> member: your monster hit you */
     SHNET_MSG_S_WORLD_FL = 0x5C, /* P2P  host -> all: event flags + enemy states (the world's progress) */
     SHNET_MSG_S_FLAG_SET = 0x5D, /* P2P  member -> all: I took this pickup (event flag index) */
+    SHNET_MSG_S_NPC      = 0x5F, /* P2P  any player -> all: first byte SHNET_NPC_*; the monsters it runs, or one of them hit you */
     SHNET_MSG_S_CTRL     = 0x5E, /* P2P  small game-control notes, first byte = SHNET_CTRL_* kind
                                   *      (pause, pause request, permissions, voice line, cutscene) */
 

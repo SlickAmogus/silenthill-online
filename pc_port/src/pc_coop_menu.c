@@ -587,6 +587,7 @@ void Pc_CoopMenu_Open(void)
 
 void Pc_CoopMenu_OpenInGame(void)
 {
+    ShNet_RequestRoster(); /* the Invite row can ask anyone online */
     s_open   = 1;
     s_inGame = 1;
     s_page   = COOP_PAGE_INGAME;
@@ -648,6 +649,10 @@ void Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY)
 {
     if (!g_PcCoopGame || !ShSession_Active() || g_SavegamePtr == NULL) return;
     g_GameWork.autosave                 = *g_SavegamePtr;
+    {
+        extern void Pc_NetNpc_MergePendingFlags(void* savegame);
+        Pc_NetNpc_MergePendingFlags(&g_GameWork.autosave);
+    }
     g_GameWork.autosave.mapIdx          = mapIdx;
     g_GameWork.autosave.playerPositionX = x;
     g_GameWork.autosave.playerPositionZ = z;
@@ -903,7 +908,7 @@ static int Coop_InGameRows(int* rows)
     {
         rows[n++] = COOP_IG_INVITE_CANCEL;
     }
-    else if (ShNetInvite_CanInvite() && ShNetInvite_Nearest(NULL, 0, NULL))
+    else if (ShNetInvite_CanInvite() && ShNetInvite_Target(NULL, 0, NULL, NULL))
     {
         rows[n++] = COOP_IG_INVITE;
     }
@@ -1156,11 +1161,14 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_IG_INVITE:
         {
             char who[SHNET_NAME_MAX];
-            int  cool = 0;
-            ShNetInvite_Nearest(who, (int)sizeof(who), &cool);
-            if (ShNetInvite_Blocked()) snprintf(out, cap, "Invite %s  (not during a boss fight)", who);
-            else if (cool > 0)         snprintf(out, cap, "Invite %s  (declined, %d s)", who, cool);
-            else                       snprintf(out, cap, "Invite %s", who);
+            char where[64];
+            int  cool = 0, map = -1;
+            ShNetInvite_Target(who, (int)sizeof(who), &map, &cool);
+            if (map >= 0 && map < 64) snprintf(where, sizeof(where), ", %s", Pc_MapAreaName(map));
+            else                      where[0] = '\0';
+            if (ShNetInvite_Blocked()) snprintf(out, cap, "Invite: %s%s  (not during a boss fight)", who, where);
+            else if (cool > 0)         snprintf(out, cap, "Invite: %s%s  (declined, %d s)", who, where, cool);
+            else                       snprintf(out, cap, "Invite: %s%s", who, where);
             break;
         }
         case COOP_IG_INVITE_CANCEL:
@@ -1828,6 +1836,9 @@ static int Coop_Adjust(int dir)
     {
     case COOP_PAGE_ROOT:
         if (Coop_RootRow(s_sel) == COOP_ROOT_MUSIC) { Pc_CoopMusic_Step(dir); return 1; }
+        return 0;
+    case COOP_PAGE_INGAME:
+        if (Coop_InGameRow(s_sel) == COOP_IG_INVITE) { ShNetInvite_Cycle(dir); return 1; }
         return 0;
     case COOP_PAGE_HOST_SETUP:
         switch (s_sel)

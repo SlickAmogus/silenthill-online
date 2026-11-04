@@ -20,12 +20,25 @@
  * map scripts write their slots directly. A boss is shown on a guest only
  * once that guest's own intro is done (the intro script drives slot 0).
  *
- * The host owns the whole map: it streams chunks and keeps collision around
- * every partner (bodyprog_80040B74.c), spawns inside a partner's ring as it
- * would its own (npc_main.c) and keeps a monster as long as any player is
- * near it, so a guest never spawns a table monster while the host is on the
- * map. Kills and the world's progress travel as the host's ovlEnemyStates
- * and event flags.
+ * Every player runs the monsters around it. A monster belongs to whoever
+ * spawned it (or took it over), and that player shares it with the room
+ * (SHNET_MSG_S_NPC); the others show it as a puppet. So a host who walks into
+ * another room leaves the hallway's monsters running for the partner still
+ * in it, instead of taking them along when its own room load wipes them.
+ *  - A row (spawn-table entry) is one monster: nobody spawns a row a partner
+ *    is sharing (Pc_NetNpc_GuestSkipRow).
+ *  - Two copies of one row (both arrived at once, or a host walking back in
+ *    spawns before the partner's copy is heard) settle on the one alive the
+ *    longest; the other becomes a puppet of it. Each entry carries its age.
+ *  - A puppet whose owner stopped sharing it (a room load, another map, gone
+ *    from the session) while it is alive and not killed is taken over by the
+ *    partner nearest it, at its position and health (Npc_Adopt).
+ *  - A boss is the host's, as before: its map script and intro are the
+ *    host's to drive.
+ * Kills travel in every owner's snapshot (ovlEnemyStates is only ever
+ * cleared), and the host's event flags and states as before. The host still
+ * streams chunks and keeps collision around every partner
+ * (bodyprog_80040B74.c) and keeps a monster alive while any player is near.
  */
 
 #include "game.h"
@@ -51,13 +64,15 @@ void func_8005DD44(e_SfxId sfxId, VECTOR3* pos, q23_8 vol, s8 pitch);
 
 #define NPC_ROWS        32          /* field_228C / ovlEnemyStates are 32-bit masks */
 #define NPC_SNAP_MS     33          /* ~30 Hz */
-#define NPC_ENTRY       67          /* exactly what Npc_PutEntry writes */
-#define NPC_PER_DGRAM   16
+#define NPC_ENTRY       71          /* exactly what Npc_PutEntry writes */
+#define NPC_PER_DGRAM   14          /* inside one relayed datagram with the kind byte and the sounds */
 #define NPC_SNAP_HDR    13
 #define NPC_SFX_MAX     8
 #define NPC_SFX_ENTRY   7
 #define NPC_SFX_RESEND  150
-#define NPC_GONE_MS     700         /* a row missing from snapshots this long is gone */
+#define NPC_GONE_MS     900         /* a row missing from snapshots this long is gone (or ours to take over) */
+#define NPC_REMOTE_MS   1500        /* a row a partner shared this recently is theirs: we do not spawn it */
+#define NPC_TIE_MS      250         /* two copies this close in age: the lower player id keeps it */
 
 extern int g_PcCoopGame;
 
@@ -78,6 +93,31 @@ static int Npc_Role(void)
 int Pc_NetNpc_Role(void)
 {
     return Npc_Role();
+}
+
+static int Npc_Coop(void)
+{
+    return Npc_Role() != PC_NETNPC_NONE;
+}
+
+static int Npc_IsBoss(int charaId)
+{
+    return charaId == Chara_SplitHead || charaId == Chara_Floatstinger || charaId == Chara_Twinfeeler ||
+           charaId == Chara_AirScreamer;
+}
+
+static int Npc_Adopt(int row);
+
+/* A room member's name, for the log. */
+static const char* Cut_NameOfId(unsigned long long id)
+{
+    int i, n = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && m->steamId == id && m->name[0]) return m->name;
+    }
+    return "a partner";
 }
 
 static int Npc_Replicable(const s_SubCharacter* npc)
@@ -172,10 +212,14 @@ static int Npc_BossIntroDone(int charaId)
     }
 }
 
+/* Each player now spawns the monsters around itself (the file header), so
+ * a partner's ring no longer spawns on the host. Kept for the call site. */
 int Pc_NetNpc_PartnerSpawnOk(s32 x, s32 z, int cond)
 {
     s32 px[SHSESSION_MAX_MEMBERS], pz[SHSESSION_MAX_MEMBERS];
-    int i, n = Npc_Partners(px, pz, NULL, NULL, SHSESSION_MAX_MEMBERS);
+    int i, n;
+    if (1) return 0;
+    n = Npc_Partners(px, pz, NULL, NULL, SHSESSION_MAX_MEMBERS);
     const long long ring = Pc_LongViewActive() ? Q12(30.0f) : Q12(22.0f);
     /* Out of the partner's sight: past the fog's edge, or past the ring's
      * near side when the fog is thinned. */
@@ -203,6 +247,8 @@ static u8  s_tracked[NPC_COUNT_MAX];   /* spawned by the table loop on the host 
 static u8  s_trackChara[NPC_COUNT_MAX];
 static u8  s_scaled[NPC_COUNT_MAX]; /* co-op health bonus given */
 static u8  s_gen[NPC_COUNT_MAX];
+static unsigned int s_claimMs[NPC_COUNT_MAX];  /* when this copy came to be (inherited on a takeover) */
+static q19_12       s_restoreHp[NPC_COUNT_MAX]; /* taken over: its health, once its init has run */
 static struct { s32 k0, k1, a; } s_pose[NPC_COUNT_MAX];
 static unsigned long long s_target[NPC_COUNT_MAX];   /* 0 = the host itself */
 static struct { unsigned long long peer; u16 seq; int ok; } s_hitSeen[SHSESSION_MAX_MEMBERS];
@@ -218,6 +264,8 @@ void Pc_NetNpc_OnSpawn(int slot)
     s_scaled[slot]     = 0;
     s_gen[slot]++;
     s_pose[slot].k0 = s_pose[slot].k1 = s_pose[slot].a = 0;
+    s_claimMs[slot]   = ShNetPlat_Millis();
+    s_restoreHp[slot] = 0;
 }
 
 /* ---- Host: monsters go after guests too ----
@@ -312,6 +360,13 @@ static void Npc_PickTarget(int slot)
         {
             continue;
         }
+        /* Not a partner in a room of the map we have not loaded: a wall
+         * away is a world away. */
+        {
+            s_CollisionSurface surf;
+            Collision_SurfaceGet(&surf, pn.x, pn.z);
+            if (surf.groundHeight == Q12(8.0f)) continue;
+        }
         dx = (long long)pn.x - npc->position.vx;
         dz = (long long)pn.z - npc->position.vz;
         d  = dx * dx + dz * dz;
@@ -331,7 +386,7 @@ static void Npc_PickTarget(int slot)
 static int Npc_SwapIn(int slot)
 {
     int i, n;
-    if (Npc_Role() != PC_NETNPC_HOST)
+    if (!Npc_Coop())
     {
         s_target[slot] = 0;
         return 0;
@@ -450,6 +505,7 @@ static void Npc_SwapOut(void)
         shn_u8 b[24];
         int    o = 0, r;
         int    atk = (px->attackReceived >= 40 && px->attackReceived < 70) ? px->attackReceived : 43;
+        ShnPutU8(b, &o, SHNET_NPC_ATK);
         ShnPutU8(b, &o, (shn_u8)g_SysWork.npcs[s_swapSlot].field_40);
         ShnPutU8(b, &o, (shn_u8)atk);
         ShnPutU16(b, &o, ++s_atkSeq);
@@ -459,7 +515,7 @@ static void Npc_SwapOut(void)
         ShnPutS32(b, &o, px->damage.position.vz);
         for (r = 0; r < 2; r++)
         {
-            ShSession_SendGame(SHNET_MSG_S_NPC_ATK, b, o, s_swapTo, 1);
+            ShSession_SendGame(SHNET_MSG_S_NPC, b, o, s_swapTo, 1);
         }
         if (s_swapGuest != NULL && Npc_IsGrabAtk(atk) && px->attackReceived != s_swapAtkIn)
         {
@@ -529,7 +585,7 @@ void Pc_NetNpc_Sfx(const void* pos, int sfxId, int vol, int pitched)
     ptrdiff_t off  = (const u8*)pos - base;
     int       slot;
 
-    if (off < 0 || off % (ptrdiff_t)sizeof(s_SubCharacter) != 0 || Npc_Role() != PC_NETNPC_HOST)
+    if (off < 0 || off % (ptrdiff_t)sizeof(s_SubCharacter) != 0 || !Npc_Coop())
     {
         return;
     }
@@ -579,6 +635,7 @@ static void Npc_PutEntry(shn_u8* b, int* o, int slot)
     ShnPutU8(b, o, n->collision.field_E0);
     ShnPutU16(b, o, n->deathTimer);
     ShnPutU8(b, o, (shn_u8)slot); /* a boss's map script reads its slot (npcs[0]) */
+    ShnPutU32(b, o, ShNetPlat_Millis() - s_claimMs[slot]); /* age: the oldest copy of a row wins */
     if (*o - start != NPC_ENTRY)
     {
         static int s_said;
@@ -586,7 +643,7 @@ static void Npc_PutEntry(shn_u8* b, int* o, int slot)
     }
 }
 
-static void Npc_HostSend(void)
+static void Npc_OwnerSend(void)
 {
     static unsigned int s_lastMs;
     static shn_u16      s_seq;
@@ -616,13 +673,18 @@ static void Npc_HostSend(void)
         slots[n++] = k;
     }
 
-    /* Always at least one datagram: an empty snapshot is how guests learn
-     * that the last monster is gone, and it carries the kill bits. */
+    /* Nothing of ours, nothing to say: a partner's puppet of a row that is
+     * gone from here is released (or taken over) when the snapshots stop. */
+    if (n == 0)
+    {
+        return;
+    }
     do
     {
         shn_u8 b[SHNET_MAX_PAYLOAD - SHNET_HDR_SIZE];
         int    o = 0, cnt = n - sent, i, ns = 0;
         if (cnt > NPC_PER_DGRAM) cnt = NPC_PER_DGRAM;
+        ShnPutU8(b, &o, SHNET_NPC_SNAP);
         ShnPutU32(b, &o, now);
         ShnPutU8(b, &o, (shn_u8)g_SavegamePtr->mapIdx);
         ShnPutU8(b, &o, (shn_u8)cnt);
@@ -649,7 +711,7 @@ static void Npc_HostSend(void)
             ShnPutU8(b, &o, s_hsfx[e].kind);
             ShnPutU8(b, &o, (shn_u8)((now - s_hsfx[e].ms) / 4u));
         }
-        if (!ShSession_SendGame(SHNET_MSG_S_NPC_SNAP, b, o, 0, 0))
+        if (!ShSession_SendGame(SHNET_MSG_S_NPC, b, o, 0, 0))
         {
             static int s_dropSaid;
             if (!s_dropSaid) { s_dropSaid = 1; SH_WARN("[NETNPC] snapshot queue full; dropping"); }
@@ -662,7 +724,7 @@ static void Npc_HostSend(void)
             {
                 s_logged++;
                 s_lastN = n;
-                SH_DBG("[NETNPC] host: sharing %d monster(s) on map %d", n, (int)g_SavegamePtr->mapIdx);
+                SH_DBG("[NETNPC] sharing %d monster(s) of ours on map %d", n, (int)g_SavegamePtr->mapIdx);
             }
         }
         sent += cnt;
@@ -758,15 +820,35 @@ typedef struct
     NpcSample    prev, cur;
     unsigned int prevMs, curMs;
     unsigned int seenMs;
+    unsigned long long owner;
+    unsigned int age, ageAtMs; /* the owner's copy's age, and when we heard it */
 } Puppet;
+
+/* Rows a partner is sharing on our map: theirs, so we do not spawn them. */
+static struct { unsigned long long owner; unsigned int ms; int map; } s_remote[NPC_ROWS];
+
+/* Per sender: its sound and attack sequence numbers. */
+static struct { unsigned long long id; u8 sfx; int sfxOk; u16 atk; int atkOk; } s_peerSeq[SHSESSION_MAX_MEMBERS];
+
+static int Npc_PeerSeq(unsigned long long id)
+{
+    int i, free = -1;
+    for (i = 0; i < SHSESSION_MAX_MEMBERS; i++)
+    {
+        if (s_peerSeq[i].id == id) return i;
+        if (s_peerSeq[i].id == 0 && free < 0) free = i;
+    }
+    if (free < 0) free = 0;
+    memset(&s_peerSeq[free], 0, sizeof(s_peerSeq[free]));
+    s_peerSeq[free].id = id;
+    return free;
+}
 
 static Puppet s_pup[NPC_ROWS];
 static u8     s_pupGated[NPC_ROWS]; /* the host's boss we are not showing yet */
 static s8     s_slotRow[NPC_COUNT_MAX];
 static int    s_pupInit;
 static u16    s_hitSeq;
-static u8     s_lastSfxSeq;
-static int    s_sfxSeqOk;
 
 static void Npc_PupInit(void)
 {
@@ -787,9 +869,6 @@ int Pc_NetNpc_IsPuppet(int slot)
            g_SysWork.npcs[slot].field_40 == row && HAS_FLAG(&g_SysWork.npcFlags, slot);
 }
 
-static u16 s_atkSeqIn;
-static int s_atkSeqInOk;
-
 /* A room or map load wipes g_SysWork.npcs (GameBoot_NpcClear); every slot
  * reference here goes with it, and so do the message counters, since the
  * other side may have restarted too. */
@@ -808,9 +887,12 @@ void Pc_NetNpc_Reset(void)
     s_swapGuest = NULL;
     memset(s_hitSeen, 0, sizeof(s_hitSeen));
     s_pupInit    = 1;
-    s_sfxSeqOk   = 0;
-    s_atkSeqInOk = 0;
     s_hsfxN      = 0;
+    memset(s_peerSeq, 0, sizeof(s_peerSeq));
+    memset(s_claimMs, 0, sizeof(s_claimMs));
+    memset(s_restoreHp, 0, sizeof(s_restoreHp));
+    /* s_remote stays: a partner's monsters are still theirs after OUR room
+     * load, and the map check retires it when we leave the map. */
 }
 
 void Pc_NetNpc_OnFree(int slot)
@@ -922,10 +1004,24 @@ static int Npc_PupAlloc(int row, int charaId, int palette, int gen, int wantSlot
     return 1;
 }
 
-static void Npc_GuestSnapshot(const shn_u8* p, int len)
+/* Which copy of a row stays: theirs (1) or ours (0). The host keeps a boss;
+ * otherwise the copy alive longest, and on a tie the lower player id. */
+static int Npc_TheirsWins(unsigned long long from, unsigned int theirAge, int mySlot, int charaId)
+{
+    const unsigned int myAge = ShNetPlat_Millis() - s_claimMs[mySlot];
+    if (Npc_IsBoss(charaId))
+    {
+        return from == ShSession_HostId();
+    }
+    if (theirAge > myAge + NPC_TIE_MS) return 1;
+    if (myAge > theirAge + NPC_TIE_MS) return 0;
+    return from < ShSession_SelfId();
+}
+
+static void Npc_SnapIn(unsigned long long from, const shn_u8* p, int len)
 {
     const unsigned int now = ShNetPlat_Millis();
-    int                o = 0, i, cnt, ns, map;
+    int                o = 0, i, cnt, ns, map, ps;
     shn_u32            states;
 
     if (len < NPC_SNAP_HDR) return;
@@ -939,7 +1035,7 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
     if (cnt > NPC_PER_DGRAM || ns > NPC_SFX_MAX) return;
     if (NPC_SNAP_HDR + cnt * NPC_ENTRY + ns * NPC_SFX_ENTRY > len) return;
 
-    /* The host killed it: it stays dead here too. */
+    /* They killed it: it stays dead here too. */
     g_SavegamePtr->ovlEnemyStates[map] &= (s32)states;
 
     for (i = 0; i < cnt; i++)
@@ -948,7 +1044,8 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
         int       gen     = ShnGetU8(p, &o);
         int       charaId = ShnGetU8(p, &o);
         int       palette = ShnGetU8(p, &o);
-        int       hostSlot;
+        int       hostSlot, k, mine = -1;
+        unsigned int age;
         NpcSample s;
         Puppet*   pp;
 
@@ -971,6 +1068,7 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
         s.colE0      = ShnGetU8(p, &o);
         s.deathTimer = ShnGetU16(p, &o);
         hostSlot     = ShnGetU8(p, &o);
+        age          = ShnGetU32(p, &o);
 
         /* What a peer can make us do with this: pick a resident model, place
          * it inside the world, pose it from that model's own keyframes. */
@@ -998,15 +1096,54 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
         if (s.a > 4096) s.a = 4096;
         if (s.colState < 0 || s.colState > 15) s.colState = 0;
 
+        s_remote[row].owner = from;
+        s_remote[row].ms    = now;
+        s_remote[row].map   = map;
+
+        /* Our own copy of this row: one of the two stays. */
+        for (k = 0; k < NPC_COUNT_MAX; k++)
+        {
+            if (s_tracked[k] && g_SysWork.npcs[k].field_40 == row && Npc_Replicable(&g_SysWork.npcs[k]) &&
+                HAS_FLAG(&g_SysWork.npcFlags, k))
+            {
+                mine = k;
+                break;
+            }
+        }
+        if (mine >= 0)
+        {
+            static int s_logged;
+            if (!Npc_TheirsWins(from, age, mine, charaId))
+            {
+                continue; /* ours stays; they give way when they hear ours */
+            }
+            if (s_logged < 12)
+            {
+                s_logged++;
+                SH_DBG("[NETNPC] row %d: %s's copy is older; ours gives way to it", row, Cut_NameOfId(from));
+            }
+            g_SysWork.npcs[mine].model.charaId = Chara_None;
+            SysWork_NpcFlagClear(mine);
+            CLEAR_FLAG(g_SysWork.field_228C, row);
+            s_tracked[mine] = 0;
+            s_target[mine]  = 0;
+        }
+
         pp = &s_pup[row];
-        if (pp->used && (pp->gen != gen || pp->charaId != charaId ||
+        if (pp->used && (pp->gen != gen || pp->charaId != charaId || pp->owner != from ||
                          g_SysWork.npcs[pp->slot].model.charaId != (e_CharaId)charaId))
         {
             Npc_PupFree(row);
         }
         if (!pp->used)
         {
+            /* Only where we have the ground: a monster in a room of the map
+             * we have not loaded would stand in the void. */
+            s_CollisionSurface surf;
+            Collision_SurfaceGet(&surf, s.x, s.z);
+            if (surf.groundHeight == Q12(8.0f)) continue;
             if (!Npc_PupAlloc(row, charaId, palette, gen, hostSlot)) continue;
+            pp->owner = from;
             pp->prev = pp->cur = s;
             pp->prevMs = pp->curMs = now;
         }
@@ -1017,9 +1154,12 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
             pp->cur    = s;
             pp->curMs  = now;
         }
-        pp->seenMs = now;
+        pp->seenMs  = now;
+        pp->age     = age;
+        pp->ageAtMs = now;
     }
 
+    ps = Npc_PeerSeq(from);
     for (i = 0; i < ns; i++)
     {
         int       row  = ShnGetU8(p, &o);
@@ -1030,11 +1170,11 @@ static void Npc_GuestSnapshot(const shn_u8* p, int len)
         int       ahead;
         VECTOR3   at;
         (void)ShnGetU8(p, &o);
-        ahead = (int)(u8)(seq - s_lastSfxSeq);
-        if (s_sfxSeqOk && (ahead == 0 || ahead >= 128)) continue;
-        s_sfxSeqOk   = 1;
-        s_lastSfxSeq = (u8)seq;
-        if (row >= NPC_ROWS || !s_pup[row].used) continue;
+        ahead = (int)(u8)(seq - s_peerSeq[ps].sfx);
+        if (s_peerSeq[ps].sfxOk && (ahead == 0 || ahead >= 128)) continue;
+        s_peerSeq[ps].sfxOk = 1;
+        s_peerSeq[ps].sfx   = (u8)seq;
+        if (row >= NPC_ROWS || !s_pup[row].used || s_pup[row].owner != from) continue;
         if (sfx <= Sfx_Base || sfx >= Sfx_Base + 420) continue;
         at.vx = g_SysWork.npcs[s_pup[row].slot].position.vx;
         at.vy = g_SysWork.npcs[s_pup[row].slot].position.vy;
@@ -1051,7 +1191,7 @@ u32 Pc_NetNpc_NearestPlayerD2(const s_SubCharacter* npc, u32 d2)
 {
     const unsigned int now = ShNetPlat_Millis();
     int                i, n;
-    if (Npc_Role() != PC_NETNPC_HOST) return d2;
+    if (!Npc_Coop()) return d2;
     n = ShSession_MemberCount();
     for (i = 0; i < n; i++)
     {
@@ -1072,9 +1212,20 @@ u32 Pc_NetNpc_NearestPlayerD2(const s_SubCharacter* npc, u32 d2)
 int Pc_NetNpc_GuestSkipRow(int row, int charaId, s32 spawnX, s32 spawnZ)
 {
     int i, n;
-    (void)row;
-    if (Npc_Role() != PC_NETNPC_GUEST) return 0;
-    /* Our own boss for our own intro; the host's takes over after it. */
+    if (!Npc_Coop()) return 0;
+    /* A row a partner is running is theirs (or ours as a puppet). */
+    if (row >= 0 && row < NPC_ROWS)
+    {
+        if (s_pup[row].used) return 1;
+        if (s_remote[row].ms != 0 && s_remote[row].map == (int)g_SavegamePtr->mapIdx &&
+            s_remote[row].owner != ShSession_SelfId() && ShNetPlat_Millis() - s_remote[row].ms < NPC_REMOTE_MS)
+        {
+            return 1;
+        }
+    }
+    /* A boss stays the host's: a guest spawns its own only for its own
+     * intro, or while the host is elsewhere. */
+    if (Npc_Role() != PC_NETNPC_GUEST || !Npc_IsBoss(charaId)) return 0;
     if (!Npc_BossIntroDone(charaId)) return 0;
     n = ShSession_MemberCount();
     for (i = 0; i < n; i++)
@@ -1178,7 +1329,7 @@ void Pc_NetNpc_PuppetTick(s_SubCharacter* npc, int slot, s_AnmHeader* hdr, GsCOO
         ShnPutU8(b, &o, 0);
         for (r = 0; r < 2; r++)
         {
-            ShSession_SendGame(SHNET_MSG_S_NPC_HIT, b, o, ShSession_HostId(), 1);
+            ShSession_SendGame(SHNET_MSG_S_NPC_HIT, b, o, pp->owner, 1);
         }
     }
     npc->damage.amount      = 0;
@@ -1194,7 +1345,7 @@ void Pc_NetNpc_PuppetTick(s_SubCharacter* npc, int slot, s_AnmHeader* hdr, GsCOO
  * its position and heading), our own mashing breaks it, and the host's
  * monster lets go when our pose stops carrying the attack id. Only when
  * the puppet is not here does a grab land as a hard hit. */
-static void Npc_GuestApplyAttack(const shn_u8* p, int len)
+static void Npc_ApplyAttack(unsigned long long from, const shn_u8* p, int len)
 {
     static unsigned int s_winMs;
     static int          s_winN;
@@ -1213,9 +1364,12 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
     kby    = ShnGetS32(p, &o);
     kbz    = ShnGetS32(p, &o);
 
-    if (s_atkSeqInOk && (s16)(seq - s_atkSeqIn) <= 0) return;
-    s_atkSeqInOk = 1;
-    s_atkSeqIn   = seq;
+    {
+        const int ps = Npc_PeerSeq(from);
+        if (s_peerSeq[ps].atkOk && (s16)(seq - s_peerSeq[ps].atk) <= 0) return;
+        s_peerSeq[ps].atkOk = 1;
+        s_peerSeq[ps].atk   = seq;
+    }
     if (now - s_winMs >= 1000u) { s_winMs = now; s_winN = 0; }
     if (++s_winN > 15) return;
 
@@ -1237,8 +1391,8 @@ static void Npc_GuestApplyAttack(const shn_u8* p, int len)
         if (s_logged < 12)
         {
             s_logged++;
-            SH_DBG("[NETNPC] guest: the host's monster (row %d) hit me with attack %d for %d.%02d",
-                   row, atk, amount >> 12, ((amount & 0xFFF) * 100) >> 12);
+            SH_DBG("[NETNPC] %s's monster (row %d) hit me with attack %d for %d.%02d",
+                   Cut_NameOfId(from), row, atk, amount >> 12, ((amount & 0xFFF) * 100) >> 12);
         }
     }
 }
@@ -1418,29 +1572,51 @@ static void Npc_WorldFlagsIn(unsigned long long from, const shn_u8* p, int len)
     no = ShnGetU8(p, &o);
     (void)ShnGetU8(p, &o);
     if (ne > EVENT_FLAG_WORDS || no > OVL_STATE_WORDS || 4 + 4 * (ne + no) > len) return;
-    /* Only in plain gameplay: a flag landing mid-cutscene or mid-menu
-     * would change what that script does next. */
-    if (g_GameWork.gameState != GameState_InGame || g_SysWork.sysState != SysState_Gameplay ||
-        (g_SysWork.sysFlags & SysFlag_CutsceneActive))
+    /* Applied only in plain gameplay: a flag landing mid-cutscene or mid-menu
+     * would change what that script does next. Otherwise they wait with the
+     * single flags (Npc_FlagsTick), and a warp takes them along
+     * (Pc_NetNpc_MergePendingFlags): dropped, a guest brought through a
+     * story door booted the map without the scene's flags the host sent. */
     {
-        return;
-    }
-    for (i = 0; i < ne; i++)
-    {
-        shn_u32 w = ShnGetU32(p, &o), add, bit;
-        add = w & ~g_SavegamePtr->eventFlags[i];
-        for (bit = 0; add && bit < 32; bit++)
+        const int plain = g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
+                          !(g_SysWork.sysFlags & SysFlag_CutsceneActive);
+        for (i = 0; i < ne; i++)
         {
-            if ((add & (1u << bit)) && Npc_FlagLocal(i * 32 + (int)bit)) add &= ~(1u << bit);
+            shn_u32 w = ShnGetU32(p, &o), add, bit;
+            add = w & ~g_SavegamePtr->eventFlags[i];
+            for (bit = 0; add && bit < 32; bit++)
+            {
+                if ((add & (1u << bit)) && Npc_FlagLocal(i * 32 + (int)bit)) add &= ~(1u << bit);
+            }
+            if (!plain)
+            {
+                s_flagPend[i] |= add;
+                continue;
+            }
+            g_SavegamePtr->eventFlags[i] |= add;
+            s_flagSeen[i] |= add;
         }
-        g_SavegamePtr->eventFlags[i] |= add;
-        s_flagSeen[i] |= add;
+        if (!plain) return;
     }
     /* A kill clears a bit; the host's word is the truth for every map. */
     if (from != ShSession_HostId()) return;
     for (i = 0; i < no; i++)
     {
         g_SavegamePtr->ovlEnemyStates[i] &= (s32)ShnGetU32(p, &o);
+    }
+}
+
+/* A guest's warp boots a copy of its savegame: the partners' flags still
+ * waiting for plain gameplay go into it, so the map it boots is the one they
+ * left. */
+void Pc_NetNpc_MergePendingFlags(void* savegame)
+{
+    s_Savegame* sg = (s_Savegame*)savegame;
+    int         i;
+    if (sg == NULL) return;
+    for (i = 0; i < EVENT_FLAG_WORDS; i++)
+    {
+        sg->eventFlags[i] |= s_flagPend[i];
     }
 }
 
@@ -1466,6 +1642,86 @@ static void Npc_FlagSetIn(const shn_u8* p, int len)
 }
 
 /* ------------------------------------------------------------------ */
+/* Taking over a monster its owner left                                */
+/* ------------------------------------------------------------------ */
+
+/* Its owner stopped sharing a monster we see (a room load took them away,
+ * another map, out of the session). Alive and not killed, the player
+ * nearest it takes it over: the same slot becomes a monster of ours at the
+ * puppet's place and heading, its AI starting over from the spawn row's
+ * state and its health put back once that has run. Two players taking the
+ * same one over settle as any two copies do. 1 when taken. */
+static int Npc_Adopt(int row)
+{
+    extern u8          g_PcNpcDebugSpawned[NPC_COUNT_MAX];
+    const unsigned int now = ShNetPlat_Millis();
+    Puppet*            pp  = &s_pup[row];
+    const NpcSample    s   = pp->cur;
+    const int          slot = pp->slot;
+    long long          myD, dx, dz;
+    int                i, n;
+    s_SubCharacter*    npc;
+
+    if (slot < 0 || slot >= NPC_COUNT_MAX || s.health <= 0 || g_SavegamePtr == NULL ||
+        !HAS_FLAG(&g_SavegamePtr->ovlEnemyStates[g_SavegamePtr->mapIdx], row) ||
+        g_SysWork.sysState != SysState_Gameplay || Npc_IsBoss(pp->charaId))
+    {
+        return 0;
+    }
+    dx  = (long long)g_SysWork.playerWork.player.position.vx - s.x;
+    dz  = (long long)g_SysWork.playerWork.player.position.vz - s.z;
+    myD = dx * dx + dz * dz;
+    n   = ShSession_MemberCount();
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        ShSessionPoseNow       pn;
+        if (!m || m->steamId == ShSession_SelfId() || m->steamId == pp->owner || m->poseMs == 0 ||
+            m->mapIdx != (int)g_SavegamePtr->mapIdx || (int)(now - m->poseMs) > 1500 || !ShSession_MemberPoseNow(i, &pn))
+        {
+            continue;
+        }
+        dx = (long long)pn.x - s.x;
+        dz = (long long)pn.z - s.z;
+        if (dx * dx + dz * dz < myD) return 0; /* theirs to take */
+    }
+
+    npc = &g_SysWork.npcs[slot];
+    memset(npc, 0, sizeof(*npc));
+    npc->model.charaId      = (e_CharaId)pp->charaId;
+    npc->model.paletteIdx   = pp->palette;
+    npc->field_40           = (s8)row;
+    npc->model.controlState = 0;
+    npc->model.stateStep    = g_MapOverlayHdr.charaSpawnInfos[0][row].flags;
+    npc->position.vx        = s.x;
+    npc->position.vy        = s.y;
+    npc->position.vz        = s.z;
+    npc->rotation.vy        = s.ry;
+    npc->attackReceived     = NO_VALUE;
+    npc->model.anim.flags  |= AnimFlag_Visible;
+    SET_FLAG(&g_SysWork.npcFlags, slot);
+    SET_FLAG(g_SysWork.field_228C, row);
+    g_PcNpcDebugSpawned[slot] = 0; /* ours now: its kill is recorded */
+    s_slotRow[slot] = -1;
+    pp->used        = 0;
+    Pc_NetNpc_OnSpawn(slot);
+    s_claimMs[slot]   = now - (pp->age + (now - pp->ageAtMs)); /* the same monster, as old as it was */
+    s_restoreHp[slot] = s.health;
+    s_scaled[slot]    = 1; /* its health already carries the bonus */
+    s_remote[row].ms  = 0;
+    {
+        static int s_logged;
+        if (s_logged < 12)
+        {
+            s_logged++;
+            SH_DBG("[NETNPC] took over row %d (chara %d) from %s at (%d, %d), health %d",
+                   row, pp->charaId, Cut_NameOfId(pp->owner), s.x >> 12, s.z >> 12, s.health >> 12);
+        }
+    }
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
 /* Per frame                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -1480,17 +1736,14 @@ void Pc_NetNpc_GameTick(void)
 
     while ((len = ShSession_TakeGame(&type, &from, buf, (int)sizeof(buf))) >= 0)
     {
-        if (type == SHNET_MSG_S_NPC_SNAP && role == PC_NETNPC_GUEST)
+        if (type == SHNET_MSG_S_NPC && role != PC_NETNPC_NONE && len >= 1 && from != ShSession_SelfId())
         {
-            Npc_GuestSnapshot(buf, len);
+            if (buf[0] == SHNET_NPC_SNAP)     Npc_SnapIn(from, buf + 1, len - 1);
+            else if (buf[0] == SHNET_NPC_ATK) Npc_ApplyAttack(from, buf + 1, len - 1);
         }
-        else if (type == SHNET_MSG_S_NPC_HIT && role == PC_NETNPC_HOST)
+        else if (type == SHNET_MSG_S_NPC_HIT && role != PC_NETNPC_NONE)
         {
             Npc_HostApplyHit(from, buf, len);
-        }
-        else if (type == SHNET_MSG_S_NPC_ATK && role == PC_NETNPC_GUEST)
-        {
-            Npc_GuestApplyAttack(buf, len);
         }
         else if (type == SHNET_MSG_S_WORLD_FL && role != PC_NETNPC_NONE)
         {
@@ -1506,25 +1759,35 @@ void Pc_NetNpc_GameTick(void)
         }
     }
 
-    if (role == PC_NETNPC_HOST)
+    if (role != PC_NETNPC_NONE)
     {
         /* Co-op monsters are tougher, by the host's Enemy Health, applied
          * once the monster's own init has written its health (a frame or more
-         * after the spawn), so the bonus is not overwritten by it. */
+         * after the spawn), so the bonus is not overwritten by it. One taken
+         * over gets back the health it had instead. */
         int k;
         for (k = 0; k < NPC_COUNT_MAX; k++)
         {
             s_SubCharacter* npc = &g_SysWork.npcs[k];
-            if (!s_tracked[k] || s_scaled[k] || npc->health <= 0 ||
-                npc->model.charaId != (e_CharaId)s_trackChara[k])
+            if (!s_tracked[k] || npc->health <= 0 || npc->model.charaId != (e_CharaId)s_trackChara[k])
             {
                 continue;
             }
-            npc->health = (q19_12)(((long long)npc->health * g_PcConfig.onlineEnemyHealthPct) / 100);
+            if (s_restoreHp[k] > 0)
+            {
+                npc->health       = s_restoreHp[k];
+                s_restoreHp[k]    = 0;
+                continue;
+            }
+            if (s_scaled[k])
+            {
+                continue;
+            }
+            npc->health = (q19_12)(((long long)npc->health * ShNet_CoopEnemyHealthPct()) / 100);
             if (npc->health <= 0) npc->health = 1;
             s_scaled[k] = 1;
         }
-        Npc_HostSend();
+        Npc_OwnerSend();
     }
     if (role != PC_NETNPC_NONE)
     {
@@ -1532,16 +1795,21 @@ void Pc_NetNpc_GameTick(void)
     }
     Npc_FlagsTick(role);
 
-    /* Puppets outlive nothing: gone from the snapshots, out of the session,
-     * or wiped by a room load, they are released. */
+    /* Puppets outlive nothing: out of the session or wiped by a room load,
+     * they are released; gone from the snapshots, they are taken over by the
+     * player nearest them when still alive, else released. */
     for (r = 0; r < NPC_ROWS; r++)
     {
         Puppet* pp = &s_pup[r];
         if (!pp->used) continue;
-        if (role != PC_NETNPC_GUEST || ShNetPlat_Millis() - pp->seenMs > NPC_GONE_MS ||
-            g_SysWork.npcs[pp->slot].model.charaId != (e_CharaId)pp->charaId)
+        if (role == PC_NETNPC_NONE || g_SysWork.npcs[pp->slot].model.charaId != (e_CharaId)pp->charaId)
         {
             Npc_PupFree(r);
+        }
+        else if (ShNetPlat_Millis() - pp->seenMs > NPC_GONE_MS && g_SysWork.sysState == SysState_Gameplay)
+        {
+            /* In a menu it waits: taking it over needs our AI running. */
+            if (!Npc_Adopt(r)) Npc_PupFree(r);
         }
     }
 }
