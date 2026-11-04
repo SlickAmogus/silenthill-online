@@ -87,6 +87,12 @@ int         Pc_CoopMenu_TakeStartRequest(char* outName, int cap);
  * the multiplayer menu is up or a room is waited in at the title. Once a
  * frame from ShNet_GameTick. */
 void        Pc_CoopMusic_Tick(void);
+/* The Music row: the picked track's label, left/right through every track
+ * (2..41, wrapping), and R back to the results theme. The pick is config. */
+void        Pc_CoopMusic_RowText(char* out, int cap);
+void        Pc_CoopMusic_Step(int dir);
+void        Pc_CoopMusic_Reset(void);
+int         Pc_CoopMusic_IsDefault(void);
 /* Guest: reboot into another map, keeping the game (Teleport to Host / Bring Here). */
 void        Pc_CoopMenu_RequestWarp(int mapIdx, int x, int z, short rotY);
 /* The host loaded a save (or we just joined their game): reboot into it. */
