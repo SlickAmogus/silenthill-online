@@ -746,11 +746,13 @@ static int            s_fontsScript = -1; /* Pc_LangQuickScript the face was pic
  * re-baked whenever their text changes. */
 static GLuint s_texTitle, s_texHint, s_texHint2;
 /* The touch reset button: a ring and an R, drawn only while touch drives the
- * menu; s_resetBtn is its centre and radius in viewport px for Update. */
-static GLuint s_texResetRing, s_texResetR;
-static int    s_resetRingW, s_resetRingH, s_resetRW, s_resetRH;
+ * menu; s_resetBtn is its centre and radius in viewport px for Update.
+ * s_qoConfirmReset says the open Yes/No is the reset, not the fog row's. */
+static GLuint s_texResetRing, s_texResetR, s_texResetHint;
+static int    s_resetRingW, s_resetRingH, s_resetRW, s_resetRH, s_resetHintW, s_resetHintH;
 static float  s_resetBtn[3];
 static int    s_hintResetMode = -1;
+static int    s_qoConfirmReset;
 static int    s_titleW, s_titleH, s_hintW, s_hintH, s_hint2W, s_hint2H;
 /* The Previous / Next row, in pieces so the mouse glyphs sit inline. */
 enum { QO_NAV_PREV = 0, QO_NAV_SLASH, QO_NAV_NEXT, QO_NAV_DEST, QO_NAV_ICON_R, QO_NAV_ICON_L,
