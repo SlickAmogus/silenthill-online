@@ -28,6 +28,8 @@ int         Pc_PlayAs_SkinCharaId(void);/* Chara_Harry when not swapped */
 const char* Pc_PlayAs_SkinToken(void);
 /* The swap file ("HERO_CJ") this machine has for a token, or NULL. */
 const char* Pc_PlayAs_SkinFileForToken(const char* token);
+const char* Pc_PlayAs_File(int idx);    /* HERO_* swap file base, NULL for a stock body */
+int         Pc_PlayAs_CharaId(int idx); /* the stock body a row draws (Chara_Harry for swaps) */
 int         Pc_PlayAs_IsFemale(void);   /* gates the optional voice-pitch shift */
 
 /* Select a character. Mid-game this synchronously reloads the player model
