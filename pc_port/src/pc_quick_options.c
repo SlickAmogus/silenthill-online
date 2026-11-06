@@ -1802,9 +1802,10 @@ static int qo_page_hidden(int page)
 {
     extern int ShNet_CoopCheatsAllowed(void);
     int        sec = page;
-#if defined(QO_MOBILE)
+#if defined(QO_TOUCH_UI)
     int        chunk, chunks;
-    qo_locate(page, &sec, &chunk, &chunks);
+    if (qo_touch_ui())
+        qo_locate(page, &sec, &chunk, &chunks);
 #endif
     return (sec == QO_SEC_CHEATS || sec == QO_SEC_DEBUG) && !ShNet_CoopCheatsAllowed();
 }
