@@ -383,8 +383,11 @@ void Pc_CharaPreview_Draw(void)
     glDepthFunc(GL_LEQUAL);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     /* The desktop 3.3 context may not export the float form; the default
-     * clear depth is 1.0 either way. */
+     * clear depth is 1.0 either way. Only glad's loader has the pointer to
+     * test: on GLES (web, phones) glClearDepthf is a real function. */
+#ifdef glClearDepthf
     if (glad_glClearDepthf != NULL)
+#endif
         glClearDepthf(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(s_meshProg);
