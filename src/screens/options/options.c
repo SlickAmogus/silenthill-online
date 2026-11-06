@@ -18,6 +18,7 @@
 #ifdef SH_PC_PORT
 #include <ctype.h>
 #include "pc_config.h"
+#include "main/fileinfo.h" /* g_GameRegion: PAL Brightness */
 #include "pc_pause_menu.h"
 #endif
 
@@ -130,7 +131,7 @@ static s32 g_PcOptionsMenu_Page       = 0; /* 0 = Graphics, 1 = System, 2 = Cont
  * which is the right behaviour for a pointer that is already there. */
 s32 g_PcOptions_HighlightSnap = 0;
 
-enum { PCK_INT, PCK_RES, PCK_FILTER, PCK_WINMODE, PCK_VSYNC, PCK_SLIDER, PCK_MAP, PCK_FLMODE, PCK_NEXT, PCK_PREV, PCK_BACK };
+enum { PCK_INT, PCK_RES, PCK_FILTER, PCK_WINMODE, PCK_VSYNC, PCK_SLIDER, PCK_MAP, PCK_FLMODE, PCK_NEXT, PCK_PREV, PCK_BACK, PCK_CHARA };
 
 /* PC-options row origin. The heading sits at y=20 and the rows used to start at 56,
  * leaving a full empty row beneath it while the pages ran off the BOTTOM of the
@@ -221,8 +222,8 @@ static const s_PcOpt PCOPT_S[] = {
      * through Pc_FlashlightModeApply, which derives the per-pixel/style/shadow
      * globals and the per-style beam defaults. */
     { "Flashlight",       &g_PcConfig.flashlightMode,     "flashlight_mode",      VAL_FLMODE, 4, LBL_FLMODE, NULL,                        1, PCK_FLMODE },
-    { "Beam_Intensity",   NULL, "flashlight_intensity", NULL, 0, NULL, NULL, 1, PCK_SLIDER, &g_PcConfig.flashlightIntensity, &g_PsyX_FlashlightIntensity, 0.0f, 3.0f, 0.1f },
-    { "Beam_Size",        NULL, "flashlight_size",      NULL, 0, NULL, NULL, 1, PCK_SLIDER, &g_PcConfig.flashlightSize,      &g_PsyX_FlashlightSize,      0.0f, 3.0f, 0.1f },
+    { "Beam_Intensity",   NULL, "flashlight_intensity", NULL, 0, NULL, NULL, 1, PCK_SLIDER, &g_PcConfig.flashlightIntensity, &g_PsyX_FlashlightIntensity, 0.0f, 6.0f, 0.1f },
+    { "Beam_Size",        NULL, "flashlight_size",      NULL, 0, NULL, NULL, 1, PCK_SLIDER, &g_PcConfig.flashlightSize,      &g_PsyX_FlashlightSize,      0.0f, 5.0f, 0.1f },
     /* 1.1 is the PSX-matched density. Lowering it reveals the extra reach that
      * draw_distance_pct buys, rather than just thinning the haze -- the two are
      * meant to be moved together, since either alone disappoints. */
@@ -1213,8 +1214,15 @@ static void PcOpt_ResetEntry(const s_PcOpt* e)
 
     if (e->key == NULL) return;
     if (e->kind == PCK_RES || e->kind == PCK_WINMODE ||
-        e->kind == PCK_NEXT || e->kind == PCK_PREV || e->kind == PCK_BACK ||
-        e->kind == PCK_MAP) return;
+        e->kind == PCK_NEXT || e->kind == PCK_PREV || e->kind == PCK_BACK) return;
+
+    /* The New Game start map, saved the way picking it on the row does. */
+    if (e->kind == PCK_MAP) {
+        strncpy(g_PcConfig.mapName, d->mapName, sizeof(g_PcConfig.mapName) - 1);
+        g_PcConfig.mapName[sizeof(g_PcConfig.mapName) - 1] = '\0';
+        PcConfig_SaveMapName(g_PcConfig.mapName);
+        return;
+    }
 
     if (e->kind == PCK_SLIDER && e->ffield != NULL) {
         float dv = *(const float*)((const char*)d + ((const char*)e->ffield - (const char*)&g_PcConfig));
@@ -1257,6 +1265,16 @@ void Pc_Options_ResetToDefaults(void)
         for (i = 0; i < count; i++)
             PcOpt_ResetEntry(&tbl[i]);
     }
+    {
+        extern const s_PcConfig* PcConfig_Defaults(void);
+        extern void              Pc_ControlStyleSet(int style);
+        const s_PcConfig*        d = PcConfig_Defaults();
+
+        /* Camera mode is chosen by the Change Camera bind and the quick menu,
+         * not a table row; Pc_ControlStyleSet swaps the binds and saves it. */
+        g_PcConfig.controlStyle = d->controlStyle;
+        Pc_ControlStyleSet(d->controlStyle);
+    }
     SH_DBG_ECHO("Settings reset to defaults (resolution and window mode kept).");
 }
 
@@ -1264,6 +1282,9 @@ void Pc_Options_ResetToDefaults(void)
 #include <SDL.h>
 #include "pc_confirm_dialog.h"
 #include "pc_controls_screen.h"
+#include "pc_reset_settings.h"
+#include "pc_chara_select.h"
+#include "pc_native_menu_draw.h"
 
 /* Shared with the header draw: 1 while the reset dialog is up (label turns red). */
 int g_PcOptResetConfirmActive = 0;
@@ -1290,10 +1311,12 @@ static int PcOpt_ResetConfirm_Run(void)
     int left, right, confirm, cancel, res;
 
     g_PcOptResetConfirmActive = Pc_ConfirmDialog_IsOpen();
+    Pc_ResetSettings_Track();
 
     if (!g_PcOptResetConfirmActive) {
-        if (PcOpt_KeyEdge(SDL_SCANCODE_R)) {
-            Pc_ConfirmDialog_Open("RESET SETTINGS", "Reset all PC options to their defaults?");
+        /* R, both triggers, or the touch overlay's circled R. */
+        if (Pc_ResetSettings_RequestEdge()) {
+            Pc_ConfirmDialog_Open("RESET SETTINGS", "Reset all settings to their defaults?");
             g_PcOptResetConfirmActive = 1;
             Sd_PlaySfx(Sfx_MenuMove, 0, 64);
             return 1;
@@ -1524,6 +1547,14 @@ void Options_PcOptionsMenu_Control(void)
                 g_GameWork.gameStateSteps[1] = 0;
                 g_GameWork.gameStateSteps[2] = 0;
                 return;
+            } else if (sel->kind == PCK_CHARA) {
+                Sd_PlaySfx(Sfx_MenuConfirm, 0, 64);
+                ScreenFade_Start(true, false, false);
+                g_GameWork.gameStateSteps[0] = OptionsMenuState_EnterCharaSelect;
+                g_SysWork.counters_1C[1]     = 0;
+                g_GameWork.gameStateSteps[1] = 0;
+                g_GameWork.gameStateSteps[2] = 0;
+                return;
             }
         }
     }
@@ -1537,6 +1568,53 @@ void Options_PcOptionsMenu_Control(void)
         g_SysWork.counters_1C[1]     = 0;
         g_GameWork.gameStateSteps[1] = 0;
         g_GameWork.gameStateSteps[2] = 0;
+    }
+}
+
+/* Character Select under PC Options: the page fades out, the screen runs
+ * until it asks to close, then the page fades back in where it was. */
+static void Options_CharaSelectMenu_Control(void)
+{
+    switch (g_GameWork.gameStateSteps[0])
+    {
+        case OptionsMenuState_EnterCharaSelect:
+            if (ScreenFade_IsFinished())
+            {
+                Pc_CharaSelect_Open();
+                ScreenFade_Start(false, true, false);
+                g_GameWork.gameStateSteps[0] = OptionsMenuState_CharaSelect;
+            }
+            break;
+
+        case OptionsMenuState_CharaSelect:
+            {
+                NmInput in;
+
+                NmInput_FromGame(&in);
+                Pc_CharaSelect_Draw();
+                if (!Pc_CharaSelect_Update(&in))
+                {
+                    ScreenFade_Start(true, false, false);
+                    g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveCharaSelect;
+                }
+                g_Controller0->clickedBtnFlags   = 0;
+                g_Controller0->pulsedBtnFlags    = 0;
+                g_Controller0->pulsedGuiBtnFlags = 0;
+            }
+            break;
+
+        default:
+            Pc_CharaSelect_Draw();
+            if (ScreenFade_IsFinished())
+            {
+                Pc_CharaSelect_Close();
+                ScreenFade_Start(false, true, false);
+                g_GameWork.gameStateSteps[0] = OptionsMenuState_PcOptions;
+                g_SysWork.counters_1C[1]     = 0;
+                g_GameWork.gameStateSteps[1] = 0;
+                g_GameWork.gameStateSteps[2] = 0;
+            }
+            break;
     }
 }
 
@@ -1561,10 +1639,21 @@ static void Options_PcOptionsMenu_EntryStringsDraw(void)
      * confirm dialog is up. Underscores render as spaces: "[R] Reset". */
     {
         extern int g_PcOptResetConfirmActive;
+        /* Names the input in use (R, the triggers, or the touch button, which
+         * is labelled R), small enough to sit beside the heading. */
+        char hint[48], *c;
+        int  w;
+
+        snprintf(hint, sizeof(hint), "%s", Pc_ResetSettings_Hint());
+        for (c = hint; *c; c++)
+            if (*c == ' ') *c = '_';
+        w = (Pc_LangMenuTextWidth(hint) * 3) / 5;
         Gfx_StringSetColor(g_PcOptResetConfirmActive ? StringColorId_Red : StringColorId_White);
-        Gfx_StringSetPosition(232, strPos.vy);
+        Pc_StringScaleSet(Q12(0.6f));
+        Gfx_StringSetPosition(320 - 8 - w, strPos.vy + 4);
         Gfx_Strings2dLayerIdxSet(8);
-        Gfx_StringDraw("[R]_Reset", DEFAULT_MAP_MESSAGE_LENGTH);
+        Gfx_StringDraw(hint, DEFAULT_MAP_MESSAGE_LENGTH);
+        Pc_StringScaleSet(Q12(1.0f));
         Gfx_StringSetColor(StringColorId_White);
     }
 #endif
@@ -1959,6 +2048,12 @@ void GameState_Options_Update(void) // 0x801E2D44
         case OptionsMenuState_PcOptions:
         case OptionsMenuState_LeavePcOptions:
             Options_PcOptionsMenu_Control();
+            break;
+
+        case OptionsMenuState_EnterCharaSelect:
+        case OptionsMenuState_CharaSelect:
+        case OptionsMenuState_LeaveCharaSelect:
+            Options_CharaSelectMenu_Control();
             break;
 #endif
     }
@@ -2430,6 +2525,17 @@ void Options_MainOptionsMenu_Control(void) // 0x801E3770
             if (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.enter)
             {
                 Sd_PlaySfx(Sfx_MenuConfirm, 0, 64);
+#ifdef SH_PC_PORT
+                /* PAL never loads this picture (its options overlay loads only
+                 * OPTION2.TIM): the PAL layout puts the item CLUTs at
+                 * (896..943,480..495), inside the in-game rect, and the
+                 * inventory uploads them once per session, so every item
+                 * model came back blank after Brightness. */
+                if (g_GameRegion == Region_EUR)
+                {
+                }
+                else
+#endif
                 if (g_GameWork.gameStatePrev == GameState_MainMenu)
                 {
                     Fs_QueueStartReadTim(FILE_TIM_OP_BRT_E_TIM, IMAGE_BUFFER_3, &g_BrightnessScreenImg0);
@@ -3818,10 +3924,34 @@ void Options_ScreenPosMenu_ConfigDraw(void) // 0x801E5CBC
  * way to reach it. */
 static s32 g_PcBrtRow = 0;
 
-#define PC_BRT_ROWS 4
+#define PC_BRT_ROWS 5
+/* The last row is RESET: confirm puts the four values back to their defaults
+ * instead of leaving the screen. */
+#define PC_BRT_ROW_RESET 4
 /* Top row's y in percent, 8 per row after it. 52 put CLASSIC under the
- * reference bar on a 224-line frame (bottom ~15% of the picture). */
-#define PC_BRT_ROW_Y0 40.0f
+ * reference bar on a 224-line frame (bottom ~15% of the picture); the rows
+ * start higher since RESET joined them, so it clears the bar too. */
+#define PC_BRT_ROW_Y0 34.0f
+/* The value column's centre in UiPos x: the knobs are drawn at 178-187 and
+ * 225-236 (ArrowsDraw, centre-origin + 160), the number between them. */
+#define PC_BRT_VALUE_MID_X 206
+
+static void Pc_BrightnessReset(void)
+{
+    extern float g_cfg_brightness, g_cfg_contrast, g_cfg_saturation;
+    extern const s_PcConfig* PcConfig_Defaults(void);
+    const s_PcConfig* d = PcConfig_Defaults();
+    char b[16];
+
+    g_PcConfig.brightness = g_cfg_brightness = d->brightness;
+    g_PcConfig.contrast   = g_cfg_contrast   = d->contrast;
+    g_PcConfig.saturation = g_cfg_saturation = d->saturation;
+    snprintf(b, sizeof(b), "%.3f", d->brightness); PcConfig_SaveKeyValue("brightness", b);
+    snprintf(b, sizeof(b), "%.3f", d->contrast);   PcConfig_SaveKeyValue("contrast", b);
+    snprintf(b, sizeof(b), "%.3f", d->saturation); PcConfig_SaveKeyValue("saturation", b);
+    /* Settings_Reset's console level (settings_reset.c). */
+    g_GameWork.config.brightness = 3;
+}
 
 static void Pc_BrightnessRowAdjust(s32 row, int dir)
 {
@@ -3888,10 +4018,8 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
 
         case BrightnessMenuState_2:
 #ifdef SH_PC_PORT
-            /* Up/Down select a row (Brightness/Contrast/Saturation), Left/Right
-             * adjust it. Mouse: wheel adjusts the selected row; hovering a row
-             * band selects it; left-click the arrow columns adjusts; right-click
-             * leaves. Rows drawn from y 74 at 16px pitch (see ConfigDraw). */
+            /* Up/Down select a row, Left/Right adjust it, Confirm on RESET
+             * resets. Pointer and touch below. */
             {
                 int mx, my;
 
@@ -3912,15 +4040,71 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
 
                 if (Pc_MouseCursor_UiPos(&mx, &my))
                 {
-                    int wheel = Pc_MouseCursor_WheelStep();
+                    /* One pointer path for the mouse and for touch, whose taps
+                     * arrive here as clicks. UiPos is in the framebuffer space
+                     * ConfigDraw positions its text in, so each band is that
+                     * row's line plus the gap below it. On a row the label only
+                     * selects it and anything from just left of the left knob
+                     * outward steps it, so the 10px knobs are not the only
+                     * target; off the rows either side steps the selected row.
+                     * The percentage rows are 35 steps end to end, so a held
+                     * press repeats. The way out on touch is the overlay's
+                     * corner Back; right-click leaves with the mouse. */
+                    static int s_brtHoldFrames;
+                    static int s_brtHoldDir;
+                    int        wheel = Pc_MouseCursor_WheelStep();
+                    int        row   = -1;
+                    int        r;
 
-                    /* Wheel adjusts the selected row; left of centre lowers, right
-                     * raises it; right-click leaves. Kept geometry-free (no
-                     * per-row hit-test) — Up/Down selects the row. */
+                    for (r = 0; r < PC_BRT_ROWS; r++)
+                    {
+                        int top = SCREEN_POSITION_Y(PC_BRT_ROW_Y0 + (float)r * 8.0f);
+
+                        if (my >= top - 2 && my < top + 17)
+                            row = r;
+                    }
+
+                    if (row >= 0 && row != g_PcBrtRow && Pc_MouseCursor_Moved() && !Pc_MouseCursor_LeftHeld())
+                    {
+                        g_PcBrtRow = row;
+                        Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
+                    }
+
                     if (wheel != 0)
+                    {
+                        s_brtHoldDir = 0;
                         Pc_BrightnessRowAdjust(g_PcBrtRow, wheel);
+                    }
                     else if (Pc_MouseCursor_LeftClicked())
-                        Pc_BrightnessRowAdjust(g_PcBrtRow, (mx < 160) ? -1 : +1);
+                    {
+                        s_brtHoldDir    = 0;
+                        s_brtHoldFrames = 0;
+                        if (row >= 0 && row != g_PcBrtRow)
+                        {
+                            g_PcBrtRow = row;
+                            Sd_PlaySfx(Sfx_MenuMove, 0, Q8(0.25f));
+                        }
+                        if (g_PcBrtRow == PC_BRT_ROW_RESET && (row < 0 || row == PC_BRT_ROW_RESET))
+                        {
+                            Pc_BrightnessReset();
+                            Sd_PlaySfx(Sfx_MenuConfirm, 0, Q8(0.25f));
+                        }
+                        else if (row < 0 || mx >= 150)
+                        {
+                            s_brtHoldDir = (mx < PC_BRT_VALUE_MID_X) ? -1 : +1;
+                            Pc_BrightnessRowAdjust(g_PcBrtRow, s_brtHoldDir);
+                        }
+                    }
+                    else if (s_brtHoldDir != 0 && Pc_MouseCursor_LeftHeld())
+                    {
+                        s_brtHoldFrames++;
+                        if (s_brtHoldFrames > 20 && (s_brtHoldFrames % 4) == 0)
+                            Pc_BrightnessRowAdjust(g_PcBrtRow, s_brtHoldDir);
+                    }
+                    else
+                    {
+                        s_brtHoldDir = 0;
+                    }
 
                     if (Pc_MouseCursor_RightClicked())
                         PcMouse_InjectCancel();
@@ -3946,6 +4130,15 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
             }
 #endif
 
+#ifdef SH_PC_PORT
+            if (g_PcBrtRow == PC_BRT_ROW_RESET &&
+                (g_Controller0->clickedBtnFlags & g_GameWorkPtr->config.controllerConfig.enter))
+            {
+                Pc_BrightnessReset();
+                Sd_PlaySfx(Sfx_MenuConfirm, 0, Q8(0.25f));
+                g_Controller0->clickedBtnFlags &= ~g_GameWorkPtr->config.controllerConfig.enter;
+            }
+#endif
             // Fade screen and leave menu.
             if (g_Controller0->clickedBtnFlags & (g_GameWorkPtr->config.controllerConfig.enter |
                                                  g_GameWorkPtr->config.controllerConfig.cancel))
@@ -3988,6 +4181,14 @@ void Options_BrightnessMenu_Control(void) // 0x801E6018
     }
 
     // Draw graphics.
+#ifdef SH_PC_PORT
+    /* PAL draws the options background here; its Brightness picture is never loaded. */
+    if (g_GameRegion == Region_EUR)
+    {
+        Screen_BackgroundImgDraw(&g_ItemInspectionImg);
+    }
+    else
+#endif
     if (g_GameWork.gameStatePrev == GameState_MainMenu)
     {
         Screen_BackgroundImgDraw(&g_BrightnessScreenImg0);
@@ -4022,7 +4223,7 @@ void Options_BrightnessMenu_ConfigDraw(void) // 0x801E6238
      * actually 6, so the real widths are 118 / 123 / 121 and the column was
      * never pixel-exact to begin with. 7 underscores is the closest fit.) */
     const char* const NAMES[PC_BRT_ROWS] = { "BRIGHTNESS_", "CONTRAST_____", "SATURATION_",
-                                             "CLASSIC_______" };
+                                             "CLASSIC_______", "RESET" };
     const float*      vals[3];
     s32 i;
 
@@ -4032,6 +4233,13 @@ void Options_BrightnessMenu_ConfigDraw(void) // 0x801E6238
 
     for (i = 0; i < PC_BRT_ROWS; i++)
     {
+        if (i == PC_BRT_ROW_RESET)
+        {
+            Gfx_StringSetColor(i == g_PcBrtRow ? StringColorId_Gold : StringColorId_White);
+            Gfx_StringSetPosition(SCREEN_POSITION_X(22.0f), SCREEN_POSITION_Y(PC_BRT_ROW_Y0 + (float)i * 8.0f));
+            Gfx_StringDraw(NAMES[i], 20);
+            continue;
+        }
         if (i == 3)
         {
             /* 0-7, not a percentage: this is the console control's own scale,
@@ -4072,6 +4280,9 @@ void Options_BrightnessMenu_ArrowsDraw(void) // 0x801E628C
      * knob on the text line, matching the original's 84 vs its 79.5% value row).
      * X (8/64) already brackets the value column. */
     s32 yc  = (s32)(SCREEN_HEIGHT * ((PC_BRT_ROW_Y0 + (float)g_PcBrtRow * 8.0f) / 100.0f)) - 107;
+
+    if (g_PcBrtRow == PC_BRT_ROW_RESET)
+        return; /* nothing to adjust */
     /* Shift both knobs right so the left one clears the label and they bracket
      * the value number (labels are longer than the retail "LEVEL"). With the
      * value column now aligned across rows, 10 sits the knobs a touch tighter

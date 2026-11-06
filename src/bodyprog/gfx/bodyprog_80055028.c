@@ -67,14 +67,19 @@ static s16 Pc_OverlayQuadHalfW(void)
  * synthesises `int f()` at the call site and then rejects the real
  * definition as a conflicting type; GCC only warns. */
 void func_80057228(MATRIX* mat, s32 alpha, SVECTOR* arg2, VECTOR3* arg3);
-/* When culling is disabled, ignore fog-based draw distance clamp.
- * PSX uses fogFarDistance as a draw distance optimization (don't render
- * what fog fully hides). On PC we want everything to render and let
- * fog visually obscure it instead of culling geometry. The shader fog now
- * dissolves fully-fogged geometry to exactly the void colour (PsyCross
- * GPU_DITHERING_NO_VCOLOR fades dither/quantize with fog), so drawing past
- * the fog plane no longer leaves a shade-off band -- no distance cull needed. */
-#define FOG_FAR_DIST() (g_PcConfig.disableCulling ? 0x7FFFFFFF : g_WorldEnvWork.fog.farDistance)
+/* The fog far plane stays a draw-distance cap with culling off. The GTE
+ * depth-cue byte saturates there, and the fragment shader multiplies it by the
+ * fog strength, so at strength >= 1 every face whose NEAREST vertex is past
+ * the plane (PC_FACE_CULL_DEPTH / PC_OBJ_CULL_DEPTH) is already the void
+ * colour: dropping it changes no pixel. Lifting the cap instead drew the whole
+ * resident grid out to the ~61u hard limit fully fogged -- pure overdraw that
+ * an immediate-mode GPU pays in full (3.5 fps on an Intel HD 3000 at 960x720
+ * on the streets). The lift was for a shade-off band at the plane, which the
+ * nearest-vertex rule removed. disable_culling keeps what its name promises,
+ * the screen-edge and PVS gates below and in vw_calc.c. Below strength 1 the
+ * fog never covers, so the far geometry must draw (Pc_LongViewActive). */
+extern float g_PsyX_FogStrength;
+#define FOG_FAR_DIST() ((g_PcConfig.disableCulling && g_PsyX_FogStrength < 1.0f) ? 0x7FFFFFFF : g_WorldEnvWork.fog.farDistance)
 
 /* Per-poly far drop. The base 0x79C shifted by (shift+2) is ~61u, and it -- not
  * chunk residency, not the cull predicate -- is what actually ends the view:
@@ -1000,6 +1005,7 @@ void func_800554C4(s32 arg0, s16 arg1, GsCOORDINATE2* coord0, GsCOORDINATE2* coo
         extern VECTOR3 g_PcFpsEyePos;
         extern VECTOR3 g_PcFlashlightShadowWorld;
         extern int     Pc_ScriptOwnsScene(void);
+        extern int     g_DebugThirdPersonCam;
         /* Only aim the flashlight from the FPS eye when the FPS camera is
          * ACTUALLY the view — i.e. NOT while a script/cutscene owns the scene.
          * Pc_ScriptOwnsScene() is the same predicate that stands the FPS camera
@@ -1022,6 +1028,18 @@ void func_800554C4(s32 arg0, s16 arg1, GsCOORDINATE2* coord0, GsCOORDINATE2* coo
             g_WorldEnvWork.field_58.vy = g_PcFpsViewFwd.vy;
             g_WorldEnvWork.field_58.vz = g_PcFpsViewFwd.vz;
             g_WorldEnvWork.field_60    = g_PcFpsEyePos;
+        }
+        /* Thirdperson / Over-the-Shoulder: the beam turns with the camera's aim
+         * as it does in first person, but stays at Harry's chest; only the
+         * direction changes. Same scripted-scene and torso-light gates. */
+        else if (g_PcConfig.flashlightFollowAim && g_DebugThirdPersonCam && !g_PcFpsCam &&
+                 !Pc_ScriptOwnsScene() && g_SysWork.field_2388.isFlashlightOn_15 &&
+                 coord1 == &g_SysWork.playerBoneCoords[HarryBone_Torso])
+        {
+            extern VECTOR3 g_PcAltCamViewFwd;
+            g_WorldEnvWork.field_58.vx = g_PcAltCamViewFwd.vx;
+            g_WorldEnvWork.field_58.vy = g_PcAltCamViewFwd.vy;
+            g_WorldEnvWork.field_58.vz = g_PcAltCamViewFwd.vz;
         }
     }
 #endif
@@ -2459,6 +2477,11 @@ void func_80057344(s_ModelInfo* modelInfo, GsOT_TAG* otTag, bool arg2, MATRIX* m
 #endif
     vertOffset   = modelHdr->vertexOffset;
     normalOffset = modelHdr->normalOffset;
+#ifdef SH_PC_PORT
+    /* World meshes may cast flashlight shadows from semi-transparent
+     * surfaces (PsyX_GPU.cpp, g_PsyX_SemiShadowCast); effects never do. */
+    { extern int g_PsyX_SemiShadowCast; g_PsyX_SemiShadowCast = 1; }
+#endif
 
     gte_lddqa(g_WorldEnvWork.field_4C);
     gte_lddqb_0();
@@ -2518,7 +2541,9 @@ void func_80057344(s_ModelInfo* modelInfo, GsOT_TAG* otTag, bool arg2, MATRIX* m
 
         Gfx_MeshDraw(curMeshHdr, scratchData, otTag, arg2);
     }
-
+#ifdef SH_PC_PORT
+    { extern int g_PsyX_SemiShadowCast; g_PsyX_SemiShadowCast = 0; }
+#endif
 }
 
 void func_800574D4(s_MeshHeader* meshHdr, s_GteScratchData* scratchData) // 0x800574D4
@@ -4413,6 +4438,11 @@ void func_8005A21C(s_ModelInfo* modelInfo, GsOT_TAG* otTag, bool arg2, MATRIX* m
         return;
     }
 #endif
+#ifdef SH_PC_PORT
+    /* World meshes may cast flashlight shadows from semi-transparent
+     * surfaces (PsyX_GPU.cpp, g_PsyX_SemiShadowCast); effects never do. */
+    { extern int g_PsyX_SemiShadowCast; g_PsyX_SemiShadowCast = 1; }
+#endif
 
 #ifdef SH_PC_PORT
     /* Characters are fogged by the SHADER: the prim builder below attaches
@@ -4490,6 +4520,9 @@ void func_8005A21C(s_ModelInfo* modelInfo, GsOT_TAG* otTag, bool arg2, MATRIX* m
 
         func_8005AC50(curMeshHdr, (s_GteScratchData2*)scratchData, otTag, (s32)(intptr_t)arg2);
     }
+#ifdef SH_PC_PORT
+    { extern int g_PsyX_SemiShadowCast; g_PsyX_SemiShadowCast = 0; }
+#endif
 }
 
 #ifdef SH_PC_PORT

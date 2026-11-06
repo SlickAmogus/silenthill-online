@@ -115,10 +115,11 @@ s_PcConfig g_PcConfig = {
     .perPixelFlashlight = 0, /* DERIVED from flashlightMode */
     .flashlightShadows  = 1, /* per-pixel flashlight casts real-time shadows (on by default; only visible when perPixelFlashlight is on) */
     .fogStrength          = 1.10f, /* PSX-matched density; lower reveals more of the widened draw distance */
-    .flashlightIntensity  = 1.20f, /* per-pixel flashlight cone brightness scale, 0..3 */
+    .flashlightIntensity  = 1.20f, /* per-pixel flashlight cone brightness scale, 0..6 */
     .flashlightSize       = 3.00f, /* per-pixel flashlight cone coverage multiplier */
     .flashlightIntensityFps = 2.10f, /* FPS-mode brightness (head-mounted) */
     .flashlightSizeFps      = 1.30f, /* FPS-mode coverage (tighter than third-person) */
+    .flashlightFollowAim    = 1,
     .postProcessIntensity = 1.0f, /* post-process effect mix, 0..1 */
     .tonemapIntensity     = 1.0f, /* tone-map mix, 0..1 */
     .brightness           = 1.0f, /* output image brightness; 1.0 = neutral */
@@ -1070,28 +1071,32 @@ void PcConfig_Load(const char* path)
         {
             float v = (float)atof(value);
             if (v < 0.0f) v = 0.0f;
-            if (v > 3.0f) v = 3.0f;
+            if (v > 6.0f) v = 6.0f;
             g_PcConfig.flashlightIntensity = v;
         }
         else if (strcmp(key, "flashlight_size") == 0)
         {
             float v = (float)atof(value);
             if (v < 0.0f) v = 0.0f;
-            if (v > 3.0f) v = 3.0f;
+            if (v > 5.0f) v = 5.0f;
             g_PcConfig.flashlightSize = v;
         }
         else if (strcmp(key, "flashlight_intensity_fps") == 0)
         {
             float v = (float)atof(value);
             if (v < 0.0f) v = 0.0f;
-            if (v > 3.0f) v = 3.0f;
+            if (v > 6.0f) v = 6.0f;
             g_PcConfig.flashlightIntensityFps = v;
+        }
+        else if (strcmp(key, "flashlight_follow_aim") == 0)
+        {
+            g_PcConfig.flashlightFollowAim = (atoi(value) != 0);
         }
         else if (strcmp(key, "flashlight_size_fps") == 0)
         {
             float v = (float)atof(value);
             if (v < 0.0f) v = 0.0f;
-            if (v > 3.0f) v = 3.0f;
+            if (v > 5.0f) v = 5.0f;
             g_PcConfig.flashlightSizeFps = v;
         }
         else if (strcmp(key, "xa_volume") == 0)
@@ -1681,6 +1686,11 @@ else if (strcmp(key, "enable_plugins") == 0)
                 g_PcConfig.mapName[sizeof(g_PcConfig.mapName) - 1] = '\0';
             }
         }
+        else if (strncmp(key, "chara_model_", 12) == 0)
+        {
+            extern void Pc_CharaSelect_ConfigKey(const char* name, const char* value);
+            Pc_CharaSelect_ConfigKey(key + 12, value);
+        }
         else if (strncmp(key, "launcher_", 9) == 0)
         {
             /* Launcher-managed keys (launcher_repo_url / _branch / _build) live in
@@ -1840,10 +1850,11 @@ else if (strcmp(key, "enable_plugins") == 0)
             PcConfig_SaveKeyValue("menu_fps_unlock", "0");
         }
 
-        /* v4: the controller gets Reload on the right shoulder and Quick Turn on
+        /* v6: the controller gets Reload on the right shoulder and Quick Turn on
          * the left by default. Only a slot still unbound is filled, so a pad
-         * bind the player chose for either action stays. */
-        if (g_PcConfig.configVersion < 4)
+         * bind the player chose for either action stays. (v4 and v5 are the
+         * mobile branches' steps; a desktop config just stamps past them.) */
+        if (g_PcConfig.configVersion < 6)
         {
             static const struct { const char* key; size_t off; const char* value; } pad[2] = {
                 { "pad_reload",     offsetof(ControlScheme, padReload),    "rightshoulder" },
