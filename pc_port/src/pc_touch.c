@@ -25,6 +25,7 @@
 #include "bodyprog/screen/screen_data.h"
 #include "bodyprog/sys/joy.h"
 #include "screens/options.h" /* OptionsMenuState_Brightness */
+#include "pc_reset_settings.h"
 #include "bodyprog/events/map_msg.h" /* g_MapMsg_Select */
 #include "pc_quick_options.h"     /* the button below opens it */
 #include "control_style.h"
@@ -42,7 +43,7 @@ enum { TB_AIM = 0, TB_ITEM, TB_MAP, TB_START, TB_RUN, TB_BACK, TB_FIRE, TB_MENU,
        TB_SKIP,
        TB_LIGHT, TB_VIEW, TB_CAM, TB_QSAVE, TB_QLOAD, TB_BONUS, TB_CLICK,
        TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP, TB_VOICE,
-       TB_CHAT, TB_CHANNEL,
+       TB_CHAT, TB_CHANNEL, TB_RESET,
        TB_COUNT };
 
 typedef struct
@@ -132,6 +133,10 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
      * instead of changing floor (reported). A button takes the tap first. */
     [TB_MAPUP] = { 0.500f, 0.080f, 0.130f, 0 },
     [TB_MAPDN] = { 0.500f, 0.920f, 0.130f, 0 },
+    /* PC Options only: the circled R that asks to reset every setting, in the
+     * corner opposite Back. It stands for the keyboard's R, which the page's
+     * hint names, and opens the same Yes/No (pc_reset_settings.c). */
+    [TB_RESET] = { 0.920f, 0.842f, 0.060f, 0 },
     /* Quick Save / Quick Load, only with touch_quicksave_buttons on. Up in the
      * empty band of the top edge, a quarter in from each side, about the size
      * of Menu, Pause and View -- a shade larger, so the letter clears the ring. */
@@ -553,6 +558,13 @@ static int Tc_Mode(void)
      * single step and closed the screen. */
     if (g_GameWork.gameState == GameState_OptionScreen &&
         g_GameWork.gameStateSteps[0] == OptionsMenuState_Brightness)
+        return TC_MODE_BACK_CURSOR;
+
+    /* PC Options is pointer-driven like the brightness screen; the mode adds
+     * the corner Back and the reset button (Tc_ExtraButton) and leaves every
+     * other tap to the page. */
+    if (g_GameWork.gameState == GameState_OptionScreen &&
+        g_GameWork.gameStateSteps[0] == OptionsMenuState_PcOptions)
         return TC_MODE_BACK_CURSOR;
 
     /* The bonus options page is entered from the main options list with a
@@ -1098,7 +1110,7 @@ static int Tc_CornerOnly(int b)
 static int Tc_ScreenOnly(int b)
 {
     return b == TB_CLICK || b == TB_BONUS || b == TB_NO ||
-           b == TB_MAPUP || b == TB_MAPDN;
+           b == TB_MAPUP || b == TB_MAPDN || b == TB_RESET;
 }
 
 /* Buttons a mode shows ALONGSIDE its solo escape button. The map screen could
@@ -1114,6 +1126,9 @@ static int Tc_ExtraButton(int b, int mode)
         return mode == TC_MODE_MAP || mode == TC_MODE_PAPERMAP;
     if (b == TB_CHANNEL)
         return mode == TC_MODE_CHAT;
+    if (b == TB_RESET)
+        return mode == TC_MODE_BACK_CURSOR && g_GameWork.gameState == GameState_OptionScreen &&
+               g_GameWork.gameStateSteps[0] == OptionsMenuState_PcOptions;
     return 0;
 }
 
@@ -2075,6 +2090,17 @@ void Pc_Touch_Update(void)
             s_clickWas = clickNow;
         }
 
+        /* No PSX button either: the request the options page answers with
+         * its Yes/No. Edge-triggered for the same reason as Menu below. */
+        {
+            static int s_resetWas;
+            const int  resetNow = (s_Buttons[TB_RESET].holdFrames > 0);
+
+            if (resetNow && !s_resetWas)
+                Pc_ResetSettings_TouchRequest();
+            s_resetWas = resetNow;
+        }
+
         /* Opens the overlay directly rather than through a pad bind: there is
          * no PSX button for it to press. Edge-triggered on the latch, or the
          * three-frame minimum press would toggle it open and shut again. */
@@ -2238,6 +2264,24 @@ void Pc_Touch_GetPad(unsigned short* word,
     if (rightY != NULL) *rightY = s_RightY;
     if (leftX  != NULL) *leftX  = s_LeftX;
     if (leftY  != NULL) *leftY  = s_LeftY;
+
+    /* Tilt movement drives the left stick in gameplay whenever no thumb is on
+     * the touch stick; a thumb always wins. Asked every read so it keeps its
+     * own timing for re-centring after time away from play. */
+    if (Tc_Mode() == TC_MODE_GAMEPLAY)
+    {
+        extern int    Pc_Gyro_MoveStick(unsigned char* x, unsigned char* y, int* run);
+        unsigned char gx, gy;
+        int           grun;
+
+        if (Pc_Gyro_MoveStick(&gx, &gy, &grun) && s_LeftX == 128 && s_LeftY == 128)
+        {
+            if (leftX != NULL) *leftX = gx;
+            if (leftY != NULL) *leftY = gy;
+            if (grun && word != NULL)
+                Tc_PressAction(word, g_GameWorkPtr->config.controllerConfig.run);
+        }
+    }
 }
 
 /* Any finger on the glass right now, whatever the game state. The FMV player
@@ -2507,6 +2551,18 @@ static void Tc_Eye(s_TcBatch* b, int cx, int cy, int r, int lum)
 }
 
 /* A quick save/load button: a ring with its letter. */
+static void Tc_LetterButton(s_TcBatch* b, const char* letter, int cx, int cy, int r, int lum)
+{
+    int px;
+    int inner = (r * 80) / 100;
+
+    Tc_Ring(b, cx, cy, r, inner, lum);
+    px = ((inner * 2 * 80) / 100) / TC_GLYPH_H;
+    if (px < 1)
+        px = 1;
+    Tc_Text(b, letter, cx, cy, px, lum);
+}
+
 static void Tc_QuickButton(s_TcBatch* b, int load, int cx, int cy, int r, int lum)
 {
     int px;
@@ -2819,6 +2875,11 @@ void Pc_Touch_Draw(void)
         if (i == TB_QSAVE || i == TB_QLOAD)
         {
             Tc_QuickButton(&batch, i == TB_QLOAD, cx, cy, r, lum);
+            continue;
+        }
+        if (i == TB_RESET)
+        {
+            Tc_LetterButton(&batch, "R", cx, cy, r, lum);
             continue;
         }
 

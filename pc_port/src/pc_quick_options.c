@@ -38,6 +38,8 @@
 #include "pc_config.h"
 #include "lang_text.h"
 #include "pc_cheats.h"
+#include "pc_confirm_dialog.h"
+#include "pc_reset_settings.h"
 #include "control_style.h"
 #include "lang_quick.h"
 #include "sh_log.h"
@@ -76,7 +78,8 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
        QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM,
-       QO_X_CROSSHAIRMELEE, QO_X_AUTORELOAD };
+       QO_X_CROSSHAIRMELEE, QO_X_AUTORELOAD,
+       QO_X_GYROAIM, QO_X_GYROSENS, QO_X_GYROMOVE };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -187,7 +190,7 @@ static const QoRowDef s_page0[] = {
     { ROW_EXTRA, NULL, QO_X_PPLIGHT,        "Per-Pixel Lighting" },
     { ROW_EXTRA, NULL, QO_X_HEROLIGHT,      "Hero Light" },
     { ROW_EXTRA, NULL, QO_X_HEROLIGHTFL,    "Hero Light with Flashlight" },
-    { ROW_EXTRA, NULL, QO_X_FACEANIM,       "Character Face Animation" },
+    { ROW_EXTRA, NULL, QO_X_FACEANIM,       "Character Face Animation (WIP)" },
     { ROW_OPT,   "bullet_decals",        0, NULL },
 #if defined(QO_MOBILE)
     /* Frame cap, beside Weather_Rate for the same reason the Options menu puts
@@ -478,6 +481,10 @@ static const QoRowDef s_pageControls[] = {
     { ROW_OPT,   "control_2d",             0, NULL },  /* screen-relative movement */
     { ROW_OPT,   "touch_controls",         0, NULL },  /* Automatic / On / Off */
     { ROW_OPT,   "touch_look_sensitivity", 0, NULL },
+    /* Tilt to move, in every camera; Gyro Aim joins it in the alternate
+     * cameras (qo_controls_page). The sensitivity is shared by both. */
+    { ROW_EXTRA, NULL, QO_X_GYROMOVE,         "Gyro Movement" },
+    { ROW_EXTRA, NULL, QO_X_GYROSENS,         "Gyro Sensitivity" },
     { ROW_OPT,   "one_button_combat",      0, NULL },
     /* The pad rows the Options menu's Controls page carries on a phone, for
      * anyone who has paired a controller. */
@@ -494,14 +501,54 @@ static const QoRowDef s_pageControls[] = {
     { ROW_CLOSE, NULL, 0,                     "Close" },
 };
 
-_Static_assert(sizeof(s_pageControls) / sizeof(s_pageControls[0]) <= QO_MAX_ROWS,
-               "s_pageControls exceeds QO_MAX_ROWS; raise the ceiling or split the page");
+_Static_assert(sizeof(s_pageControls) / sizeof(s_pageControls[0]) + 1 <= QO_MAX_ROWS,
+               "s_pageControls plus the Gyro Aim row exceeds QO_MAX_ROWS; raise the ceiling or split the page");
+
+/* Gyro aim steers only the alternate cameras, so its row joins the page, after
+ * Gyro Movement, only while one of those is active. */
+static QoRowDef s_pageControlsGyro[QO_MAX_ROWS];
+
+static const QoRowDef* qo_controls_page(int* count)
+{
+    extern int g_DebugThirdPersonCam;
+    const int  n   = (int)(sizeof(s_pageControls) / sizeof(s_pageControls[0]));
+    const int  alt = g_DebugThirdPersonCam != 0;
+    int        i, k = 0;
+
+    {
+        static int s_lastAlt = -1;
+        if (alt != s_lastAlt)
+        {
+            s_lastAlt       = alt;
+            s_viewRowsDirty = 1;
+        }
+    }
+
+    if (!alt)
+    {
+        *count = n;
+        return s_pageControls;
+    }
+
+    for (i = 0; i < n; i++)
+    {
+        s_pageControlsGyro[k++] = s_pageControls[i];
+        if (s_pageControls[i].kind == ROW_EXTRA && s_pageControls[i].extra == QO_X_GYROMOVE)
+        {
+            const QoRowDef gyroAim = { ROW_EXTRA, NULL, QO_X_GYROAIM, "Gyro Aim" };
+
+            s_pageControlsGyro[k++] = gyroAim;
+        }
+    }
+    *count = k;
+    return s_pageControlsGyro;
+}
 #endif
 
 static const QoRowDef* qo_section_rows(int page, int* count)
 {
 #if defined(QO_MOBILE)
-    if (page == 5) { *count = (int)(sizeof(s_pageControls) / sizeof(s_pageControls[0])); return s_pageControls; }
+    if (page == 5) return qo_controls_page(count);
 #else
     if (page == 5) { *count = (int)(sizeof(s_page5) / sizeof(s_page5[0])); return s_page5; }
 #endif
@@ -698,6 +745,12 @@ static int            s_fontsScript = -1; /* Pc_LangQuickScript the face was pic
 /* Baked text, re-baked when the pixel size or the page changes; values are
  * re-baked whenever their text changes. */
 static GLuint s_texTitle, s_texHint, s_texHint2;
+/* The touch reset button: a ring and an R, drawn only while touch drives the
+ * menu; s_resetBtn is its centre and radius in viewport px for Update. */
+static GLuint s_texResetRing, s_texResetR;
+static int    s_resetRingW, s_resetRingH, s_resetRW, s_resetRH;
+static float  s_resetBtn[3];
+static int    s_hintResetMode = -1;
 static int    s_titleW, s_titleH, s_hintW, s_hintH, s_hint2W, s_hint2H;
 /* The Previous / Next row, in pieces so the mouse glyphs sit inline. */
 enum { QO_NAV_PREV = 0, QO_NAV_SLASH, QO_NAV_NEXT, QO_NAV_DEST, QO_NAV_ICON_R, QO_NAV_ICON_L,
@@ -1521,6 +1574,9 @@ static void qo_free_text(void)
     qo_retire(s_texDec); s_texDec = 0;
     qo_retire(s_texInc); s_texInc = 0;
 #endif
+    qo_retire(s_texResetRing); s_texResetRing = 0;
+    qo_retire(s_texResetR);    s_texResetR    = 0;
+    qo_retire(s_texResetHint); s_texResetHint = 0;
     for (i = 0; i < QO_MAX_ROWS; i++)
     {
         qo_retire(s_texLabel[i]); s_texLabel[i] = 0;
@@ -1737,6 +1793,8 @@ int Pc_QuickOptions_ShowsMinimapRows(void)
 }
 
 static int qo_page_hidden(int page);
+/* Page and row of the gyro row the recalibrate hint was last shown for. */
+static int s_gyroHintRow = -1;
 
 static void qo_open(void)
 {
@@ -1752,6 +1810,7 @@ static void qo_open(void)
     s_phaseStart = SDL_GetTicks();
     s_sel        = 0;
     if (qo_page_hidden(s_page)) s_page = 0;
+    s_gyroHintRow = -1;
     g_PcQuickOptionsActive = 1;
 }
 
@@ -1769,9 +1828,20 @@ void Pc_QuickOptions_Close(void)
     if (Pc_ConfirmDialog_IsOpen())
     {
         Pc_ConfirmDialog_Cancel();
-        PcOpt_PgxpFogAnswer(0);
+        if (!s_qoConfirmReset)
+            PcOpt_PgxpFogAnswer(0);
     }
 #endif
+#if defined(QO_MOBILE)
+    {
+        extern void Pc_Gyro_Recentre(void);
+        Pc_Gyro_Recentre();
+    }
+#endif
+#if !defined(QO_MOBILE)
+    Pc_ConfirmDialog_Cancel();
+#endif
+    s_qoConfirmReset = 0;
     s_phase      = QO_CLOSING;
     s_phaseStart = SDL_GetTicks();
 }
@@ -1986,6 +2056,45 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
     if (s_phase != QO_SHOWN) /* ignore input while animating in/out */
         return;
 
+    /* Reset all settings: R, both triggers, or the touch button, then the same
+     * Yes/No as PC Options. The dialog reads the pointer itself. */
+    Pc_ResetSettings_Track();
+    if (s_qoConfirmReset && Pc_ConfirmDialog_IsOpen())
+    {
+        extern void Pc_Options_ResetToDefaults(void);
+        int res = Pc_ConfirmDialog_Update(left, right, confirm, close);
+        if (res == PC_CONFIRM_YES)
+        {
+            qo_beep(Sfx_MenuConfirm);
+            Pc_Options_ResetToDefaults();
+        }
+        else if (res == PC_CONFIRM_NO)
+            qo_beep(Sfx_MenuCancel);
+        if (res != PC_CONFIRM_NONE)
+            s_qoConfirmReset = 0;
+        return;
+    }
+    if (!Pc_ConfirmDialog_IsOpen())
+    {
+        int   tapped = 0;
+        float tx, ty;
+
+        if (Pc_ResetSettings_InputMode() == PC_INPUT_TOUCH && s_resetBtn[2] > 0.0f &&
+            Pc_MouseCursor_LeftClicked() && Pc_MouseCursor_ViewportPos(&tx, &ty))
+        {
+            float dx = tx * s_vpW - s_resetBtn[0], dy = (1.0f - ty) * s_vpH - s_resetBtn[1];
+            tapped = dx * dx + dy * dy <= s_resetBtn[2] * s_resetBtn[2] * 1.6f;
+        }
+        if (tapped)
+            Pc_ResetSettings_TouchRequest();
+        if (Pc_ResetSettings_RequestEdge())
+        {
+            qo_beep(Sfx_MenuMove);
+            s_qoConfirmReset = 1;
+            Pc_ConfirmDialog_Open("RESET SETTINGS", "Reset all settings to their defaults?");
+            return;
+        }
+    }
 #if defined(QO_MOBILE)
     /* The fog row's PGXP offer (see PcOpt_PgxpFogCheck). The dialog reads the
      * pointer itself; this menu sits still underneath until it is answered. */
@@ -2280,6 +2389,14 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
             if (wheel && QO_IS_VALUE_ROW(rows[row].kind))
                 qo_activate(&rows[row], wheel > 0 ? +1 : -1);
         }
+        else if ((mClick || mRClick) && !s_dragging &&
+                 !(inX && py >= s_geoPanelB && py <= s_geoTitleT))
+        {
+            /* A click beside the panel turns the page, the way the page row
+             * does: left forward, right back. */
+            qo_set_page(s_page + (mClick ? 1 : -1));
+            qo_beep(Sfx_MenuMove);
+        }
     }
 
     /* A page row with no step of its own adjusts like a value: Left and a
@@ -2295,6 +2412,20 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
     {
         qo_confirm(&rows[s_sel]);
     }
+
+#if defined(QO_MOBILE)
+    /* Once per arrival on a gyro row: the fix for a drifting tilt or aim is
+     * this menu itself, which re-centres on close (Pc_Gyro_Recentre). */
+    {
+        const int onGyro = rows[s_sel].kind == ROW_EXTRA &&
+                           (rows[s_sel].extra == QO_X_GYROMOVE || rows[s_sel].extra == QO_X_GYROAIM);
+        const int id     = onGyro ? (s_page * QO_MAX_ROWS + s_sel) : -1;
+
+        if (onGyro && id != s_gyroHintRow)
+            SH_DBG_ECHO("Opening the quick menu will recalibrate the gyroscope");
+        s_gyroHintRow = id;
+    }
+#endif
 }
 
 static void qo_confirm(const QoRowDef* r)
@@ -2598,6 +2729,10 @@ void Pc_QuickOptions_Draw(void)
         s_texTitle = qo_bake(titleBuf, (float)(int)(titleH * 0.46f), &s_titleW, &s_titleH);
 #endif
     }
+    if (s_texHint && s_hintResetMode != Pc_ResetSettings_InputMode())
+    {
+        qo_retire(s_texHint); s_texHint = 0;
+    }
 #if defined(QO_MOBILE)
     if (!s_texDec) s_texDec = qo_bake("-", (float)px, &s_decW, &s_decH);
     if (!s_texInc) s_texInc = qo_bake("+", (float)px, &s_incW, &s_incH);
@@ -2617,9 +2752,10 @@ void Pc_QuickOptions_Draw(void)
         BindInput_KeyLabel(g_PcConfig.keyQuickOptions[0] ? g_PcConfig.keyQuickOptions : "F10", key, sizeof(key));
         snprintf(hint, sizeof(hint), "%s    %s    %s", Pc_LangQuick("Up/Down select"),
                  Pc_LangQuick("Left/Right adjust"), Pc_LangQuick("Q/E or PgUp/PgDn page"));
-        snprintf(hint2, sizeof(hint2), "%s    %s    %s", Pc_LangQuick("Drag the title to move"),
+        s_hintResetMode = Pc_ResetSettings_InputMode();
+        snprintf(hint2, sizeof(hint2), "%s    %s    %s    %s", Pc_LangQuick("Drag the title to move"),
                  Pc_LangQuickFill("{key} or Esc close", "{key}", key),
-                 Pc_LangQuick("* needs restart"));
+                 Pc_LangQuick(Pc_ResetSettings_Hint()), Pc_LangQuick("* needs restart"));
         s_texHint  = qo_bake(hint,  (float)hpx, &s_hintW,  &s_hintH);
         s_texHint2 = qo_bake(hint2, (float)hpx, &s_hint2W, &s_hint2H);
         widest = (s_hintW > s_hint2W) ? s_hintW : s_hint2W;
@@ -2831,6 +2967,55 @@ void Pc_QuickOptions_Draw(void)
         float hx = panelL + (panelW - (float)s_hintW) * 0.5f;
         float hy = panelB + hintH * 0.72f;
         qo_quad(s_texHint, NX(hx), NY(hy), NX(hx + s_hintW), NY(hy - s_hintH), 0.7f, 0.7f, 0.75f, dim);
+    }
+
+    s_resetBtn[2] = 0.0f;
+    if (Pc_ResetSettings_InputMode() == PC_INPUT_TOUCH)
+    {
+        /* In the title band's right end: a tap there is never a drag, since a
+         * tap opens the dialog before the drag code runs. */
+        float r  = titleH * 0.36f;
+        float cx = panelR - titleH * 0.6f, cy = panelT - titleH * 0.5f;
+        int   d  = (int)(r * 2.0f);
+
+        if (d < 8) d = 8;
+        if (s_texResetRing && s_resetRingW != d)
+        {
+            qo_retire(s_texResetRing); s_texResetRing = 0;
+            qo_retire(s_texResetR);    s_texResetR    = 0;
+            qo_retire(s_texResetHint); s_texResetHint = 0;
+        }
+        if (!s_texResetRing)
+        {
+            enum { RING_SRC = 64 };
+            static unsigned char ring[RING_SRC * RING_SRC];
+            int x, y;
+
+            for (y = 0; y < RING_SRC; y++)
+                for (x = 0; x < RING_SRC; x++)
+                {
+                    float fx = (float)x + 0.5f - RING_SRC * 0.5f, fy = (float)y + 0.5f - RING_SRC * 0.5f;
+                    float dist = sqrtf(fx * fx + fy * fy);
+                    ring[y * RING_SRC + x] = (dist <= RING_SRC * 0.5f - 1.0f && dist >= RING_SRC * 0.5f - 6.0f) ? 255
+                                           : (dist < RING_SRC * 0.5f - 6.0f ? 70 : 0);
+                }
+            s_texResetRing = qo_bake_icon(ring, RING_SRC, d, &s_resetRingW, &s_resetRingH);
+            s_texResetR    = qo_bake("R", r * 1.1f, &s_resetRW, &s_resetRH);
+        }
+        qo_quad(s_texResetRing, NX(cx - r), NY(cy + r), NX(cx + r), NY(cy - r), 0.92f, 0.92f, 0.95f, dim);
+        qo_quad(s_texResetR, NX(cx - s_resetRW * 0.5f), NY(cy + s_resetRH * 0.5f),
+                NX(cx + s_resetRW * 0.5f), NY(cy - s_resetRH * 0.5f), 0.92f, 0.92f, 0.95f, dim);
+        s_resetBtn[0] = cx;
+        s_resetBtn[1] = cy;
+        s_resetBtn[2] = r;
+        if (!s_texResetHint || s_hintResetMode != PC_INPUT_TOUCH)
+        {
+            qo_retire(s_texResetHint);
+            s_texResetHint  = qo_bake(Pc_LangQuick(Pc_ResetSettings_Hint()), r * 0.8f, &s_resetHintW, &s_resetHintH);
+            s_hintResetMode = PC_INPUT_TOUCH;
+        }
+        qo_quad(s_texResetHint, NX(cx - r * 1.4f - s_resetHintW), NY(cy + s_resetHintH * 0.5f),
+                NX(cx - r * 1.4f), NY(cy - s_resetHintH * 0.5f), 0.8f, 0.8f, 0.85f, dim);
     }
 
     /* Dropdown list over the value column of its row, on top of the rows. */

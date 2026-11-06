@@ -11,10 +11,11 @@
  *      Advanced's (hfov 1.00, vfov 1.08) again -- they diverged at vfov 1.08.
  *   3: menu_fps_unlock default 1 -> 0 (menus count input per frame).
  *   4: allow_loose_files default 0 -> 1, mobile only (no launcher to turn it on).
- *      Desktop configs are stamped to 4 with no value change.
+ *      Desktop configs are stamped forward with no value change.
  *   5: fps_cap default 30 -> 60, mobile only. Desktop keeps 30.
- *   6: pad_reload / pad_quick_turn default to the shoulders where still unbound
- *      (desktop's version 4; the phones had taken 4 and 5 already). */
+ *   6: pad_reload / pad_quick_turn default NONE -> rightshoulder / leftshoulder,
+ *      filled only where the slot was unbound. (4 and 5 live on the mobile
+ *      branches; numbering is shared so a merge never reuses a step.) */
 #define PC_CONFIG_VERSION 6
 
 /* Minimap size range, as a percentage of the built-in MM_SIZE. The top end is a
@@ -269,6 +270,7 @@ typedef struct {
     float flashlightSize;       /* per-pixel flashlight cone coverage multiplier, 0..3 (config key: flashlight_size) */
     float flashlightIntensityFps; /* per-pixel flashlight brightness in FPS mode, 0..3 (config key: flashlight_intensity_fps) */
     float flashlightSizeFps;      /* per-pixel flashlight coverage in FPS mode, 0..3 (config key: flashlight_size_fps) */
+    int   flashlightFollowAim;    /* TPS/OTS: the flashlight points where the camera aims, as in FPS (config key: flashlight_follow_aim, console FLASHLIGHTAIM) */
     float postProcessIntensity; /* post-process effect mix, 0..1 (config key: post_process_intensity) */
     float tonemapIntensity;     /* tone-map mix, 0..1 (config key: tonemap_intensity) */
     /* Image adjustments applied to the final frame every time (independent of the
@@ -330,6 +332,14 @@ typedef struct {
      * nobody wants under a stray thumb. Config key: touch_quicksave_buttons. */
     int   touchQuickSaveLoad;
     float touchLookSensitivity; /* touch look speed multiplier, 0.1..4.0 (config key: touch_look_sensitivity); default 1.0 */
+    /* Phone gyroscope steering the alternate cameras (pc_gyro.c): 0 = off,
+     * 1 = only while aiming, 2 = always. Config key: gyro_aim. */
+    int   gyroAim;
+    float gyroSensitivity;  /* gyro aim: 1.0 = the view turns as far as the phone does; gyro movement: scales the tilt. 0.1..4.0 (config key: gyro_sensitivity) */
+    /* Tilting the phone is a left stick, in every camera (pc_gyro.c). Never on
+     * together with gyroAim: the quick menu turns the other off, and pc_gyro.c
+     * drops this one if a hand-edited config has both. Config key: gyro_movement. */
+    int   gyroMove;
     int   oneButtonCombat;  /* 1 = Aim also fires, so combat is one thumb (config key: one_button_combat) */
     int altButtonSprint;    /* "Always use button based sprinting": 1 = walk by default, sprint ONLY while the bound run control is held — applies to alt cameras (TPS/OTS/FPS) AND 2D control under any camera; 0 = a near-full stick push also sprints (config key: altcam_button_sprint) */
     int immersiveFpsHeadTracking; /* 1 = FPS view direction follows Harry's animated head-bone rotation (idle sway/lean), mouse layered on top (config key: immersive_fps_head_tracking) */

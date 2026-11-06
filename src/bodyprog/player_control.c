@@ -850,6 +850,11 @@ bool func_80071620(u32 animStatus, s_SubCharacter* player, s32 keyframeIdx, e_Sf
     }
 }
 
+#ifdef SH_PC_PORT
+/* Free-aim camera-ray pitch (90 = level), written by Player_CombatUpdate. */
+static q3_12 g_PcFreeAimPitch = Q12_ANGLE(90.0f);
+#endif
+
 void Player_Update(s_SubCharacter* player, s_AnmHeader* anmHdr, GsCOORDINATE2* coords) // 0x800717D0
 {
     s_PlayerExtra* extra;
@@ -1008,9 +1013,15 @@ void Player_Update(s_SubCharacter* player, s_AnmHeader* anmHdr, GsCOORDINATE2* c
                 Anim_BoneUpdate(anmHdr, coords, _holdKf, _holdKf, Q12(0.0f));
             }
 
-            s32 _aimPitch = playerProps.field_122 - Q12_ANGLE(90.0f);
+            /* g_PcFreeAimPitch, not field_122: with nothing locked on, the aim
+             * states reset field_122 to level every frame before this runs, and
+             * the camera-ray pitch only lands in it later in the frame, so the
+             * lean read level and Harry never tilted. */
+            s32 _aimPitch = g_PcFreeAimPitch - Q12_ANGLE(90.0f);
             _aimPitch = CLAMP(_aimPitch, -Q12_ANGLE(56.25f), Q12_ANGLE(56.25f)); /* = FLEX_ROT_X_RANGE */
-            func_80044F14(&coords[HarryBone_Torso], Q12_ANGLE(0.0f), _aimPitch >> 1, Q12_ANGLE(0.0f));
+            /* Three quarters of the aim pitch: half read as Harry barely moving
+             * while the camera looked well up or down. */
+            func_80044F14(&coords[HarryBone_Torso], Q12_ANGLE(0.0f), (_aimPitch * 3) >> 2, Q12_ANGLE(0.0f));
             coords[HarryBone_Torso].flg = 0;
         }
 
@@ -3906,6 +3917,19 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
             g_Player_HeadingAngle = headingAngle1;
             func_8007FB94(player, extra, animStatus);
 
+#ifdef SH_PC_PORT
+            /* Gyro aim's shake to escape: each left/right reversal of a fast
+             * wag of the phone is one mash. 0 unless gyro_aim is on. */
+            {
+                extern int Pc_Gyro_GrabShakes(void);
+                const int  shakes = Pc_Gyro_GrabShakes();
+
+                if (player->health > Q12(0.0f))
+                {
+                    g_Player_GrabReleaseInputTimer += shakes * TIMESTEP_30_FPS;
+                }
+            }
+#endif
             if (player->health > Q12(0.0f) && (g_Player_HasMoveInput | g_Player_HasActionInput))
             {
 #ifdef SH_PC_PORT
@@ -6609,9 +6633,21 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
                 playerTurn = (g_Player_IsTurningLeft != false) * 2;
             }
 
+#ifdef SH_PC_PORT
+            /* Left/Right picks the next target only while the lock-on aim anim
+             * holds its ready keyframe. PSX plays one keyframe a tick and stops
+             * exactly on field_6; at PC frame rates the hold parks a frame past
+             * it, so the exact test failed every frame and the press was thrown
+             * away: no target switching in the classic camera. Same
+             * reached-or-passed reading as SH_AIM_KF_REACHED. */
+            if ((extra->model.anim.status != ANIM_STATUS(HarryAnim_Unk29, true) || extra->model.anim.keyframeIdx < D_800C44F0[1].field_6) &&
+                (extra->model.anim.status != ANIM_STATUS(HarryAnim_Unk30, true) || extra->model.anim.keyframeIdx < D_800C44F0[2].field_6) &&
+                (extra->model.anim.status != ANIM_STATUS(HarryAnim_Unk32, true) || extra->model.anim.keyframeIdx < D_800C44F0[4].field_6))
+#else
             if ((extra->model.anim.status != ANIM_STATUS(HarryAnim_Unk29, true) || extra->model.anim.keyframeIdx != D_800C44F0[1].field_6) &&
                 (extra->model.anim.status != ANIM_STATUS(HarryAnim_Unk30, true) || extra->model.anim.keyframeIdx != D_800C44F0[2].field_6) &&
                 (extra->model.anim.status != ANIM_STATUS(HarryAnim_Unk32, true) || extra->model.anim.keyframeIdx != D_800C44F0[4].field_6))
+#endif
             {
                 playerTurn = 0;
                 player->properties.player.field_100++;
@@ -6623,6 +6659,9 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
 
             if (playerTurn != 0)
             {
+#ifdef SH_PC_PORT
+                s32 pcPrevTarget = g_Player_TargetNpcIdx;
+#endif
                 playerProps.flags &= ~PlayerFlag_Unk9;
                 player->properties.player.field_F4                 = g_Player_FlexRotationX;
 
@@ -6634,6 +6673,15 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
                 {
                     func_8005CD38(&g_Player_TargetNpcIdx, &playerProps.field_122, &g_SysWork.playerCombat, Q12(1.0f / 3.0f), Q12(3.0f), playerTurn);
                 }
+#ifdef SH_PC_PORT
+                /* Once per switch attempt (the state leaves AimTargetLock on either
+                 * outcome), so a test run says whether the gate opened and what the
+                 * selector answered: -1 = no candidate on that side with a clear
+                 * line of sight, which drops the lock as retail does. */
+                SH_DBG("[AIMSWITCH] dir=%s from npc %d -> %d (status=%d kf=%d)",
+                       (playerTurn == 1) ? "right" : "left", (int)pcPrevTarget, (int)g_Player_TargetNpcIdx,
+                       (int)extra->model.anim.status, (int)extra->model.anim.keyframeIdx);
+#endif
 
                 if (g_Player_TargetNpcIdx == NO_VALUE)
                 {
@@ -6945,7 +6993,10 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
                 {
                     case ANIM_STATUS(HarryAnim_Unk29, true):
                     case ANIM_STATUS(HarryAnim_Unk32, true):
-                        if (extra->model.anim.keyframeIdx == D_800C44F0[D_800AF220].field_6)
+                        /* Reached-or-passed on PC: the switch below completes on that
+                         * reading, so the snap has to fire on the same frames or the
+                         * body finishes the switch still turning. */
+                        if (SH_AIM_KF_REACHED(D_800C44F0[D_800AF220].field_6))
                         {
                             player->rotation.vy = temp_s1_2;
                         }
@@ -11655,6 +11706,7 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                 if (_pitch > Q12_ANGLE(146.25f)) _pitch = Q12_ANGLE(146.25f);
                 unkAngle              = _pitch;
                 playerProps.field_122 = _pitch;
+                g_PcFreeAimPitch      = _pitch;
                 (void)g_TpsCamPitch;
                 D_800C4554 = NO_VALUE;
                 D_800C4556 = NO_VALUE;
