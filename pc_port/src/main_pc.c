@@ -395,7 +395,13 @@ static void Pc_WriteStarterConfig(const char* path)
     fprintf(f, "#   2 = always on, 0 = always off. Off still leaves the taps that skip\n");
     fprintf(f, "#   a logo or leave a pause screen, so a phone can always reach this menu.\n");
     fprintf(f, "touch_controls = %d\n", g_PcConfig.touchControls);
-    fprintf(f, "touch_look_sensitivity = %.2f\n\n", (double)g_PcConfig.touchLookSensitivity);
+    fprintf(f, "touch_look_sensitivity = %.2f\n", (double)g_PcConfig.touchLookSensitivity);
+    fprintf(f, "# gyro_aim: the phone's gyroscope steers the alternate cameras.\n");
+    fprintf(f, "#   0 = off, 1 = only while aiming, 2 = always.\n");
+    fprintf(f, "gyro_aim = %d\n", g_PcConfig.gyroAim);
+    fprintf(f, "gyro_sensitivity = %.2f\n", (double)g_PcConfig.gyroSensitivity);
+    fprintf(f, "# gyro_movement: tilt the phone to move (1). Not together with gyro_aim.\n");
+    fprintf(f, "gyro_movement = %d\n\n", g_PcConfig.gyroMove);
     fprintf(f, "# --- keyboard bindings ---\n");
     fprintf(f, "# SDL key names. The log prints every key this machine produces as\n");
     fprintf(f, "#   [KEY] scancode N = 'Name'\n");
@@ -456,10 +462,71 @@ const char* SH_LogPath(void)
     return s_logPath;
 }
 
+/* The session's log file, once created. Turning logging off (Sh_LogSetEnabled)
+ * only parks g_ShDebugLog; this handle stays open for the rest of the run, so
+ * turning it back on resumes the same file, and nothing is ever closed,
+ * truncated or deleted by toggling. Append, never "w": the name is per-run
+ * already, and nothing here may ever truncate a log. */
+static FILE* s_ShLogFile = NULL;
+
+/* The OS's low-memory warning (iOS didReceiveMemoryWarning, Android
+ * onTrimMemory/onLowMemory). SDL can deliver it on a thread that is not the
+ * game's, so the watch only raises a flag; Pc_LowMemory_Pump acts on it from
+ * the texture pump, on the game thread. */
+static SDL_atomic_t s_LowMemory;
+
+static int SDLCALL Pc_LowMemoryWatch(void* user, SDL_Event* e)
+{
+    (void)user;
+    if (e->type == SDL_APP_LOWMEMORY)
+        SDL_AtomicSet(&s_LowMemory, 1);
+#if defined(SH_IOS)
+    /* A suspended app is the first one iOS reclaims, largest first, and the
+     * game loop does not run until it is back, so the pump cannot do this.
+     * UIKit delivers the notification inside SDL's event pump, on the game
+     * thread and between frames, so freeing here is safe. The canvases are
+     * rebuilt from the pack on demand. */
+    else if (e->type == SDL_APP_DIDENTERBACKGROUND)
+    {
+        extern void TexPack_CacheFlush(void);
+        TexPack_CacheFlush();
+    }
+#endif
+    return 1;
+}
+
+/* Gives back what the texture pack holds that can be rebuilt: the whole
+ * compose cache now, and half the GL budget, which the pump's LRU then evicts
+ * down to over the next frames. Kept lowered for the rest of the session, as
+ * a second warning means the first cut was not enough. */
+void Pc_LowMemory_Pump(void)
+{
+    extern void TexPack_CacheFlush(void);
+    int oldBudget, oldCache;
+
+    if (SDL_AtomicSet(&s_LowMemory, 0) == 0)
+        return;
+
+    oldBudget = g_PcConfig.texpackBudgetMb;
+    oldCache  = g_PcConfig.texpackCacheMb;
+    TexPack_CacheFlush();
+    if (g_PcConfig.texpackCacheMb > 32)
+        g_PcConfig.texpackCacheMb /= 2;
+    if (g_PcConfig.texpackBudgetMb > 128)
+    {
+        g_PcConfig.texpackBudgetMb /= 2;
+        if (g_PcConfig.texpackBudgetCeilingMb > g_PcConfig.texpackBudgetMb)
+            g_PcConfig.texpackBudgetCeilingMb = g_PcConfig.texpackBudgetMb;
+    }
+    SH_DBG("[LOWMEM] OS low-memory warning: compose cache flushed, cache %d -> %d MB, "
+           "texture budget %d -> %d MB", oldCache, g_PcConfig.texpackCacheMb,
+           oldBudget, g_PcConfig.texpackBudgetMb);
+}
+
 void SH_DebugLogInit(void)
 {
     if (!g_ShDebugLog) {
-        g_ShDebugLog = fopen(SH_LogPath(), "w");
+        g_ShDebugLog = s_ShLogFile = fopen(SH_LogPath(), "a");
         if (!g_ShDebugLog) {
             /* Last resort — fall back to stdout so we don't crash on the
              * first SH_DBG. Caller (main) normally pre-opens this. */
@@ -1163,6 +1230,92 @@ static int Pc_UnfilteredPrim(int tpage, int clut)
     return Font_IsTextGlyphPrim(tpage, clut) || BootScreen_IsLogoPrim(clut);
 }
 
+/* What every log opens with, whether logging was on at boot or turned on
+ * later from the quick menu. */
+static void Sh_LogSessionHeader(void)
+{
+    {
+        /* Build identification — first thing to check in user logs.
+         * Generated fresh each build by cmake/gen_build_info.cmake. */
+        #include "sh_build_info.h"
+        SH_DBG("[SH] build " SH_BUILD_GIT_HASH " (" SH_BUILD_STAMP ")");
+    }
+    /* Say WHERE this log and the config actually are. The log is the one
+     * thing a remote user is asked to find, and when it silently lands in a
+     * private folder (no media dir on the device) the answer is invisible
+     * from both sides -- which is exactly what happened on an arcade
+     * cabinet. Now the file names its own location. */
+    SH_DBG("[SH] log:    %s", SH_LogPath());
+    SH_DBG("[SH] config: %s", s_ConfigPathUsed[0] ? s_ConfigPathUsed : "config.cfg");
+    {
+        const char* drop = Pc_UserVisibleDir();
+        SH_DBG("[SH] user-visible dir: %s", (drop != NULL) ? drop : "(none - using the app's private files dir)");
+    }
+    /* The user's actual settings, verbatim. Costs one pass over a small
+     * file at boot and removes the guesswork from every bug report. */
+    PcConfig_LogEffective("config.cfg");
+    /* One-line render-config fingerprint: these are the axes every remote
+     * corruption report gets bisected on — stop having to ask for the cfg. */
+    SH_DBG("[CONFIG] flashlight_mode=%d use_pgxp=%d resident_textures=%d global_chara_pool=%d",
+           g_PcConfig.flashlightMode, g_PcConfig.usePgxp,
+           g_PcConfig.residentTextures, g_PcConfig.globalCharaPool);
+}
+
+/* enable_debug_log at runtime (quick menu, Debug page). On creates this run's
+ * file only if there is none yet, otherwise resumes the same one; off flushes
+ * and stops writing to it. Returns 0 if the file could not be opened, leaving
+ * logging off. */
+int Sh_LogSetEnabled(int on)
+{
+    extern int g_PsyX_GpuTimerWanted;
+    int        created;
+
+    if (!on)
+    {
+        if (g_ShDebugLog)
+        {
+            SH_DBG("[SH] logging turned off");
+            fflush(g_ShDebugLog);
+        }
+        g_ShDebugLog = NULL;
+        PsyX_Log_SetStream(NULL);
+        g_PsyX_GpuTimerWanted = 0;
+        return 1;
+    }
+
+    if (g_ShDebugLog)
+        return 1;
+
+    created = (s_ShLogFile == NULL);
+    if (created)
+    {
+        SH_DebugLogInit();
+        /* Its stdout fallback is for boot, where SH_DBG must not crash; here
+         * it means the file could not be made, so logging stays off. */
+        if (s_ShLogFile == NULL)
+        {
+            g_ShDebugLog = NULL;
+            return 0;
+        }
+    }
+
+    g_ShDebugLog = s_ShLogFile;
+    PsyX_Log_SetStream(g_ShDebugLog);
+    /* The [PERF] line's GPU time: only measured when there is a log to read it. */
+    g_PsyX_GpuTimerWanted = 1;
+    if (created)
+    {
+        SH_DBG("[SH] log opened from the quick menu");
+        Sh_LogSessionHeader();
+    }
+    else
+    {
+        SH_DBG("[SH] logging turned back on");
+    }
+    fflush(g_ShDebugLog);
+    return 1;
+}
+
 int main(int argc, char* argv[])
 {
 #ifdef __ANDROID__
@@ -1355,35 +1508,11 @@ int main(int argc, char* argv[])
         SH_DebugLogInit();
         SH_DBG("[SH] main() entered (log opened post-config)");
         {
-            /* Build identification — first thing to check in user logs.
-             * Generated fresh each build by cmake/gen_build_info.cmake. */
-            #include "sh_build_info.h"
-            SH_DBG("[SH] build " SH_BUILD_GIT_HASH " (" SH_BUILD_STAMP ")");
-            {
-                /* The [PERF] line's GPU time: only measured when there is a log to read it. */
-                extern int g_PsyX_GpuTimerWanted;
-                g_PsyX_GpuTimerWanted = 1;
-            }
+            /* The [PERF] line's GPU time: only measured when there is a log to read it. */
+            extern int g_PsyX_GpuTimerWanted;
+            g_PsyX_GpuTimerWanted = 1;
         }
-        /* Say WHERE this log and the config actually are. The log is the one
-         * thing a remote user is asked to find, and when it silently lands in a
-         * private folder (no media dir on the device) the answer is invisible
-         * from both sides -- which is exactly what happened on an arcade
-         * cabinet. Now the file names its own location. */
-        SH_DBG("[SH] log:    %s", SH_LogPath());
-        SH_DBG("[SH] config: %s", s_ConfigPathUsed[0] ? s_ConfigPathUsed : "config.cfg");
-        {
-            const char* drop = Pc_UserVisibleDir();
-            SH_DBG("[SH] user-visible dir: %s", (drop != NULL) ? drop : "(none - using the app's private files dir)");
-        }
-        /* The user's actual settings, verbatim. Costs one pass over a small
-         * file at boot and removes the guesswork from every bug report. */
-        PcConfig_LogEffective("config.cfg");
-        /* One-line render-config fingerprint: these are the axes every remote
-         * corruption report gets bisected on — stop having to ask for the cfg. */
-        SH_DBG("[CONFIG] flashlight_mode=%d use_pgxp=%d resident_textures=%d global_chara_pool=%d",
-               g_PcConfig.flashlightMode, g_PcConfig.usePgxp,
-               g_PcConfig.residentTextures, g_PcConfig.globalCharaPool);
+        Sh_LogSessionHeader();
     }
 
 #if defined(__ANDROID__)
@@ -1414,18 +1543,29 @@ int main(int argc, char* argv[])
              * OS and the game, which died with GL_OUT_OF_MEMORY after a few
              * minutes of play. Machines that small get proportional floors. */
             const int tinyRam = (ramMb <= 1536);
-            int cacheCap   = tinyRam ? (ramMb / 16) : (ramMb / 8);
+#if defined(SH_IOS)
+            /* iOS kills a foreground app outright, with no signal and no log,
+             * once its footprint passes a limit near HALF of RAM (~2 GB on a
+             * 4 GB iPhone 13), and GL textures are part of that footprint on
+             * its unified memory. The desktop 1/8 + 1/4 split put up to 1.4 GB
+             * of a 3.6 GB phone into textures alone: a texture pack plus the
+             * town was enough to be killed walking through a door. */
+            const int phoneRam = 1;
+#else
+            const int phoneRam = 0;
+#endif
+            int cacheCap   = (tinyRam || phoneRam) ? (ramMb / 16) : (ramMb / 8);
             int cacheFloor = tinyRam ? 32 : 128;
             if (cacheCap < cacheFloor) cacheCap = cacheFloor;
             if (g_PcConfig.texpackCacheMb > cacheCap)
             {
-                SH_DBG("[TEXPACK] compose cache capped %d -> %d MB (1/8 of %d MB RAM)",
+                SH_DBG("[TEXPACK] compose cache capped %d -> %d MB (%d MB RAM)",
                        g_PcConfig.texpackCacheMb, cacheCap, ramMb);
                 g_PcConfig.texpackCacheMb = cacheCap;
             }
             if (ramMb <= 8192)
             {
-                int budgetCap   = tinyRam ? (ramMb / 8) : (ramMb / 4);
+                int budgetCap   = (tinyRam || phoneRam) ? (ramMb / 8) : (ramMb / 4);
                 int budgetFloor = tinyRam ? 64 : 256;
                 if (budgetCap < budgetFloor) budgetCap = budgetFloor;
                 /* Published, not just applied: HiresOverride_ClampBudgetToVram runs
@@ -1786,6 +1926,7 @@ int main(int argc, char* argv[])
         Pc_ControlStyleInit();
     }
     SDL_AddEventWatch(Pc_TouchMouseWatch, NULL);
+    SDL_AddEventWatch(Pc_LowMemoryWatch, NULL);
 
     /* Bring the game window to the foreground on launch. SilentHillPC.exe is a
      * console-subsystem app, so Windows spawns a console window at startup that

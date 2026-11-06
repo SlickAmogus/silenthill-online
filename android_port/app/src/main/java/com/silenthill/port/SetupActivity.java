@@ -3,19 +3,17 @@ package com.silenthill.port;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.Settings;
+import android.database.Cursor;
+import android.provider.DocumentsContract;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -58,7 +56,7 @@ public class SetupActivity extends Activity {
     private static final String TAG = "SilentHill";
 
     private static final int REQ_PICK_DISC   = 1001;
-    private static final int REQ_ALL_FILES   = 1002;
+    private static final int REQ_PICK_FOLDER = 1002;
     private static final int REQ_READ_STORAGE = 1003;
 
     /** A PSX disc image is ~500-750 MB; anything far outside that is not one. */
@@ -312,7 +310,7 @@ public class SetupActivity extends Activity {
 
         // If access was granted on an earlier run, go straight to scanning
         // rather than making the user press a button for no reason.
-        if (hasStorageAccess()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && hasStorageAccess()) {
             startScan();
         } else {
             setStatus("The game needs a Silent Hill disc image (a .bin file).\n\n"
@@ -421,10 +419,8 @@ public class SetupActivity extends Activity {
 
     // -------------------------------------------------------- permissions ---
 
+    /** Path access for the Android 10-and-older scan. */
     private boolean hasStorageAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            return Environment.isExternalStorageManager();
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
                     == PackageManager.PERMISSION_GRANTED;
@@ -433,27 +429,7 @@ public class SetupActivity extends Activity {
     }
 
     private void requestStorageAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // All-files access is the only way to read a .bin (a non-media file)
-            // by path on Android 11+. It is a Settings screen, not a dialog.
-            setStatus("Android needs you to allow file access so the disc image can "
-                    + "be found.\n\nOn the next screen, switch on \"Allow access to "
-                    + "manage all files\", then come back.");
-            try {
-                Intent i = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                      Uri.parse("package:" + getPackageName()));
-                startActivityForResult(i, REQ_ALL_FILES);
-            } catch (Exception e) {
-                try {
-                    startActivityForResult(
-                        new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
-                        REQ_ALL_FILES);
-                } catch (Exception e2) {
-                    setStatus("This device would not open the file-access setting.\n\n"
-                            + "Use \"Choose file...\" instead.");
-                }
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             requestPermissions(new String[] { Manifest.permission.READ_EXTERNAL_STORAGE },
                                REQ_READ_STORAGE);
         }
@@ -476,12 +452,13 @@ public class SetupActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == REQ_ALL_FILES) {
-            if (hasStorageAccess()) {
-                startScan();
+        if (requestCode == REQ_PICK_FOLDER) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                startTreeScan(data.getData());
             } else {
-                setStatus("File access was not granted.\n\n"
-                        + "Use \"Choose file...\" to point at the disc image directly.");
+                setStatus("No folder was chosen.\n\n"
+                        + "Press \"Find my disc\" and pick the folder the .bin is in, or use "
+                        + "\"Choose file...\" to point straight at it.");
             }
             return;
         }
@@ -495,11 +472,166 @@ public class SetupActivity extends Activity {
     // ------------------------------------------------------------ actions ---
 
     private void onScanClicked() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            pickFolder();
+            return;
+        }
         if (!hasStorageAccess()) {
             requestStorageAccess();
             return;
         }
         startScan();
+    }
+
+    /**
+     * Android 11+: the player picks the folder in the system file picker,
+     * which opens on Download, and the search runs inside that folder only.
+     * Reading a .bin by path there would need all-files access.
+     */
+    private void pickFolder() {
+        setStatus("Pick the folder your Silent Hill .bin is in (usually Download), "
+                + "then tap \"Use this folder\".");
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildDocumentUri(
+                "com.android.externalstorage.documents", "primary:" + Environment.DIRECTORY_DOWNLOADS));
+        } catch (Exception ignored) { }
+        try {
+            startActivityForResult(i, REQ_PICK_FOLDER);
+        } catch (Exception e) {
+            setStatus("No folder picker is available on this device.\n\nUse \"Choose file...\" instead.");
+        }
+    }
+
+    /** A disc found inside a picked folder. */
+    private static final class TreeDisc {
+        final Uri    uri;
+        final String name;
+        final long   size;
+
+        TreeDisc(Uri uri, String name, long size) {
+            this.uri = uri;
+            this.name = name;
+            this.size = size;
+        }
+    }
+
+    private void startTreeScan(final Uri tree) {
+        setBusy(true);
+        setStatus("Looking for a disc image...");
+
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<TreeDisc> found = new ArrayList<TreeDisc>();
+                try {
+                    collectTreeDiscs(tree, DocumentsContract.getTreeDocumentId(tree), found, 2);
+                } catch (Exception e) {
+                    Log.w(TAG, "folder scan failed: " + e);
+                }
+
+                if (found.isEmpty()) {
+                    setBusy(false);
+                    setStatus("No Silent Hill disc image in that folder.\n\n"
+                            + "Press \"Find my disc\" and pick the folder the .bin is in, "
+                            + "or use \"Choose file...\" to point straight at it.");
+                    return;
+                }
+                if (found.size() == 1) {
+                    copyTreeDisc(found.get(0));
+                    return;
+                }
+
+                setBusy(false);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        setStatus("Found " + found.size() + " Silent Hill discs. Which one?");
+                        candidates.removeAllViews();
+                        for (final TreeDisc d : found) {
+                            Button btn = new Button(SetupActivity.this);
+                            btn.setText(d.name + "  (" + (d.size / (1024 * 1024)) + " MB)");
+                            btn.setAllCaps(false);
+                            btn.setOnClickListener(new View.OnClickListener() {
+                                @Override public void onClick(View v) {
+                                    candidates.removeAllViews();
+                                    setBusy(true);
+                                    new Thread(new Runnable() {
+                                        @Override public void run() { copyTreeDisc(d); }
+                                    }).start();
+                                }
+                            });
+                            candidates.addView(btn);
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** Same depth and filters as the path scan (collectDiscs). */
+    private void collectTreeDiscs(Uri tree, String docId, List<TreeDisc> out, int depth) {
+        if (depth < 0) return;
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
+        String[] cols = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+        };
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(children, cols, null, null, null);
+            if (c == null) return;
+            while (c.moveToNext()) {
+                String id   = c.getString(0);
+                String name = c.getString(1);
+                String mime = c.getString(2);
+                long   size = c.isNull(3) ? 0 : c.getLong(3);
+
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    if (!"Android".equals(name)) collectTreeDiscs(tree, id, out, depth - 1);
+                    continue;
+                }
+                if (name == null || !name.toLowerCase().endsWith(".bin")) continue;
+                if (size < MIN_DISC_BYTES || size > MAX_DISC_BYTES) continue;
+
+                Uri doc = DocumentsContract.buildDocumentUriUsingTree(tree, id);
+                if (!isSilentHillDisc(doc)) continue;
+
+                Log.i(TAG, "disc candidate: " + name + " (" + size + ")");
+                out.add(new TreeDisc(doc, name, size));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "folder scan: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    /** Copies the picked folder's disc into place under its own name, then
+     * removes the original as the path scan's move does, so the phone does not
+     * end up holding the 600 MB image twice. */
+    private void copyTreeDisc(TreeDisc d) {
+        setStatus("Found:\n" + d.name + "\n\nCopying it into place...");
+        File dest = new File(targetDir, d.name);
+        try {
+            InputStream in = getContentResolver().openInputStream(d.uri);
+            if (in == null) {
+                fail("Could not open the disc image.");
+                return;
+            }
+            if (copyStream(in, dest, d.size)) {
+                try {
+                    if (DocumentsContract.deleteDocument(getContentResolver(), d.uri))
+                        Log.i(TAG, "removed source copy " + d.name);
+                } catch (Exception ignored) { }
+                done(dest);
+            } else {
+                fail("Copying the disc image failed. Is there enough free space?");
+            }
+        } catch (Exception e) {
+            fail("Could not read the disc image: " + e.getMessage());
+        }
     }
 
     private void onPickClicked() {
@@ -676,21 +808,36 @@ public class SetupActivity extends Activity {
     };
 
     private boolean isSilentHillDisc(File f) {
-        RandomAccessFile raf = null;
         try {
-            raf = new RandomAccessFile(f, "r");
+            return headHasSerial(new java.io.FileInputStream(f), f.getName());
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
+    private boolean isSilentHillDisc(Uri doc) {
+        try {
+            return headHasSerial(getContentResolver().openInputStream(doc), doc.getLastPathSegment());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean headHasSerial(InputStream in, String name) {
+        if (in == null) return false;
+        try {
             /* The ISO descriptors and root directory live near the start, but
              * 2352-byte raw sectors push them further in than a plain ISO would,
              * so read generously rather than assuming an offset. */
             byte[] buf = new byte[2 * 1024 * 1024];
-            int n = raf.read(buf);
+            int n = 0, r;
+            while (n < buf.length && (r = in.read(buf, n, buf.length - n)) > 0) n += r;
             if (n <= 0) return false;
 
             String head = new String(buf, 0, n, "ISO-8859-1");
             for (String serial : SH_SERIALS) {
                 if (head.contains(serial)) {
-                    Log.i(TAG, "identified " + serial + " in " + f.getName());
+                    Log.i(TAG, "identified " + serial + " in " + name);
                     return true;
                 }
             }
@@ -698,7 +845,7 @@ public class SetupActivity extends Activity {
         } catch (Exception e) {
             return false;
         } finally {
-            if (raf != null) try { raf.close(); } catch (IOException ignored) { }
+            try { in.close(); } catch (IOException ignored) { }
         }
     }
 
@@ -886,12 +1033,14 @@ public class SetupActivity extends Activity {
             .setMessage("A newer build of the game is available (" + when + ", "
                       + offer.sha.substring(0, Math.min(9, offer.sha.length())) + ", "
                       + (offer.size / (1024 * 1024)) + " MB).\n\n"
-                      + "Download and install it now? Your saves, settings and disc "
+                      + "Download it now? It downloads in your browser; open it "
+                      + "when it finishes to install. Android may ask once to allow "
+                      + "installs from the browser. Your saves, settings and disc "
                       + "image are kept.")
             .setCancelable(false)
             .setPositiveButton("Yes", new DialogInterface.OnClickListener() {
                 @Override public void onClick(DialogInterface d, int which) {
-                    downloadUpdate(offer);
+                    openUpdateInBrowser(offer);
                 }
             })
             .setNegativeButton("No", new DialogInterface.OnClickListener() {
@@ -911,101 +1060,26 @@ public class SetupActivity extends Activity {
             .show();
     }
 
-    private BroadcastReceiver installReceiver;
-
-    private void downloadUpdate(final AppUpdate.Offer offer) {
-        final ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        bar.setMax(1000);
-        final TextView label = new TextView(this);
-        label.setText("Downloading the update...");
-        label.setTextColor(Color.LTGRAY);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        box.setBackgroundColor(Color.BLACK);
-        int pad = (int) (32 * getResources().getDisplayMetrics().density);
-        box.setPadding(pad, pad, pad, pad);
-        box.addView(label);
-        box.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                                                       LinearLayout.LayoutParams.WRAP_CONTENT));
-        setContentView(box);
-
-        new Thread(new Runnable() {
-            @Override public void run() {
-                final File apk = AppUpdate.download(SetupActivity.this, offer, new AppUpdate.Progress() {
-                    private int last = -1;
-                    @Override public void onProgress(final long done, final long total) {
-                        final int permille = (total > 0) ? (int) (done * 1000 / total) : 0;
-                        if (permille == last) return;
-                        last = permille;
-                        runOnUiThread(new Runnable() {
-                            @Override public void run() { bar.setProgress(permille); }
-                        });
-                    }
-                });
-                runOnUiThread(new Runnable() {
-                    @Override public void run() { installUpdate(apk); }
-                });
-            }
-        }, "SH update download").start();
-    }
-
-    private void installUpdate(File apk) {
-        if (apk == null) {
-            updateFailed("The update could not be downloaded.");
+    /**
+     * The browser downloads and hands the APK to the system installer. Doing it
+     * in-app needs REQUEST_INSTALL_PACKAGES, which together with network access
+     * is what Play Protect flags in a sideloaded app. The browser is left in
+     * front: starting the game straight after covered it within a frame, so the
+     * download looked like it never began. The next launch plays as usual.
+     */
+    private void openUpdateInBrowser(AppUpdate.Offer offer) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(offer.url)));
+        } catch (Exception e) {
+            Log.w(TAG, "update: no browser for " + offer.url + ": " + e);
+            Toast.makeText(this, "No browser is available to download the update.",
+                           Toast.LENGTH_LONG).show();
+            continueLaunch();
             return;
         }
-
-        installReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context ctx, Intent intent) {
-                int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
-                if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-                    Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
-                    if (confirm != null) {
-                        startActivity(confirm);
-                        return;
-                    }
-                }
-                if (status == PackageInstaller.STATUS_SUCCESS) {
-                    return; /* the system replaces this process */
-                }
-                Log.w(TAG, "update: install status " + status + " "
-                         + intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
-                updateFailed(status == PackageInstaller.STATUS_FAILURE_ABORTED
-                             ? "The update was not installed." : "The update could not be installed.");
-            }
-        };
-        IntentFilter filter = new IntentFilter(AppUpdate.ACTION_STATUS);
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(installReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(installReceiver, filter);
-        }
-
-        showMessage("Installing the update...");
-        if (!AppUpdate.install(this, apk)) {
-            updateFailed("The update could not be installed.");
-        }
-    }
-
-    /** Never strands the player: whatever went wrong, the current version plays. */
-    private void updateFailed(String why) {
-        if (installReceiver != null) {
-            try { unregisterReceiver(installReceiver); } catch (IllegalArgumentException ignored) { }
-            installReceiver = null;
-        }
-        Toast.makeText(this, why, Toast.LENGTH_LONG).show();
-        continueLaunch();
-    }
-
-    @Override
-    protected void onDestroy() {
-        if (installReceiver != null) {
-            try { unregisterReceiver(installReceiver); } catch (IllegalArgumentException ignored) { }
-            installReceiver = null;
-        }
-        super.onDestroy();
+        Toast.makeText(this, "Downloading the update in your browser. Tap the download "
+                     + "when it finishes to install it.", Toast.LENGTH_LONG).show();
+        finish();
     }
 
     private void continueLaunch() {
