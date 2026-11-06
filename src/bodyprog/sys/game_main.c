@@ -3144,6 +3144,12 @@ void MainLoop(void) // 0x80032EE0
              * frame's world state is settled; self-gated to live gameplay and
              * to being signed in. */
             { extern void Pc_Ra_Update(void); Pc_Ra_Update(); }
+            {
+                extern int  Pc_CharaSelect_IsOpen(void);
+                extern void Pc_CharaSelect_Draw(void);
+                if (Pc_CharaSelect_IsOpen() && g_GameWork.gameState == GameState_InGame)
+                    Pc_CharaSelect_Draw();
+            }
 
             /* Silent Hill Online: publish this player position and pull the
              * worker thread findings into the game-thread copy. Same spot and

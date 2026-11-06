@@ -2254,6 +2254,7 @@ int main(int argc, char* argv[])
      * CHARA_FILE_INFOS row before the boot-time WorldGfx_HarryCharaLoad. */
     { extern void Pc_PlayAs_Init(void); Pc_PlayAs_Init(); }
     Pc_Split_AfterPlayAsInit();
+    { extern void Pc_CharaSelect_Init(void); Pc_CharaSelect_Init(); }
 
     CdInit();
 

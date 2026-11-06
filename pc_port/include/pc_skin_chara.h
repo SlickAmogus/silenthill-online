@@ -61,6 +61,20 @@ void  Pc_SkinChara_SetDrawSkin(int mode, const char* file);
 /* The partner whose body the next draws are (their member id), 0 for none:
  * their voice-wheel lines move its mouth. */
 void  Pc_SkinChara_SetDrawSpeaker(unsigned long long id);
+/* Character Select: the model file (base name in gamedata/load/CHARA) that
+ * draws the character whose stock model is NAME; "-" keeps the stock model
+ * even when NAME.glb exists, "" restores the automatic rule. */
+void        Pc_SkinChara_SetCharaFile(const char* name, const char* file);
+const char* Pc_SkinChara_CharaFile(const char* name);
+
+/* Character Select preview: a swap file fitted to the character named by its
+ * stock model, posed on that character's rest table, as a flat triangle
+ * stream (x y z nx ny nz u v per corner, game space) with per-material
+ * ranges and GL textures. */
+typedef struct { unsigned texture; int first, count; } PcSkinPreviewMat;
+void* Pc_SkinChara_PreviewLoad(const char* name, const char* file);
+int   Pc_SkinChara_PreviewMesh(void* ch, const float** stream, int* cornerCount,
+                               PcSkinPreviewMat* mats, int maxMats, float bounds[6]);
 
 /* HERO's replacement says female=1 in its HERO.ini (drives the voice pitch). */
 int   Pc_SkinChara_HeroFemale(void);
