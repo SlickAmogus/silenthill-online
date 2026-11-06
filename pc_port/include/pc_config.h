@@ -11,10 +11,11 @@
  *      Advanced's (hfov 1.00, vfov 1.08) again -- they diverged at vfov 1.08.
  *   3: menu_fps_unlock default 1 -> 0 (menus count input per frame).
  *   4: allow_loose_files default 0 -> 1, mobile only (no launcher to turn it on).
- *      Desktop configs are stamped to 4 with no value change.
+ *      Desktop configs are stamped forward with no value change.
  *   5: fps_cap default 30 -> 60, mobile only. Desktop keeps 30.
- *   6: pad_reload / pad_quick_turn default to the shoulders where still unbound
- *      (desktop's version 4; the phones had taken 4 and 5 already). */
+ *   6: pad_reload / pad_quick_turn default NONE -> rightshoulder / leftshoulder,
+ *      filled only where the slot was unbound. (4 and 5 live on the mobile
+ *      branches; numbering is shared so a merge never reuses a step.) */
 #define PC_CONFIG_VERSION 6
 
 /* Minimap size range, as a percentage of the built-in MM_SIZE. The top end is a
@@ -269,6 +270,7 @@ typedef struct {
     float flashlightSize;       /* per-pixel flashlight cone coverage multiplier, 0..3 (config key: flashlight_size) */
     float flashlightIntensityFps; /* per-pixel flashlight brightness in FPS mode, 0..3 (config key: flashlight_intensity_fps) */
     float flashlightSizeFps;      /* per-pixel flashlight coverage in FPS mode, 0..3 (config key: flashlight_size_fps) */
+    int   flashlightFollowAim;    /* TPS/OTS: the flashlight points where the camera aims, as in FPS (config key: flashlight_follow_aim, console FLASHLIGHTAIM) */
     float postProcessIntensity; /* post-process effect mix, 0..1 (config key: post_process_intensity) */
     float tonemapIntensity;     /* tone-map mix, 0..1 (config key: tonemap_intensity) */
     /* Image adjustments applied to the final frame every time (independent of the

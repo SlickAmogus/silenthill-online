@@ -1658,7 +1658,11 @@ void DbgOverlay_Update(void)
             int    wx, wy;
             Uint32 mb   = SDL_GetMouseState(&wx, &wy);
             int    lmb  = (mb & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-            int    vpTop = g_windowHeight - (s_hit_vp[1] + s_hit_vp[3]);
+            int    vpTop;
+            /* Window points -> drawable pixels (a no-op except on high-DPI
+             * windows, iOS and the web), the space the viewport is in. */
+            PsyX_ScaleWindowToDrawable(&wx, &wy);
+            vpTop = g_windowHeight - (s_hit_vp[1] + s_hit_vp[3]);
             int    px   = wx - s_hit_vp[0];
             int    py   = wy - vpTop;
             int    cw   = GLYPH_W * SCALE;
@@ -2206,10 +2210,10 @@ void DbgOverlay_Update(void)
         int    curBS, anyEn, changed, n;
 
         /* In FPS mode, [ / ] tune the separate FPS flashlight set (dimmer/tighter). */
-        en[0] = (g_PsyX_UsePerPixelFlashlight != 0); vp[0] = g_PcFpsCam ? &g_PsyX_FlashlightIntensityFps : &g_PsyX_FlashlightIntensity; vmax[0] = 3.0f; vkey[0] = g_PcFpsCam ? "flashlight_intensity_fps" : "flashlight_intensity"; vlbl[0] = g_PcFpsCam ? "flashlight (fps)" : "flashlight";
+        en[0] = (g_PsyX_UsePerPixelFlashlight != 0); vp[0] = g_PcFpsCam ? &g_PsyX_FlashlightIntensityFps : &g_PsyX_FlashlightIntensity; vmax[0] = 6.0f; vkey[0] = g_PcFpsCam ? "flashlight_intensity_fps" : "flashlight_intensity"; vlbl[0] = g_PcFpsCam ? "flashlight (fps)" : "flashlight";
         en[1] = (g_cfg_postProcess != 0);            vp[1] = &g_cfg_postProcessIntensity; vmax[1] = 1.0f; vkey[1] = "post_process_intensity"; vlbl[1] = "post-process";
         en[2] = (g_cfg_tonemap != 0);                vp[2] = &g_cfg_tonemapIntensity;     vmax[2] = 1.0f; vkey[2] = "tonemap_intensity";      vlbl[2] = "tonemap";
-        en[3] = (g_PsyX_UsePerPixelFlashlight != 0); vp[3] = g_PcFpsCam ? &g_PsyX_FlashlightSizeFps : &g_PsyX_FlashlightSize; vmax[3] = 3.0f; vkey[3] = g_PcFpsCam ? "flashlight_size_fps" : "flashlight_size"; vlbl[3] = g_PcFpsCam ? "flashlight size (fps)" : "flashlight size";
+        en[3] = (g_PsyX_UsePerPixelFlashlight != 0); vp[3] = g_PcFpsCam ? &g_PsyX_FlashlightSizeFps : &g_PsyX_FlashlightSize; vmax[3] = 5.0f; vkey[3] = g_PcFpsCam ? "flashlight_size_fps" : "flashlight_size"; vlbl[3] = g_PcFpsCam ? "flashlight size (fps)" : "flashlight size";
 
         /* Keys are user-bindable (launcher: Keyboard Controls). Defaults [ / ] /
          * \ ; resolved from config each frame so a rebind takes effect live. A
@@ -2501,6 +2505,7 @@ void DbgOverlay_Render(void)
             float cx0, cy0;
 
             SDL_GetMouseState(&wx, &wy);
+            PsyX_ScaleWindowToDrawable(&wx, &wy);
             cx0 = -1.0f + 2.0f * (float)(wx - vp[0]) / (float)vp[2];
             cy0 =  1.0f - 2.0f * (float)(wy - (g_windowHeight - (vp[1] + vp[3]))) / (float)vp[3];
             draw_panel(s_cursor_tex, cx0, cy0,
