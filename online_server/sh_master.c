@@ -443,8 +443,13 @@ static void SrvLogOpen(void)
     if (!_fullpath(g_logAbs, g_logPath, sizeof(g_logAbs)))
         snprintf(g_logAbs, sizeof(g_logAbs), "%s", g_logPath);
 #else
-    if (!realpath(g_logPath, g_logAbs))
-        snprintf(g_logAbs, sizeof(g_logAbs), "%s", g_logPath);
+    {
+        /* The allocating form: a caller's buffer must be PATH_MAX, and a
+         * fortified build aborts on a smaller one. */
+        char* abs = realpath(g_logPath, NULL);
+        snprintf(g_logAbs, sizeof(g_logAbs), "%s", abs ? abs : g_logPath);
+        free(abs);
+    }
 #endif
 }
 
