@@ -593,6 +593,9 @@ static void ShNetW_HandleWelcome(ShNetWorker* w, const unsigned char* p, int len
 
     if (s_sh.tickMs < 33)  s_sh.tickMs = 33;
     if (s_sh.tickMs > 1000) s_sh.tickMs = 1000;
+    /* A rejoin after a stall would otherwise report the round trip measured
+     * across that stall as this session's first ping. */
+    s_sh.pingMs = 0;
 
     ShNet_SetStatus(SHNET_ST_CONNECTED, s_sh.serverName);
     w->helloTries = 0;
