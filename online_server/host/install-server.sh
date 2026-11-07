@@ -23,11 +23,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ARGS=""
 DOMAIN=""
 WARN=1
+ASK=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --args)    ARGS="$2"; shift 2 ;;
         --domain)  DOMAIN="$2"; shift 2 ;;
-        --no-warn) WARN=0; shift ;;
+        --no-warn) WARN=0; ASK=0; shift ;;
+        --yes)     ASK=0; shift ;;
         *) echo "unknown option: $1"; exit 2 ;;
     esac
 done
@@ -75,6 +77,42 @@ else
 fi
 # A wrong architecture or a broken download fails here, before anything is replaced.
 "$BIN.new" --help >/dev/null
+
+# Players online: say who, and ask before anything changes. At a terminal the
+# question is asked here; from Redeploy-Server.bat (no terminal) the line
+# "@@ASK <n>" asks it on the Windows side, which writes the answer back in.
+# Stop throws the new build away and leaves the server as it was. --yes
+# answers continue.
+admin_flag() {
+    P="$(systemctl show -p ExecStart --value $UNIT 2>/dev/null | grep -o -- '--admin [0-9]*' | head -1)"
+    printf '%s' "$P"
+}
+if [ "$ASK" = 1 ] && [ -x "$BIN" ] && systemctl is-active --quiet $UNIT; then
+    set +e
+    ADM="$(admin_flag)"
+    LIST="$("$BIN" $ADM --cmd players 2>/dev/null)"
+    N="$(printf '%s\n' "$LIST" | tail -1 | grep -o '^[0-9]*')"
+    set -e
+    if [ -n "$N" ] && [ "$N" -gt 0 ]; then
+        printf '%s\n' "$LIST"
+        if [ -t 0 ]; then
+            printf '%s player(s) online. Continue (warn them, restart in 30 s) or stop (change nothing)? [c/s] ' "$N"
+        else
+            echo "@@ASK $N"
+        fi
+        read -r ANS || ANS=s
+        if [ "$ANS" != c ] && [ "$ANS" != C ]; then
+            rm -f "$BIN.new"
+            echo ">> stopped: nothing was changed, the server keeps running the version it has"
+            exit 3
+        fi
+    else
+        [ -t 0 ] || echo "@@GO"
+    fi
+else
+    [ -t 0 ] || echo "@@GO"
+fi
+
 mv -f "$BIN.new" "$BIN"
 # So `sh_master --console` works from any directory (Server-Console.bat relies on it).
 ln -sfn "$BIN" /usr/local/bin/sh_master 2>/dev/null || true
@@ -186,6 +224,7 @@ warn_players() {
   P="$(printf '%s' "$EXEC" | grep -o -- '--admin [0-9]*' | head -1)"
   [ -n "$P" ] && ADM="$P"
   N="$("$WARN_BIN" $ADM --cmd players 2>/dev/null | tail -1 | grep -o '^[0-9]*')"
+  # (the redeploy asked before getting this far; this is the warning itself)
   if [ -n "$N" ] && [ "$N" -gt 0 ] &&
      "$WARN_BIN" $ADM --cmd "say The server will restart in 30 seconds." >/dev/null 2>&1; then
     echo ">> $N player(s) online, warned: the server restarts in 30 seconds"

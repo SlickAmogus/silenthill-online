@@ -3770,7 +3770,11 @@ static void AdmRun(char* line)
     if (!strcmp(cmd, "watch"))   { AdmCmdWatch(1); return; } /* refreshed every half minute: not journal-worthy */
     if (!strcmp(cmd, "unwatch")) { AdmCmdWatch(0); return; }
     if (!strcmp(cmd, "logfile")) { AdmPrintf("logfile %s\n", g_logFile ? g_logAbs : "-"); return; }
-    SrvLog("admin: %s %s", cmd, rest);
+    /* Only what changes something goes in the log; looking (players, bans,
+     * memos, help) is asked by scripts too, and filled it with noise. */
+    if (strcmp(cmd, "players") && strcmp(cmd, "list") && strcmp(cmd, "who") && strcmp(cmd, "help") &&
+        strcmp(cmd, "?") && strcmp(cmd, "bans") && strcmp(cmd, "memos"))
+        SrvLog("admin: %s %s", cmd, rest);
 
     if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) AdmHelp();
     else if (!strcmp(cmd, "players") || !strcmp(cmd, "list") || !strcmp(cmd, "who")) AdmCmdPlayers();
