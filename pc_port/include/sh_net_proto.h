@@ -252,6 +252,8 @@ enum
  * guest arrives, cancels, or the hold runs out. On JOIN it says where the
  * host is: SHNET_INVJ_LOBBY = still in the lobby, not yet in a game. */
 #define SHNET_INVJ_LOBBY 1
+/* INVITE's pad byte on a CANCEL: why it was called off. */
+#define SHNET_INVC_FULL  1 /* the inviter's game filled up before the answer */
 
 /* Marker kinds. */
 enum

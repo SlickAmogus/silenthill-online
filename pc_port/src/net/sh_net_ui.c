@@ -1978,7 +1978,7 @@ static void Nu_DrawCoopMenu(int px)
     Pc_CoopMenu_StatusText(status, sizeof(status));
 
     /* ---- geometry ---- */
-    panelW = s_vpW * (view == PC_COOP_VIEW_ROOMS ? 0.62f : 0.54f);
+    panelW = s_vpW * ((view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_ONLINE) ? 0.62f : 0.54f);
     if (panelW < 440.0f) panelW = (s_vpW - 32.0f < 440.0f) ? s_vpW - 32.0f : 440.0f;
     if (panelW > 980.0f) panelW = 980.0f;
     headerH = pad * 0.8f + Nu_TextH(pxSmall) + (float)pxTitle * 1.15f + pad * 0.35f;
@@ -1989,7 +1989,7 @@ static void Nu_DrawCoopMenu(int px)
      * them that follows the selection, or the mouse wheel, with the selection
      * then following the window. The rows outside it keep no rectangle. */
     {
-        const int   table   = (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS);
+        const int   table   = (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_ONLINE);
         const float colH    = table ? rowH * 0.9f : 0.0f;
         const float avail   = (s_vpH - 24.0f) - (headerH + pad * 0.5f + colH + pad * 0.5f + statusH + footerH + hintH);
         int         maxBody = (int)(avail / rowH);
@@ -2042,7 +2042,8 @@ static void Nu_DrawCoopMenu(int px)
     bodyY  = panelY + headerH + pad * 0.5f;
 
     /* Row rectangles, shared by hit-testing and drawing so they cannot drift. */
-    y = bodyY + ((view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS) ? rowH * 0.9f : 0.0f);
+    y = bodyY + ((view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_ONLINE)
+                     ? rowH * 0.9f : 0.0f);
     for (i = 0; i < bodyN; i++)
     {
         rect[bodyIdx[i]].x = x0;
@@ -2112,11 +2113,18 @@ static void Nu_DrawCoopMenu(int px)
     }
 
     /* ---- column headers ---- */
-    if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS)
+    if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_ONLINE)
     {
         const float cy = bodyY + (rowH * 0.9f - Nu_TextH(pxSmall)) * 0.5f;
         const float w  = x1 - x0;
-        if (view == PC_COOP_VIEW_ROOMS)
+        if (view == PC_COOP_VIEW_ONLINE)
+        {
+            Nu_DrawText("PLAYER", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawText("WHERE", x0 + w * 0.38f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawText("STATUS", x0 + w * 0.62f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawTextRight("PING", x1 - px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+        }
+        else if (view == PC_COOP_VIEW_ROOMS)
         {
             Nu_DrawText("GAME", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
             Nu_DrawText("WHERE", x0 + w * 0.44f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
@@ -2156,7 +2164,7 @@ static void Nu_DrawCoopMenu(int px)
                 Nu_HFade(r.x, r.y, r.w, r.h, 0.0f, 0.42f, 0.75f, 0.55f, 0.0f);
                 Nu_ShFrame(r.x, r.y, r.w, r.h, t, 0.9f);
             }
-            else if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS)
+            else if (view == PC_COOP_VIEW_ROOMS || view == PC_COOP_VIEW_PLAYERS || view == PC_COOP_VIEW_ONLINE)
             {
                 if (i & 1) Nu_FillPx(r.x, r.y, r.w, r.h, 0.10f, 0.10f, 0.30f, 0.18f);
             }
@@ -2200,6 +2208,34 @@ static void Nu_DrawCoopMenu(int px)
                 Nu_DrawTextRight(cell, r.x + r.w - px * 0.8f, ty, px,
                                  players >= max ? 0.75f : 0.62f, players >= max ? 0.45f : 0.72f,
                                  players >= max ? 0.45f : 1.00f, 1.0f);
+            }
+            else if (view == PC_COOP_VIEW_ONLINE && k < n - 2)
+            {
+                char               nm[SHNET_NAME_MAX], where[64], status[48], cell[24];
+                unsigned int       tag = 0;
+                unsigned long long id  = 0;
+                int                ping = 0, gray = 0;
+                if (Pc_CoopMenu_OnlineEntry(k, nm, (int)sizeof(nm), &tag, &id, where, (int)sizeof(where), status,
+                                            (int)sizeof(status), &ping, &gray))
+                {
+                    /* Someone hosting a game of their own cannot be asked:
+                     * the whole row is dimmed. */
+                    const float dim = gray ? 0.45f : lt;
+                    const float w   = r.w;
+                    float       nr, ng, nb, nw;
+                    ShSocial_Color(id, &nr, &ng, &nb);
+                    nw = Nu_DrawTextFit(nm, r.x + px * 0.8f, ty, w * 0.28f, px, nr * dim, ng * dim, nb * dim, 1.0f);
+                    if (tag)
+                    {
+                        snprintf(cell, sizeof(cell), "#%04u", tag);
+                        Nu_DrawText(cell, r.x + px * 0.8f + nw, ty + (textH - Nu_TextH(pxSmall)) * 0.5f, pxSmall,
+                                    0.50f * dim / lt, 0.50f * dim / lt, 0.50f * dim / lt, 1.0f);
+                    }
+                    Nu_DrawTextFit(where, r.x + w * 0.38f, ty, w * 0.23f, px, dim * 0.92f, dim * 0.92f, dim, 1.0f);
+                    Nu_DrawTextFit(status, r.x + w * 0.62f, ty, w * 0.25f, px, dim, dim * 0.88f, dim * 0.70f, 1.0f);
+                    snprintf(cell, sizeof(cell), "%d ms", ping);
+                    Nu_DrawTextRight(cell, r.x + w - px * 0.8f, ty, px, 0.62f * dim, 0.72f * dim, dim, 1.0f);
+                }
             }
             else if (view == PC_COOP_VIEW_PLAYERS && k < memberCount)
             {
