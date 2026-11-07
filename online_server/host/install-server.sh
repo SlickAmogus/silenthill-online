@@ -216,4 +216,5 @@ fi
 IP="$(curl -4 -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$IP" ] || IP="this machine's address"
 echo ">> done. Players enter $IP (UDP $UDP_PORT) as the Living World IP."
-echo "   admin console: $BIN --console      log: journalctl -u $UNIT -f"
+echo "   admin console: $BIN --console      live log: $BIN --watch"
+echo "   log file: $("$BIN" --admin "$ADMIN_PORT" --cmd logfile 2>/dev/null | sed 's/^logfile //')  (also journalctl -u $UNIT -f)"

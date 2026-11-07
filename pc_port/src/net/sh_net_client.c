@@ -337,6 +337,9 @@ static void ShNetW_SendPing(ShNetWorker* w, unsigned int now)
     int           off = SHNET_HDR_SIZE;
     w->pingSentMs = now;
     ShnPutU32(buf, &off, now);
+    /* The round trip the last PONG measured, for the server's log; an older
+     * server reads only the first word. */
+    ShnPutU32(buf, &off, (unsigned int)(s_sh.pingMs > 0 ? s_sh.pingMs : 0));
     ShnPutHeader(buf, SHNET_MSG_PING, (shn_u16)(off - SHNET_HDR_SIZE), w->session);
     ShNetW_Send(w, buf, off);
 }

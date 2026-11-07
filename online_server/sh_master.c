@@ -56,6 +56,8 @@
 #include <windows.h>
 #ifndef SH_MASTER_EMBED
 #include <conio.h> /* _kbhit: Enter ends the console's watch mode */
+#include <io.h>    /* _open_osfhandle: the log file opened shareable */
+#include <fcntl.h>
 #endif
 typedef SOCKET    ShSock;
 typedef int       ShSockLen;
@@ -93,6 +95,7 @@ typedef socklen_t ShSockLen;
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #include "sh_net_proto.h"
 #include "sh_net_chat_filter.h" /* slurs are masked before a line is relayed or logged */
@@ -100,9 +103,11 @@ typedef socklen_t ShSockLen;
 #include "sh_net_memo_text.h" /* a placed marker in words, for the admin feed */
 /* The admin feed: one line to every console in watch mode. Loopback only. */
 static void SrvFeed(const char* fmt, ...);
-static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map);
+static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map,
+                        unsigned int id);
 #else
-#define SrvFeed(...)     ((void)0)
+/* The embedded relay has no consoles; its events go to the game's log. */
+#define SrvFeed          SrvLog
 #define SrvFeedMemo(...) ((void)0)
 #endif
 
@@ -136,6 +141,12 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
  * monster datagrams and the rest each second, close to the 200 above, and a
  * relay dropped here is a stutter on every guest's screen. */
 #define SRV_RELAY_PER_SEC 400
+
+/* Network notes in the log. A player heard from again after this long silent
+ * stalled (lag, packet loss, a frozen game); a ping this high is worth a
+ * line. Each is said at most once a minute (ping: five) per player. */
+#define SRV_LAG_NOTE_MS   4000u
+#define SRV_PING_NOTE_MS  300
 
 /* Two death markers within this distance and this long apart are one death.
  * Q19.12 metres: 1.5m, 30s. */
@@ -201,6 +212,8 @@ typedef struct
     unsigned int       rateWindowMs;
     int                rateCount;
     int                relayCount;
+    int                rateDropped;  /* since the last "over the limit" note */
+    unsigned int       rateLogMs, lagLogMs, pingLogMs;
 
     unsigned int       lastDeathMs;
     shn_s32            lastDeathX, lastDeathZ;
@@ -369,28 +382,253 @@ static void SrvOnSignal(int sig)
 }
 #endif
 
+#ifndef SH_MASTER_EMBED
+/* The server's own log (--log FILE; sh_master.log beside the marker store by
+ * default): every line the journal gets, dated, so a console opened later can
+ * replay what happened before it connected. It is opened shareable, so a
+ * console or an editor can read it while it is written and it can still be
+ * rotated under them. Rotated by size; the last SRV_LOG_KEEP stay as FILE.1
+ * (newest) to FILE.N. */
+#define SRV_LOG_KEEP 5
+static const char   SRV_LOG_START[] = "=== sh_master started";
+static char         g_logPath[600];
+static char         g_logAbs[1024];   /* what the console is told */
+static int          g_logOff;
+static long         g_logMaxBytes = 16L * 1024 * 1024;
+static FILE*        g_logFile;
+static long         g_logSize;
+static unsigned int g_logRetryMs;
+
+/* Windows refuses a rename, and a second open, of a file another handle has
+ * open without the matching share flags; the CRT's fopen gives no
+ * FILE_SHARE_DELETE. Both the server and the console open it this way. */
+static FILE* SrvShareOpen(const char* path, int append)
+{
+#if defined(_WIN32)
+    HANDLE h = CreateFileA(path, append ? GENERIC_WRITE : GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           append ? OPEN_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    int   fd;
+    FILE* f;
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    fd = _open_osfhandle((intptr_t)h, append ? (_O_APPEND | _O_WRONLY | _O_BINARY) : (_O_RDONLY | _O_BINARY));
+    if (fd < 0)
+    {
+        CloseHandle(h);
+        return NULL;
+    }
+    f = _fdopen(fd, append ? "ab" : "rb");
+    if (!f) _close(fd);
+    return f;
+#else
+    return fopen(path, append ? "ab" : "rb");
+#endif
+}
+
+static void SrvLogOpen(void)
+{
+    static int s_said;
+    if (g_logOff || !g_logPath[0]) return;
+    g_logFile = SrvShareOpen(g_logPath, 1);
+    if (!g_logFile)
+    {
+        if (!s_said) printf("could not open the log file %s; logging to the console only\n", g_logPath);
+        s_said = 1;
+        fflush(stdout);
+        return;
+    }
+    fseek(g_logFile, 0, SEEK_END);
+    g_logSize = ftell(g_logFile);
+#if defined(_WIN32)
+    if (!_fullpath(g_logAbs, g_logPath, sizeof(g_logAbs)))
+        snprintf(g_logAbs, sizeof(g_logAbs), "%s", g_logPath);
+#else
+    if (!realpath(g_logPath, g_logAbs))
+        snprintf(g_logAbs, sizeof(g_logAbs), "%s", g_logPath);
+#endif
+}
+
+/* A rename refused (an editor holding the file without sharing) leaves the
+ * same file growing; the next try is another g_logMaxBytes later. */
+static void SrvLogRotate(void)
+{
+    char from[640], to[640];
+    int  i;
+    fclose(g_logFile);
+    g_logFile = NULL;
+    for (i = SRV_LOG_KEEP; i >= 1; i--)
+    {
+        if (i == 1) snprintf(from, sizeof(from), "%s", g_logPath);
+        else        snprintf(from, sizeof(from), "%s.%d", g_logPath, i - 1);
+        snprintf(to, sizeof(to), "%s.%d", g_logPath, i);
+        remove(to);
+        rename(from, to);
+    }
+    SrvLogOpen();
+    g_logSize = 0;
+}
+
+static void SrvLogFile(const char* text)
+{
+    time_t     t  = time(NULL);
+    struct tm* lt = localtime(&t);
+    char       stamp[32];
+    int        n;
+    if (!g_logFile)
+    {
+        unsigned int now = SrvMillis();
+        if (g_logOff || !g_logPath[0] || now - g_logRetryMs < 60000u) return;
+        g_logRetryMs = now;
+        SrvLogOpen();
+        if (!g_logFile) return;
+    }
+    if (!lt || !strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", lt)) stamp[0] = '\0';
+    n = fprintf(g_logFile, "%s  %s\n", stamp, text);
+    fflush(g_logFile);
+    if (n > 0) g_logSize += n;
+    if (g_logSize >= g_logMaxBytes) SrvLogRotate();
+}
+#endif
+
 static void SrvLog(const char* fmt, ...)
 {
     va_list ap;
-#ifdef SH_MASTER_EMBED
-    char line[256];
+    char    line[768];
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
+#ifdef SH_MASTER_EMBED
     SH_DBG("[coop-relay] %s", line);
 #else
-    time_t    t  = time(NULL);
-    struct tm* lt = localtime(&t);
-    char      stamp[32];
-
-    strftime(stamp, sizeof(stamp), "%H:%M:%S", lt);
-    printf("[%s] ", stamp);
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    printf("\n");
-    fflush(stdout);
+    {
+        time_t     t  = time(NULL);
+        struct tm* lt = localtime(&t);
+        char       stamp[32];
+        if (!lt || !strftime(stamp, sizeof(stamp), "%H:%M:%S", lt)) stamp[0] = '\0';
+        printf("[%s] %s\n", stamp, line);
+        fflush(stdout);
+    }
+    SrvLogFile(line);
 #endif
+}
+
+static void SrvIpStr(shn_u32 netIp, char* out, int cap)
+{
+    unsigned int ip = ntohl(netIp);
+    snprintf(out, (size_t)cap, "%u.%u.%u.%u", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+}
+
+/* One note per address and reason a minute; the repeats are counted into the
+ * next. Keeps a flood from writing the log full. */
+enum { SRV_WARN_BANNED = 1, SRV_WARN_FULL, SRV_WARN_WS_HANDSHAKE, SRV_WARN_WS_FRAME,
+       SRV_WARN_WS_OVERFLOW, SRV_WARN_WS_SLOTS };
+#define SRV_WARN_SLOTS 64
+static struct { shn_u32 ip; int reason; unsigned int lastMs; int skipped; } g_warnIp[SRV_WARN_SLOTS];
+
+static void SrvWarnIp(shn_u32 ip, int reason, const char* fmt, ...)
+{
+    unsigned int now = SrvMillis();
+    int          i, slot = -1, oldest = 0;
+    char         line[512];
+    va_list      ap;
+    for (i = 0; i < SRV_WARN_SLOTS; i++)
+    {
+        if (g_warnIp[i].lastMs && g_warnIp[i].ip == ip && g_warnIp[i].reason == reason)
+        {
+            slot = i;
+            break;
+        }
+        if (now - g_warnIp[i].lastMs > now - g_warnIp[oldest].lastMs) oldest = i;
+    }
+    if (slot >= 0 && now - g_warnIp[slot].lastMs < 60000u)
+    {
+        g_warnIp[slot].skipped++;
+        return;
+    }
+    if (slot < 0)
+    {
+        slot = oldest;
+        g_warnIp[slot].skipped = 0;
+    }
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (g_warnIp[slot].skipped)
+        SrvLog("%s (and %d more like it in the last minute)", line, g_warnIp[slot].skipped);
+    else
+        SrvLog("%s", line);
+    g_warnIp[slot].ip      = ip;
+    g_warnIp[slot].reason  = reason;
+    g_warnIp[slot].lastMs  = now ? now : 1u;
+    g_warnIp[slot].skipped = 0;
+}
+
+/* Traffic the server cannot use, per source address over a minute: stray is
+ * well formed but for no live session at that address (a game still on a
+ * session from before a restart, a NAT that moved it, or a probe), junk does
+ * not even parse. A source past the threshold is named once a minute. */
+#define SRV_NOISE_SLOTS 64
+#define SRV_STRAY_WARN  600
+#define SRV_JUNK_WARN   100
+static struct { shn_u32 ip; int stray, junk; } g_noise[SRV_NOISE_SLOTS];
+static int           g_noiseOther;
+static unsigned long g_statIn, g_statStray, g_statJunk, g_statRateDrop;
+
+static void SrvNoise(const struct sockaddr_in* from, int junk)
+{
+    shn_u32 ip = from->sin_addr.s_addr;
+    int     i, freeSlot = -1;
+    if (junk) g_statJunk++;
+    else      g_statStray++;
+    for (i = 0; i < SRV_NOISE_SLOTS; i++)
+    {
+        const int live = g_noise[i].stray || g_noise[i].junk;
+        if (live && g_noise[i].ip == ip)
+        {
+            if (junk) g_noise[i].junk++;
+            else      g_noise[i].stray++;
+            return;
+        }
+        if (!live && freeSlot < 0) freeSlot = i;
+    }
+    if (freeSlot < 0)
+    {
+        g_noiseOther++;
+        return;
+    }
+    g_noise[freeSlot].ip    = ip;
+    g_noise[freeSlot].stray = !junk;
+    g_noise[freeSlot].junk  = junk ? 1 : 0;
+}
+
+static void SrvNoiseTick(void)
+{
+    int i;
+    for (i = 0; i < SRV_NOISE_SLOTS; i++)
+    {
+        if (g_noise[i].stray >= SRV_STRAY_WARN || g_noise[i].junk >= SRV_JUNK_WARN)
+        {
+            char a[24];
+            SrvIpStr(g_noise[i].ip, a, (int)sizeof(a));
+            SrvLog("! %s sent %d datagrams for no live session and %d unreadable ones in the last minute "
+                   "(a UDP source address can be forged)", a, g_noise[i].stray, g_noise[i].junk);
+        }
+    }
+    if (g_noiseOther >= SRV_STRAY_WARN)
+        SrvLog("! %d more stray datagrams from other addresses in the last minute", g_noiseOther);
+    memset(g_noise, 0, sizeof(g_noise));
+    g_noiseOther = 0;
+}
+
+/* How long a player was on, for the leave lines. */
+static void SrvStayStr(const Client* c, char* out, int cap)
+{
+    const unsigned int sec = (SrvMillis() - c->joinMs) / 1000u;
+    char               on[24];
+    if (sec < 60u) snprintf(on, sizeof(on), "%u s", sec);
+    else           snprintf(on, sizeof(on), "%u min", sec / 60u);
+    if (c->pingMs > 0) snprintf(out, (size_t)cap, "on %s, ping %d ms", on, c->pingMs);
+    else               snprintf(out, (size_t)cap, "on %s", on);
 }
 
 static int SrvOsRandom(shn_u8* buf, int n)
@@ -841,7 +1079,6 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
      * own; the public living world is what gets logged and watched. */
     if (!(scope == SHNET_CHAT_GAME && c->room != 0))
     {
-        SrvLog("  chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "level" : "global", c->name, text);
         SrvFeed("chat[%s] %s: %s", scope == SHNET_CHAT_GAME ? "level" : "global", c->name, text);
     }
 
@@ -1144,7 +1381,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     if (AdmIsBanned(from->sin_addr.s_addr, uid))
     {
         SrvSendReject(from, SHNET_REJ_BANNED, "You are banned from this server");
-        if (g_verbose) SrvLog("rejected %s: banned", addr);
+        SrvWarnIp(from->sin_addr.s_addr, SRV_WARN_BANNED, "rejected %s: banned", addr);
         return;
     }
 #endif
@@ -1204,6 +1441,8 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         if (SrvClientCount() >= g_maxClients)
         {
             SrvSendReject(from, SHNET_REJ_FULL, "Server is full");
+            SrvWarnIp(from->sin_addr.s_addr, SRV_WARN_FULL, "rejected %s: the server is full (%d players)",
+                      addr, g_maxClients);
             return;
         }
         if (SrvClientsFromIp(from->sin_addr.s_addr) >= g_maxPerIp)
@@ -1241,7 +1480,6 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
 
         snprintf(text, sizeof(text), "%s entered the fog", name);
         SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
-        SrvLog("+ %s joined from %s (id %u, build %s)", name, addr, c->playerId, build);
         SrvFeed("+ %s joined from %s (id %u, build %s)", name, addr, c->playerId, build);
     }
 
@@ -1311,6 +1549,18 @@ static void SrvHandlePing(Client* c, const shn_u8* p, int len)
         return;
     }
     clientMs = ShnGetU32(p, &ro);
+    /* Newer games add the round trip they measured on the last PONG. */
+    if (len >= 8)
+    {
+        const shn_u32      rtt = ShnGetU32(p, &ro);
+        const unsigned int now = SrvMillis();
+        c->pingMs = rtt > 9999u ? 9999 : (int)rtt;
+        if (c->pingMs >= SRV_PING_NOTE_MS && now - c->pingLogMs >= 300000u)
+        {
+            SrvLog("~ %s (id %u) has a %d ms ping", c->name, c->playerId, c->pingMs);
+            c->pingLogMs = now ? now : 1u;
+        }
+    }
     ShnPutU32(buf, &off, clientMs);
     ShnPutU32(buf, &off, SrvMillis());
     SrvSendTo(c, buf, off - SHNET_HDR_SIZE, SHNET_MSG_PONG);
@@ -1692,11 +1942,8 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
 
     SrvPushMemo(&m); /* live: everyone else on this map sees it now */
 
-    SrvLog("  %s placed %s on map %d (id %u)", c->name,
-           (m.kind & 0x0F) == SHNET_MARK_DEATH ? "a death marker" :
-           (m.kind & 0x0F) == SHNET_MARK_SAVE  ? "a save mark" : "a message",
-           m.mapIdx, m.memoId);
-    SrvFeedMemo(c->name, (int)m.kind, (int)m.phraseA, (int)m.wordA, (int)m.phraseB, (int)m.wordB, (int)m.mapIdx);
+    SrvFeedMemo(c->name, (int)m.kind, (int)m.phraseA, (int)m.wordA, (int)m.phraseB, (int)m.wordB, (int)m.mapIdx,
+                m.memoId);
 
     if ((m.kind & 0x0F) == SHNET_MARK_DEATH)
     {
@@ -1919,8 +2166,12 @@ static void SrvExpire(unsigned int now)
             continue;
         }
         snprintf(text, sizeof(text), "%s faded away", c->name);
-        SrvLog("- %s timed out (id %u)", c->name, c->playerId);
-        SrvFeed("- %s timed out (id %u)", c->name, c->playerId);
+        {
+            char stay[48];
+            SrvStayStr(c, stay, (int)sizeof(stay));
+            SrvFeed("- %s timed out (id %u, %s, nothing heard for %u s)", c->name, c->playerId, stay,
+                    (now - c->lastRxMs) / 1000u);
+        }
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
         SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
@@ -2043,7 +2294,6 @@ static void SrvRoomLeave(Client* c, int notify)
                 SrvSendRoomRoster(m, 0);
             }
         }
-        SrvLog("- room %u closed", room);
         SrvFeed("- room %u closed", room);
     }
     else
@@ -2064,8 +2314,6 @@ static void SrvHandleRoomCreate(Client* c, const shn_u8* p, int len)
     code = SrvNewRoomCode();
     if (!code) { SrvSendRoomReject(c, 1, "server is out of room codes"); return; }
     c->room = code; c->roomHost = 1; c->roomMax = maxP; c->roomHidden = hidden ? 1 : 0;
-    SrvLog("+ room %u opened by %s (id %u, max %d%s)", code, c->name, c->playerId, maxP,
-           c->roomHidden ? ", hidden" : "");
     SrvFeed("+ room %u opened by %s (id %u, max %d%s)", code, c->name, c->playerId, maxP,
            c->roomHidden ? ", hidden" : "");
     SrvSendRoomRoster(c, 1);
@@ -2151,7 +2399,6 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
     }
     SrvRoomLeave(c, 1);
     c->room = code; c->roomHost = 0; c->roomMax = host->roomMax;
-    SrvLog("  %s (id %u) joined room %u", c->name, c->playerId, code);
     SrvFeed("  %s (id %u) joined room %u", c->name, c->playerId, code);
     SrvSendRoomRoster(c, 1);
     SrvBroadcastRoomRoster(code, c);
@@ -2259,8 +2506,6 @@ static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
     SrvSendTo(t, buf, o - SHNET_HDR_SIZE, SHNET_MSG_INVITE);
     if (g_verbose || action == SHNET_INV_INVITE || action == SHNET_INV_JOIN)
     {
-        SrvLog("  invite %s -> %s: action %d%s", c->name, t->name, action,
-               action == SHNET_INV_JOIN ? " (room code sent)" : "");
         SrvFeed("  invite %s -> %s: action %d%s", c->name, t->name, action,
                action == SHNET_INV_JOIN ? " (room code sent)" : "");
     }
@@ -2311,8 +2556,10 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     Client*      c;
     unsigned int now = SrvMillis();
 
+    g_statIn++;
     if (!ShnParseHeader(buf, n, &type, &payLen, &session))
     {
+        SrvNoise(from, 1);
         return;
     }
     pay = buf + SHNET_HDR_SIZE;
@@ -2329,6 +2576,7 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     c = SrvFindBySession(session);
     if (!c || !SrvAddrEqual(&c->addr, from))
     {
+        SrvNoise(from, 0);
         return;
     }
 
@@ -2340,9 +2588,27 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     }
     if (type == SHNET_MSG_COOP_RELAY ? ++c->relayCount > SRV_RELAY_PER_SEC : ++c->rateCount > SRV_RATE_PER_SEC)
     {
+        g_statRateDrop++;
+        c->rateDropped++;
+        if (now - c->rateLogMs >= 60000u)
+        {
+            char a[64];
+            SrvAddrStr(&c->addr, a, (int)sizeof(a));
+            SrvLog("! %s (id %u, %s) is sending faster than the limit (%d a second, co-op relay %d): "
+                   "%d dropped since the last note", c->name, c->playerId, a, SRV_RATE_PER_SEC,
+                   SRV_RELAY_PER_SEC, c->rateDropped);
+            c->rateLogMs   = now ? now : 1u;
+            c->rateDropped = 0;
+        }
         return;
     }
 
+    if (now - c->lastRxMs >= SRV_LAG_NOTE_MS && now - c->lagLogMs >= 60000u)
+    {
+        SrvLog("~ nothing from %s (id %u) for %.1f s: lag, packet loss or a stalled game", c->name,
+               c->playerId, (double)(now - c->lastRxMs) / 1000.0);
+        c->lagLogMs = now ? now : 1u;
+    }
     c->lastRxMs = now;
 
 #ifdef SH_MASTER_EMBED
@@ -2375,8 +2641,11 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     {
         char text[SHNET_EVENT_MAX];
         snprintf(text, sizeof(text), "%s left", c->name);
-        SrvLog("- %s left (id %u)", c->name, c->playerId);
-        SrvFeed("- %s left (id %u)", c->name, c->playerId);
+        {
+            char stay[48];
+            SrvStayStr(c, stay, (int)sizeof(stay));
+            SrvFeed("- %s left (id %u, %s)", c->name, c->playerId, stay);
+        }
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
         SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
@@ -2662,6 +2931,8 @@ static void WsAccept(unsigned int now)
         if (i == WS_MAX_CONNS)
         {
             SH_CLOSESOCK(fd);
+            SrvWarnIp(0, SRV_WARN_WS_SLOTS, "! browser connection refused: all %d WebSocket slots are in use",
+                      WS_MAX_CONNS);
             continue;
         }
         WsSetNonBlocking(fd);
@@ -2772,7 +3043,8 @@ static int WsHandshake(WsConn* w, char* req)
     return 1;
 }
 
-/* Handles every whole frame in rx. Returns 0 when the connection must close. */
+/* Handles every whole frame in rx. Returns 0 when the connection must close
+ * (the client's close frame), -1 when it broke the protocol. */
 static int WsFrames(WsConn* w)
 {
     int pos = 0;
@@ -2791,7 +3063,7 @@ static int WsFrames(WsConn* w)
          * unfragmented frame, and anything larger is not a datagram. */
         if (!masked || (f[0] & 0x70))
         {
-            return 0;
+            return -1;
         }
         if (len == 126)
         {
@@ -2801,11 +3073,11 @@ static int WsFrames(WsConn* w)
         }
         else if (len == 127)
         {
-            return 0;
+            return -1;
         }
         if (len > SHNET_MTU)
         {
-            return 0;
+            return -1;
         }
         if (w->rxLen - pos < hdr + 4 + len)
         {
@@ -2830,14 +3102,14 @@ static int WsFrames(WsConn* w)
         }
         if (opcode == 0x2)
         {
-            if (!fin) return 0;
+            if (!fin) return -1;
             SrvDispatch(&w->addr, payload, len);
             if (!w->used) return 1; /* the dispatch closed it */
             continue;
         }
         if (opcode == 0x0)
         {
-            return 0;
+            return -1;
         }
         /* text and pong: nothing to do */
     }
@@ -2856,6 +3128,10 @@ static void WsRead(WsConn* w, unsigned int now)
         int n;
         if (w->rxLen >= WS_RX_CAP)
         {
+            char a[24];
+            SrvIpStr(w->addr.sin_addr.s_addr, a, (int)sizeof(a));
+            SrvWarnIp(w->addr.sin_addr.s_addr, SRV_WARN_WS_OVERFLOW,
+                      "! browser %s filled its receive buffer without a whole frame; closed", a);
             WsClose(w);
             return;
         }
@@ -2884,6 +3160,10 @@ static void WsRead(WsConn* w, unsigned int now)
             end[2] = '\0';
             if (!WsHandshake(w, (char*)w->rx))
             {
+                char a[24];
+                SrvIpStr(w->addr.sin_addr.s_addr, a, (int)sizeof(a));
+                SrvWarnIp(w->addr.sin_addr.s_addr, SRV_WARN_WS_HANDSHAKE,
+                          "! %s sent a request that is not a WebSocket upgrade; refused", a);
                 static const char bad[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
                 send(w->fd, bad, (int)sizeof(bad) - 1, 0);
                 WsClose(w);
@@ -2895,10 +3175,20 @@ static void WsRead(WsConn* w, unsigned int now)
                 w->rxLen -= used;
             }
         }
-        if (!WsFrames(w))
         {
-            WsClose(w);
-            return;
+            const int r = WsFrames(w);
+            if (r <= 0)
+            {
+                if (r < 0)
+                {
+                    char a[24];
+                    SrvIpStr(w->addr.sin_addr.s_addr, a, (int)sizeof(a));
+                    SrvWarnIp(w->addr.sin_addr.s_addr, SRV_WARN_WS_FRAME,
+                              "! browser %s sent a malformed WebSocket frame; closed", a);
+                }
+                WsClose(w);
+                return;
+            }
         }
         if (!w->used)
         {
@@ -3025,9 +3315,6 @@ static void SrvFeed(const char* fmt, ...)
     int          i, n, any = 0;
     unsigned int now = SrvMillis();
 
-    for (i = 0; i < ADM_WATCH_MAX; i++) any |= AdmWatchLive(i, now);
-    if (!any || g_adminSock == SH_INVALID_SOCK) return;
-
     t   = time(NULL);
     tmv = localtime(&t);
     if (!tmv || !strftime(stamp, sizeof(stamp), "%H:%M:%S", tmv)) stamp[0] = '\0';
@@ -3035,6 +3322,12 @@ static void SrvFeed(const char* fmt, ...)
     va_start(ap, fmt);
     n += vsnprintf(line + n, sizeof(line) - 2 - (size_t)n, fmt, ap);
     va_end(ap);
+    SrvLog("%s", line + strlen(stamp) + 2);
+
+    /* Consoles that watch over the admin socket: one too old to read the
+     * log file. */
+    for (i = 0; i < ADM_WATCH_MAX; i++) any |= AdmWatchLive(i, now);
+    if (!any || g_adminSock == SH_INVALID_SOCK) return;
     if (n > (int)sizeof(line) - 2) n = (int)sizeof(line) - 2;
     line[n++] = '\n';
     line[n]   = '\0';
@@ -3047,7 +3340,8 @@ static void SrvFeed(const char* fmt, ...)
 
 /* A marker in the words the players see. The substitution is by hand, as in
  * the client: the phrase strings are data, never a printf format. */
-static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map)
+static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map,
+                        unsigned int id)
 {
     const int   k  = kind & 0x0F;
     const int   em = ShNetMemo_EmojiOf(kind, phraseB, wordB);
@@ -3057,8 +3351,8 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
     char        body[128];
     int         o = 0;
 
-    if (k == SHNET_MARK_DEATH) { SrvFeed("x %s died on map %d", who, map); return; }
-    if (k == SHNET_MARK_SAVE)  { SrvFeed("~ %s rested on map %d", who, map); return; }
+    if (k == SHNET_MARK_DEATH) { SrvFeed("x %s died on map %d (marker %u)", who, map, id); return; }
+    if (k == SHNET_MARK_SAVE)  { SrvFeed("~ %s rested on map %d (marker %u)", who, map, id); return; }
     p = (phrase >= 0 && phrase < (int)(sizeof(s_phrases) / sizeof(s_phrases[0]))) ? s_phrases[phrase] : "?";
     w = (word >= 0 && word < (int)(sizeof(s_words) / sizeof(s_words[0]))) ? s_words[word] : "?";
     e = (em >= 0) ? s_emoji[em] : "";
@@ -3074,7 +3368,7 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
         body[o++] = *p++;
     }
     body[o] = '\0';
-    SrvFeed("memo %s on map %d: %s%s%s", who, map, e, e[0] ? "  " : "", body);
+    SrvFeed("memo %s on map %d: %s%s%s (marker %u)", who, map, e, e[0] ? "  " : "", body, id);
 }
 
 static void AdmCmdWatch(int on)
@@ -3150,6 +3444,43 @@ static void AdmBanPathInit(void)
         snprintf(g_banPath, sizeof(g_banPath), "%.*sbans.txt", (int)(slash - g_dbPath + 1), g_dbPath);
     else
         snprintf(g_banPath, sizeof(g_banPath), "bans.txt");
+}
+
+/* sh_master.log beside the marker store unless --log named one. */
+static void SrvLogInit(void)
+{
+    const char* slash = strrchr(g_dbPath, '/');
+#if defined(_WIN32)
+    const char* bs = strrchr(g_dbPath, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    if (g_logOff) return;
+    if (!g_logPath[0])
+    {
+        if (slash && g_dbPath[0])
+            snprintf(g_logPath, sizeof(g_logPath), "%.*ssh_master.log", (int)(slash - g_dbPath + 1), g_dbPath);
+        else
+            snprintf(g_logPath, sizeof(g_logPath), "sh_master.log");
+    }
+    SrvLogOpen();
+}
+
+/* A heartbeat every quarter hour: who is on, and what the network did. */
+static void SrvStatsNote(void)
+{
+    int i, players = 0, web = 0, rooms = 0;
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        const Client* c = &g_clients[i];
+        if (!c->used) continue;
+        players++;
+        if (c->addr.sin_zero[0]) web++;
+        if (c->room && c->roomHost) rooms++;
+    }
+    SrvLog("stats: %d player(s) (%d in a browser), %d co-op room(s), %d markers; last 15 min: %lu datagrams in, "
+           "%lu over a player's limit, %lu for no live session, %lu unreadable",
+           players, web, rooms, g_memoCount, g_statIn, g_statRateDrop, g_statStray, g_statJunk);
+    g_statIn = g_statRateDrop = g_statStray = g_statJunk = 0;
 }
 
 static void AdmSaveBans(void)
@@ -3269,7 +3600,6 @@ static void AdmRemove(Client* c, const char* why, const char* verb)
     char text[SHNET_EVENT_MAX];
     SrvSendReject(&c->addr, SHNET_REJ_BANNED, why);
     snprintf(text, sizeof(text), "%s was %s", c->name, verb);
-    SrvLog("- %s %s by the admin (id %u)", c->name, verb, c->playerId);
     SrvFeed("- %s %s by the admin (id %u)", c->name, verb, c->playerId);
     SrvRoomLeave(c, 1);
     c->used = 0;
@@ -3401,8 +3731,10 @@ static void AdmHelp(void)
         "prune all                    delete every marker (a clean world before a release)\n"
         "say <text>                   message to everyone online\n"
         "save                         write the marker store now\n"
-        "watch                        live feed: joins, leaves, living-world chat and markers,\n"
-        "                             rooms, invites (not the talk inside a co-op room). Enter stops\n");
+        "watch [all | N]              the log since the server started (all: the whole file, N: the\n"
+        "                             last N lines), then live: joins, leaves, living-world chat and\n"
+        "                             markers, deaths, rooms, invites, network trouble. Enter stops\n"
+        "logfile                      where the log file is\n");
 }
 
 static void AdmRun(char* line)
@@ -3432,6 +3764,7 @@ static void AdmRun(char* line)
     if (!*cmd) { AdmHelp(); return; }
     if (!strcmp(cmd, "watch"))   { AdmCmdWatch(1); return; } /* refreshed every half minute: not journal-worthy */
     if (!strcmp(cmd, "unwatch")) { AdmCmdWatch(0); return; }
+    if (!strcmp(cmd, "logfile")) { AdmPrintf("logfile %s\n", g_logFile ? g_logAbs : "-"); return; }
     SrvLog("admin: %s %s", cmd, rest);
 
     if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) AdmHelp();
@@ -3682,7 +4015,195 @@ static void AdmWatch(ShSock s, const struct sockaddr_in* to)
     sendto(s, "unwatch", 7, 0, (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
 }
 
-static int AdmClient(const char* oneCmd)
+/* The log the running server writes, as it reports it; 0 when it has none
+ * (or is too old to say, and then watch falls back to the admin feed). */
+static int AdmLogPath(ShSock s, const struct sockaddr_in* to, char* out, int cap)
+{
+    char           buf[1200];
+    fd_set         rd;
+    struct timeval tv;
+    int            n;
+    sendto(s, "logfile", 7, 0, (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
+    FD_ZERO(&rd);
+    FD_SET(s, &rd);
+    tv.tv_sec  = 3;
+    tv.tv_usec = 0;
+    if (select((int)s + 1, &rd, NULL, NULL, &tv) <= 0) return 0;
+    n = (int)recv(s, buf, sizeof(buf) - 1, 0);
+    if (n <= 8) return 0;
+    buf[n] = '\0';
+    buf[strcspn(buf, "\r\n")] = '\0';
+    if (strncmp(buf, "logfile ", 8) != 0 || !strcmp(buf + 8, "-")) return 0;
+    snprintf(out, (size_t)cap, "%s", buf + 8);
+    return 1;
+}
+
+#define ADM_REPLAY_LINES 5000
+
+/* Where a replay of d[0..n) starts. lines < 0: this run's start line, or the
+ * last ADM_REPLAY_LINES if it is further back than that (or rotated away);
+ * 0: the whole file; N: the last N lines. *cut says lines were skipped. */
+static long AdmReplayFrom(const char* d, long n, int lines, int* cut)
+{
+    const size_t markLen = strlen(SRV_LOG_START);
+    const int    want    = lines < 0 ? ADM_REPLAY_LINES : lines;
+    int          count   = 0;
+    long         p;
+    *cut = 0;
+    if (lines == 0) return 0;
+    for (p = n - 1; p >= 0; p--)
+    {
+        if (p > 0 && d[p - 1] != '\n') continue;
+        count++;
+        /* "YYYY-MM-DD HH:MM:SS  " precedes every line's text. */
+        if (lines < 0 && n - p > 21 + (long)markLen && memcmp(d + p + 21, SRV_LOG_START, markLen) == 0)
+            return p;
+        if (count >= want)
+        {
+            *cut = p > 0;
+            return p;
+        }
+    }
+    return 0;
+}
+
+/* Waits up to a quarter second; 1 when Enter was pressed. */
+static int AdmEnterPressed(void)
+{
+    char line[64];
+#if defined(_WIN32)
+    Sleep(250);
+    if (_kbhit())
+    {
+        if (fgets(line, sizeof(line), stdin)) {}
+        return 1;
+    }
+    return 0;
+#else
+    fd_set         rd;
+    struct timeval tv;
+    FD_ZERO(&rd);
+    FD_SET(0, &rd);
+    tv.tv_sec  = 0;
+    tv.tv_usec = 250000;
+    if (select(1, &rd, NULL, NULL, &tv) > 0 && FD_ISSET(0, &rd))
+    {
+        if (fgets(line, sizeof(line), stdin)) {}
+        return 1;
+    }
+    return 0;
+#endif
+}
+
+/* Which file an open handle is, to see the path name another one after a
+ * rotation. Not the size from stat(): Windows keeps a file's directory entry
+ * size stale while another process has it open for writing. */
+static unsigned long long AdmFileId(FILE* f)
+{
+#if defined(_WIN32)
+    BY_HANDLE_FILE_INFORMATION bi;
+    HANDLE h = (HANDLE)_get_osfhandle(_fileno(f));
+    if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &bi)) return 0;
+    return ((unsigned long long)bi.dwVolumeSerialNumber << 40) ^ ((unsigned long long)bi.nFileIndexHigh << 32) ^
+           (unsigned long long)bi.nFileIndexLow;
+#else
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) return 0;
+    return ((unsigned long long)st.st_dev << 40) ^ (unsigned long long)st.st_ino;
+#endif
+}
+
+/* Watch over the log file: replay, then print what is appended until Enter.
+ * The file is opened shareable and only read, so the server keeps writing
+ * and rotating it; after a rotation the rest of the old file is printed and
+ * reading goes on in the new one. */
+static void AdmWatchFile(const char* path, int lines)
+{
+    FILE*              f = SrvShareOpen(path, 0);
+    char*              d;
+    long               n, from, pos;
+    int                cut, skipped = 0;
+    unsigned long long id;
+    if (!f)
+    {
+        printf("cannot read the log %s\n", path);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    d = (char*)malloc((size_t)n + 1);
+    if (!d)
+    {
+        fclose(f);
+        printf("the log %s is too large to replay\n", path);
+        return;
+    }
+    n    = (long)fread(d, 1, (size_t)n, f);
+    from = AdmReplayFrom(d, n, lines, &cut);
+    if (cut)
+    {
+        long p;
+        for (p = 0; p < from; p++) skipped += d[p] == '\n';
+        printf("-- %d earlier line(s) in %s are not shown; \"watch all\" shows the whole file, "
+               "older logs are %s.1 to .%d\n", skipped, path, path, SRV_LOG_KEEP);
+    }
+    fwrite(d + from, 1, (size_t)(n - from), stdout);
+    free(d);
+    pos = n;
+    id  = AdmFileId(f);
+    printf("-- live from %s. Press Enter to stop.\n", path);
+    fflush(stdout);
+
+    while (!AdmEnterPressed())
+    {
+        char  buf[16384];
+        long  got;
+        FILE* nf = SrvShareOpen(path, 0);
+        if (nf)
+        {
+            const unsigned long long nid = AdmFileId(nf);
+            if (nid != 0 && nid != id)
+            {
+                /* Whatever the old file got after the last read. */
+                fseek(f, pos, SEEK_SET);
+                while ((got = (long)fread(buf, 1, sizeof(buf), f)) > 0) fwrite(buf, 1, (size_t)got, stdout);
+                fclose(f);
+                f   = nf;
+                id  = nid;
+                pos = 0;
+            }
+            else
+            {
+                fclose(nf);
+            }
+        }
+        fseek(f, pos, SEEK_SET);
+        while ((got = (long)fread(buf, 1, sizeof(buf), f)) > 0)
+        {
+            fwrite(buf, 1, (size_t)got, stdout);
+            pos += got;
+        }
+        fflush(stdout);
+    }
+    fclose(f);
+}
+
+/* watch, watch all, watch N. */
+static void AdmWatchCmd(ShSock s, const struct sockaddr_in* to, const char* arg)
+{
+    char path[1100];
+    int  lines = -1;
+    while (*arg == ' ') arg++;
+    if (!strcmp(arg, "all")) lines = 0;
+    else if (*arg >= '0' && *arg <= '9') lines = atoi(arg) > 0 ? atoi(arg) : 1;
+    if (AdmLogPath(s, to, path, (int)sizeof(path)))
+        AdmWatchFile(path, lines);
+    else
+        AdmWatch(s, to);
+}
+
+static int AdmClient(const char* oneCmd, const char* watchArg)
 {
     struct sockaddr_in to;
     ShSock             s;
@@ -3700,6 +4221,11 @@ static int AdmClient(const char* oneCmd)
     {
         return AdmSendOne(s, &to, oneCmd) ? 0 : 1;
     }
+    if (watchArg)
+    {
+        AdmWatchCmd(s, &to, watchArg);
+        return 0;
+    }
     printf("Silent Hill Online server console. Type help for commands, quit to leave.\n");
     for (;;)
     {
@@ -3709,7 +4235,11 @@ static int AdmClient(const char* oneCmd)
         line[strcspn(line, "\r\n")] = '\0';
         if (!strcmp(line, "quit") || !strcmp(line, "exit")) break;
         if (!line[0]) continue;
-        if (!strcmp(line, "watch")) { AdmWatch(s, &to); continue; }
+        if (!strncmp(line, "watch", 5) && (line[5] == '\0' || line[5] == ' '))
+        {
+            AdmWatchCmd(s, &to, line + 5);
+            continue;
+        }
         AdmSendOne(s, &to, line);
     }
     return 0;
@@ -3732,6 +4262,10 @@ static void SrvUsage(const char* argv0)
     printf("  --admin PORT admin console port on 127.0.0.1 (default %d, 0 = off)\n", SHNET_DEFAULT_PORT + 3);
     printf("  --console    talk to the running server's admin console\n");
     printf("  --cmd TEXT   run one admin command on the running server (try help)\n");
+    printf("  --watch [all | N]  the running server's log since it started, then live\n");
+    printf("  --log FILE   write the log here (default sh_master.log beside the marker store)\n");
+    printf("  --log-max MB rotate the log at this size (default 16; FILE.1 to .%d are kept)\n", SRV_LOG_KEEP);
+    printf("  --no-log     no log file (the console's watch then shows only new events)\n");
     printf("               (behind a TLS proxy: browsers need wss://)\n");
     printf("  -n NAME      server name shown to players\n");
     printf("  -m TEXT      message of the day\n");
@@ -3752,8 +4286,9 @@ static void SrvUsage(const char* argv0)
 int main(int argc, char** argv)
 {
     int         i;
-    int         console = 0;
-    const char* oneCmd  = NULL;
+    int         console  = 0;
+    const char* oneCmd   = NULL;
+    const char* watchArg = NULL;
 
     for (i = 1; i < argc; i++)
     {
@@ -3769,6 +4304,23 @@ int main(int argc, char** argv)
         else if (!strcmp(a, "--console"))
         {
             console = 1;
+        }
+        else if (!strcmp(a, "--watch"))
+        {
+            watchArg = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "";
+        }
+        else if (!strcmp(a, "--log") && i + 1 < argc)
+        {
+            snprintf(g_logPath, sizeof(g_logPath), "%s", argv[++i]);
+        }
+        else if (!strcmp(a, "--log-max") && i + 1 < argc)
+        {
+            const long mb = atol(argv[++i]);
+            g_logMaxBytes = (mb > 0 ? mb : 1) * 1024L * 1024L;
+        }
+        else if (!strcmp(a, "--no-log"))
+        {
+            g_logOff = 1;
         }
         else if (!strcmp(a, "--cmd") && i + 1 < argc)
         {
@@ -3825,9 +4377,9 @@ int main(int argc, char** argv)
         }
     }
 
-    if (console || oneCmd)
+    if (console || oneCmd || watchArg)
     {
-        return AdmClient(oneCmd);
+        return AdmClient(oneCmd, watchArg);
     }
     SrvSanitize(g_serverName, SHNET_SERVER_MAX);
     return ShMaster_Serve();
@@ -3928,6 +4480,10 @@ int ShMaster_Serve(void)
 #endif
 #endif
 
+#ifndef SH_MASTER_EMBED
+    SrvLogInit();
+    SrvLog("%s (protocol v%d, log %s)", SRV_LOG_START, SHNET_PROTO_VER, g_logFile ? g_logAbs : "off");
+#endif
     SrvLoadDb();
     SrvPurgeDeaths();
     g_lastSaveMs = SrvMillis();
@@ -4012,9 +4568,22 @@ int ShMaster_Serve(void)
 
         if (now - lastExpire >= 1000u)
         {
-            static unsigned int s_lastPurge;
+            static unsigned int s_lastPurge, s_lastNoise, s_lastStats;
             lastExpire = now;
             SrvExpire(now);
+            if (!s_lastNoise) s_lastNoise = s_lastStats = now;
+            if (now - s_lastNoise >= 60000u)
+            {
+                s_lastNoise = now;
+                SrvNoiseTick();
+            }
+#ifndef SH_MASTER_EMBED
+            if (now - s_lastStats >= 900000u)
+            {
+                s_lastStats = now;
+                SrvStatsNote();
+            }
+#endif
             if (now - s_lastPurge >= 60000u)
             {
                 s_lastPurge = now;
@@ -4033,6 +4602,13 @@ int ShMaster_Serve(void)
 
     SrvLog("shutting down");
     SrvSaveDb();
+#ifndef SH_MASTER_EMBED
+    if (g_logFile)
+    {
+        fclose(g_logFile);
+        g_logFile = NULL;
+    }
+#endif
     SH_CLOSESOCK(g_sock);
 #if defined(_WIN32)
     WSACleanup();
