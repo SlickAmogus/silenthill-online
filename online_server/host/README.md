@@ -16,6 +16,8 @@ is full. Each server is its own world, with its own messages and rooms.
 | `server.txt` | your settings: where the server is, its command line, an optional domain |
 | `Redeploy-Server.bat` | installs or updates the server on a Linux machine over ssh (Windows) |
 | `Server-Console.bat` | opens the running server's admin console (Windows) |
+| `Server-Monitor.bat` | a live view of the server's log, from its last start (Windows) |
+| `Server-Log.bat` | opens the server's log file in Notepad, copied from the Linux server first (Windows) |
 | `Start-Server.bat` | runs the server on this Windows PC |
 | `install-server.sh` | the installer that runs on the Linux server itself |
 | `sh_master.exe` | the server for Windows |
@@ -66,11 +68,49 @@ the commands:
 | `prune all` | delete every marker: a clean world |
 | `say <text>` | a message to everyone online |
 | `save` | write the marker store now |
-| `watch` | a live feed until you press Enter: who joins and leaves, chat and markers in the living world (in words), rooms opening and closing, invites. What players say to each other inside a co-op room is theirs and is neither shown nor logged |
+| `watch` | the log since the server last started, then each new line as it happens, until you press Enter. Scroll up in the window for the history |
+| `watch all`, `watch <N>` | the whole log file, or its last N lines, then live |
+| `logfile` | where the log file is |
 
 The console only listens on the machine itself (127.0.0.1:27891), so it needs
-the ssh login. The log is `journalctl -u sh1pc -f`; it carries the same joins, leaves, living-world chat and marker placements as `watch`, with addresses. Markers live in `memos.db`
-and bans in `bans.txt` in the service's working directory (`/root` by default).
+the ssh login. When the connection drops, press a key in the window to log in
+again. Markers live in `memos.db` and bans in `bans.txt` in the service's
+working directory (`/root` by default).
+
+### Log
+
+The server writes everything it reports to `sh_master.log` beside `memos.db`
+(`/root/sh_master.log` by default), with the date and time on every line, from
+the moment it starts. The log is there whether or not anyone is watching, so a
+console opened hours later can still show what happened. **Server-Monitor.bat**
+opens it live (the same as `watch`), **Server-Log.bat** opens the whole file in
+Notepad, and on the server itself any viewer can read it while the server writes
+(`less /root/sh_master.log`, `tail -f /root/sh_master.log`). The journal gets
+the same lines (`journalctl -u sh1pc -f`).
+
+What goes in:
+
+- players joining (address, id, build) and leaving or timing out (how long they
+  were on, their ping), kicks and bans by the admin
+- chat in the living world, Global and Level. What players say to each other
+  inside a co-op room is theirs and is neither shown nor logged
+- messages left, in the words players see, deaths and save marks, each with its
+  marker id for `prune id`
+- co-op rooms opening and closing, who joins them, refused joins, invites
+- network trouble, at most once a minute per player or address: a player heard
+  from again after 4 s or more of silence (lag, packet loss, a frozen game), a
+  ping of 300 ms or more, a player sending faster than the limit, an address
+  sending datagrams for no live session or unreadable ones (after a server
+  restart the games still on their old session send a few of these until they
+  reconnect; a steady stream from one address is a probe or a flood), banned
+  addresses trying to connect, a full server, browser connections that break
+  the WebSocket protocol
+- every admin command, and a `stats:` line every 15 minutes with who is on and
+  what the network did
+
+At 16 MB the log moves to `sh_master.log.1` (the older ones to `.2` up to
+`.5`) and a new one starts, so it never fills the disk. `--log FILE`,
+`--log-max MB` and `--no-log` change that.
 
 ## On a Linux machine, directly
 
@@ -87,7 +127,8 @@ Same result as the batch file. Without systemd, run the binary by hand:
 Set `args=` in `server.txt`, double-click **Start-Server.bat**, and allow the
 program through the Windows firewall when asked. Forward UDP 27888 to this PC
 for players outside your network. **Server-Console.bat** talks to it while it
-runs (leave `host=` empty). Browser players cannot connect to a plain Windows
+runs (leave `host=` empty), **Server-Monitor.bat** shows its log live and
+**Server-Log.bat** opens `sh_master.log` from this folder. Browser players cannot connect to a plain Windows
 host, because they need `wss://`.
 
 ## Server options
@@ -104,6 +145,9 @@ host, because they need `wss://`.
 | `-d FILE` | marker store path (default `memos.db`) |
 | `-b ID`, `--builds FILE` | only admit the listed build ids (optional; rooms already match builds) |
 | `--admin PORT` | admin console port on 127.0.0.1 (default 27891, 0 = off) |
+| `--log FILE` | the log file (default `sh_master.log` beside the marker store) |
+| `--log-max MB` | start a new log at this size (default 16; the last five are kept) |
+| `--no-log` | no log file |
 | `--no-ghosts` / `--no-memos` / `--no-deaths` | serve a subset |
 | `-v` | log every query |
 
