@@ -35,10 +35,13 @@ is full. Each server is its own world, with its own messages and rooms.
    lines show whether the service and its admin console answer, and the
    address players enter.
 3. Double-click it again whenever a new server release comes out, or after
-   editing `server.txt`. When players are online they first get a toast and
-   a chat line saying the server restarts in 30 seconds, and the restart
-   waits that long (`install-server.sh --no-warn` skips it). It replaces the program and restarts; the service
-   file is kept, so change the command line in
+   editing `server.txt`. The new program is built first, beside the running
+   one. When players are online it lists them and asks: **continue** gives
+   them a toast and a chat line saying the server restarts in 30 seconds and
+   restarts after that, **stop** changes nothing and the server keeps running
+   the version it has. (Run on the server itself, `install-server.sh` asks the
+   same; `--yes` answers continue, `--no-warn` restarts at once without
+   warning.) The service file is kept, so change the command line in
    `/etc/systemd/system/sh1pc.service` once it exists.
 
 Players outside the machine's network need UDP 27888 open to it. Cloud
@@ -105,7 +108,8 @@ What goes in:
   reconnect; a steady stream from one address is a probe or a flood), banned
   addresses trying to connect, a full server, browser connections that break
   the WebSocket protocol
-- every admin command, and a `stats:` line every 15 minutes with who is on and
+- every admin command that changes something (kick, ban, say, prune...; looking at
+  players, bans or markers is not logged), and a `stats:` line every 15 minutes with who is on and
   what the network did
 
 At 16 MB the log moves to `sh_master.log.1` (the older ones to `.2` up to
