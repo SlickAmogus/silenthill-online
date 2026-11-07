@@ -2484,6 +2484,8 @@ void MainLoop(void) // 0x80032EE0
                 const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
                 extern unsigned int Pc_MouseCursor_BoundPadBits(void);
                 unsigned int clk = g_Controller0->clickedBtnFlags & ~Pc_MouseCursor_BoundPadBits();
+                extern void Pc_CoopMenu_MapPressed(void);
+                if (clk & cc->map) Pc_CoopMenu_MapPressed(); /* refreshes the online list */
                 Pc_CoopMenu_Update(
                     (clk & cc->cancel) != 0,
                     (g_Controller0->pulsedBtnFlags & (ControllerFlag_LStickUp   | ControllerFlag_DpadUp))   != 0,

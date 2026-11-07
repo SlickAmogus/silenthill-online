@@ -21,6 +21,7 @@
 #include "sh_net.h"
 #include "sh_net_session.h"
 #include "sh_net_invite.h" /* the Invite / Accept / Decline rows */
+#include "sh_net_social.h" /* names, tags and blocks in the online list */
 #include "sh_net_chat.h"   /* the Chat row */
 #include "sh_net_proto.h" /* SHNET_PERM_* */
 #include "sh_net_steam.h"
@@ -56,8 +57,28 @@ typedef enum
     COOP_PAGE_GAMEOVER,     /* host, after a co-op game over: Yes / Load Game / Quit Without Saving */
     COOP_PAGE_SETTINGS,     /* phones and the browser: server, living world, name */
     COOP_PAGE_INVITE_HOST,  /* inviting from a single-player game: Host From Here / Return to Lobby */
-    COOP_PAGE_LOBBY_SAVE    /* Return to Lobby: save first? */
+    COOP_PAGE_LOBBY_SAVE,   /* Return to Lobby: save first? */
+    COOP_PAGE_ONLINE        /* everyone on the server: to look at (Player List) or to invite from */
 } CoopPage;
+
+/* The online list: the server's roster as a menu page, nearest first. Built
+ * when it opens, on Refresh (the map button) and when a new roster arrives,
+ * not every frame, so the row under the selection does not move about as
+ * people walk. */
+#define COOP_ONLINE_MAX 256
+typedef struct
+{
+    unsigned int id, tag, rf;
+    int          map, ping, near_;
+    long long    d2;
+    char         name[SHNET_NAME_MAX];
+} CoopOnline;
+static CoopOnline s_online[COOP_ONLINE_MAX];
+static int        s_onlineN;
+static int        s_onlineInvite;     /* 1 = picking a player to invite */
+static int        s_onlineSeen = -1;  /* the roster size it was built from */
+static int        s_onlineBack;       /* the page and row Back returns to; -1 = close the menu */
+static int        s_onlineBackRow;
 
 /* The host setup reached from a running single-player game (Return to Lobby):
  * the room is on the server (an invite is waiting on it), so the Host on row
@@ -747,6 +768,128 @@ int Pc_CoopMenu_InviteHost(void)
     return 1;
 }
 
+static int Coop_OnlineInOurGame(unsigned int id)
+{
+    int i, n = ShSession_Active() ? ShSession_MemberCount() : 0;
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && (unsigned int)m->steamId == id) return 1;
+    }
+    return 0;
+}
+
+static int Coop_OnlineCmp(const void* a, const void* b)
+{
+    const CoopOnline* x = (const CoopOnline*)a;
+    const CoopOnline* y = (const CoopOnline*)b;
+    if (x->near_ != y->near_) return y->near_ - x->near_; /* on our map first */
+    if (x->near_ && x->d2 != y->d2) return x->d2 < y->d2 ? -1 : 1;
+    return SDL_strcasecmp(x->name, y->name);
+}
+
+static void Coop_OnlineBuild(void)
+{
+    const int inGame = (g_GameWork.gameState == GameState_InGame && g_SavegamePtr != NULL);
+    const int mx = g_SysWork.playerWork.player.position.vx;
+    const int mz = g_SysWork.playerWork.player.position.vz;
+    int       i, n = ShNet_PeerCount(), g, gn = ShNet_GhostCount();
+    s_onlineN    = 0;
+    s_onlineSeen = n;
+    for (i = 0; i < n && s_onlineN < COOP_ONLINE_MAX; i++)
+    {
+        const ShNetPeer* p = ShNet_Peer(i);
+        CoopOnline*      o;
+        if (!p || p->playerId == ShNet_SelfId() || ShSocial_BlockedToken(p->token)) continue;
+        o = &s_online[s_onlineN++];
+        memset(o, 0, sizeof(*o));
+        o->id   = p->playerId;
+        o->tag  = p->tag;
+        o->rf   = p->rf;
+        o->map  = p->mapIdx;
+        o->ping = p->pingMs;
+        SDL_strlcpy(o->name, p->name[0] ? p->name : "?", sizeof(o->name));
+        /* Standing on our map: how far, from their ghost. */
+        for (g = 0; inGame && g < gn; g++)
+        {
+            const ShNetGhost* gh = ShNet_Ghost(g);
+            int               x, y, z;
+            short             r;
+            if (!gh || gh->playerId != p->playerId) continue;
+            if (!ShNet_GhostInterp(g, &x, &y, &z, &r)) { x = gh->curX; z = gh->curZ; }
+            o->near_ = 1;
+            o->d2    = (long long)(x - mx) * (x - mx) + (long long)(z - mz) * (z - mz);
+            break;
+        }
+    }
+    qsort(s_online, (size_t)s_onlineN, sizeof(s_online[0]), Coop_OnlineCmp);
+    if (s_page == COOP_PAGE_ONLINE && s_sel > s_onlineN + 1) s_sel = s_onlineN + 1;
+}
+
+static void Coop_OnlineRefresh(void)
+{
+    ShNet_RequestRoster();
+    s_onlineSeen = -1; /* rebuilt now, and again when the answer arrives */
+    Coop_OnlineBuild();
+    snprintf(s_msg, sizeof(s_msg), "Refreshed.");
+}
+
+static void Coop_OpenOnline(int invite, int backPage, int backRow)
+{
+    s_onlineInvite  = invite;
+    s_onlineBack    = backPage;
+    s_onlineBackRow = backRow;
+    ShNet_RequestRoster();
+    Coop_OnlineBuild();
+    s_page   = COOP_PAGE_ONLINE;
+    s_sel    = 0;
+    s_msg[0] = '\0';
+}
+
+void Pc_CoopMenu_OpenOnline(int invite)
+{
+    if (!s_open)
+    {
+        if (g_GameWork.gameState == GameState_InGame) Pc_CoopMenu_OpenInGame();
+        else                                          Pc_CoopMenu_Open();
+        Coop_OpenOnline(invite, -1, 0);
+    }
+    else
+    {
+        Coop_OpenOnline(invite, (int)s_page, s_sel);
+    }
+}
+
+void Pc_CoopMenu_MapPressed(void)
+{
+    if (s_open && s_page == COOP_PAGE_ONLINE) Coop_OnlineRefresh();
+}
+
+int Pc_CoopMenu_OnlineEntry(int i, char* name, int nameCap, unsigned int* tag, unsigned long long* id,
+                            char* where, int whereCap, char* status, int statusCap, int* ping, int* gray)
+{
+    const CoopOnline* o;
+    int               sec = 0, st;
+    if (s_page != COOP_PAGE_ONLINE || i < 0 || i >= s_onlineN) return 0;
+    o = &s_online[i];
+    SDL_strlcpy(name, o->name, (size_t)nameCap);
+    *tag  = o->tag;
+    *id   = o->id;
+    *ping = o->ping;
+    *gray = 0;
+    snprintf(where, (size_t)whereCap, "%s", (o->map >= 0 && o->map < 64) ? Pc_MapAreaName(o->map) : "Menus");
+    st = ShNetInvite_StateOf(o->id, &sec);
+    if (Coop_OnlineInOurGame(o->id))           snprintf(status, (size_t)statusCap, "In your game");
+    else if (o->rf & SHNET_RF_ROOMHOST)       { snprintf(status, (size_t)statusCap, "Hosting a game"); *gray = 1; }
+    else if (st == SHNET_INVST_INVITED)        snprintf(status, (size_t)statusCap, "Invited (%d s)", sec);
+    else if (st == SHNET_INVST_SAVING)         snprintf(status, (size_t)statusCap, "Saving, then joining");
+    else if (st == SHNET_INVST_DECLINED)       snprintf(status, (size_t)statusCap, "Declined (%d s)", sec);
+    else if (st == SHNET_INVST_BUSY)           snprintf(status, (size_t)statusCap, "Busy");
+    else if (o->rf & SHNET_RF_INROOM)          snprintf(status, (size_t)statusCap, "In a game");
+    else                                       status[0] = '\0';
+    return 1;
+}
+
 /* An invite out of a single-player game: host from here, or from the lobby. */
 void Pc_CoopMenu_OpenInviteHostChoice(void)
 {
@@ -1063,7 +1206,8 @@ enum
 {
     COOP_IG_RESUME = 0, COOP_IG_MESSAGE, COOP_IG_SAVE, COOP_IG_CHARACTER, COOP_IG_NAMEPLATES,
     COOP_IG_HEALTHBARS, COOP_IG_FRIENDLY, COOP_IG_CHEATS, COOP_IG_TELEPORT, COOP_IG_PLAYERS, COOP_IG_LEAVE,
-    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE, COOP_IG_CHAT, COOP_IG_LOAD
+    COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE, COOP_IG_CHAT, COOP_IG_LOAD,
+    COOP_IG_PLAYERLIST
 };
 #define COOP_IG_MAX 20
 
@@ -1079,13 +1223,14 @@ static int Coop_InGameRows(int* rows)
         rows[n++] = COOP_IG_ACCEPT;
         rows[n++] = COOP_IG_DECLINE;
     }
-    else if (ShNetInvite_Outgoing(NULL, 0))
+    if (ShNetInvite_Outgoing(NULL, 0))
     {
         rows[n++] = COOP_IG_INVITE_CANCEL;
     }
-    else if (ShNetInvite_CanInvite() && ShNetInvite_Target(NULL, 0, NULL, NULL))
+    if (ShNet_WorldConnected())
     {
-        rows[n++] = COOP_IG_INVITE;
+        if (!guest) rows[n++] = COOP_IG_INVITE;
+        rows[n++] = COOP_IG_PLAYERLIST;
     }
     rows[n++] = COOP_IG_CHAT;
     /* Outside a co-op game (the living world alone) that is the whole menu:
@@ -1144,6 +1289,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_SETTINGS:   return 7; /* Living World IP, Living World, Name, Join Messages, Chat, Restart Connection, Back */
     case COOP_PAGE_HOST_SETUP: return s_fromGame ? 11 : 12; /* [Host on,] Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Sync Consumables, Keep Items, Load, Open, Back */
     case COOP_PAGE_INVITE_HOST: return 3; /* Host From Here, Return to Lobby, Cancel */
+    case COOP_PAGE_ONLINE:      return s_onlineN + 2; /* the players, Refresh, Back */
     case COOP_PAGE_LOBBY_SAVE:  return 3; /* Save First, Continue Without Saving, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
@@ -1176,6 +1322,7 @@ int Pc_CoopMenu_View(void)
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
     case COOP_PAGE_PLAYERS:    return PC_COOP_VIEW_PLAYERS;
     case COOP_PAGE_SAVES:      return PC_COOP_VIEW_SAVES;
+    case COOP_PAGE_ONLINE:     return PC_COOP_VIEW_ONLINE;
     default:                   return PC_COOP_VIEW_MENU;
     }
 }
@@ -1205,6 +1352,7 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_PLAYER:     return s_playerName;
     case COOP_PAGE_INVITE:     return "ACCEPT INVITE";
     case COOP_PAGE_INVITE_HOST: return "INVITE";
+    case COOP_PAGE_ONLINE:      return s_onlineInvite ? "INVITE PLAYERS" : "PLAYER LIST";
     case COOP_PAGE_LOBBY_SAVE:  return "RETURN TO LOBBY";
     case COOP_PAGE_GAMEOVER:   return "GAME OVER";
     case COOP_PAGE_SAVES:      return Coop_SavesLoadNow() ? "LOAD GAME" : "START FROM";
@@ -1240,6 +1388,12 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_ROOT_DECLINE:  snprintf(out, cap, "Decline Invite"); break;
         default:                 snprintf(out, cap, "Back"); break;
         }
+        break;
+
+    case COOP_PAGE_ONLINE:
+        if (i < s_onlineN)      snprintf(out, cap, "%s", s_online[i].name);
+        else if (i == s_onlineN) snprintf(out, cap, "Refresh");
+        else                     snprintf(out, cap, "Back");
         break;
 
     case COOP_PAGE_INVITE_HOST:
@@ -1361,18 +1515,10 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_IG_TELEPORT:   snprintf(out, cap, "Teleport to Host"); break;
         case COOP_IG_PLAYERS:    snprintf(out, cap, "Players"); break;
         case COOP_IG_INVITE:
-        {
-            char who[SHNET_NAME_MAX];
-            char where[64];
-            int  cool = 0, map = -1;
-            ShNetInvite_Target(who, (int)sizeof(who), &map, &cool);
-            if (map >= 0 && map < 64) snprintf(where, sizeof(where), ", %s", Pc_MapAreaName(map));
-            else                      where[0] = '\0';
-            if (ShNetInvite_Blocked()) snprintf(out, cap, "Invite: %s%s  (not during a boss fight)", who, where);
-            else if (cool > 0)         snprintf(out, cap, "Invite: %s%s  (declined, %d s)", who, where, cool);
-            else                       snprintf(out, cap, "Invite: %s%s", who, where);
+            if (ShNetInvite_Blocked()) snprintf(out, cap, "Invite Players  (not during a boss fight)");
+            else                       snprintf(out, cap, "Invite Players");
             break;
-        }
+        case COOP_IG_PLAYERLIST: snprintf(out, cap, "Player List"); break;
         case COOP_IG_INVITE_CANCEL:
         {
             char who[SHNET_NAME_MAX];
@@ -1619,6 +1765,20 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
                  ShNetInvite_WaitingName());
         break;
 
+    case COOP_PAGE_ONLINE:
+        if (s_msg[0])
+            snprintf(out, cap, "%s", s_msg);
+        else if (ShNet_Status() != SHNET_ST_CONNECTED)
+            snprintf(out, cap, "Not connected to the server.");
+        else if (s_onlineN == 0)
+            snprintf(out, cap, "No one else is online.  Map button: refresh");
+        else if (s_onlineInvite)
+            snprintf(out, cap, "Pick a player to invite. Nearest first.  Map button: refresh");
+        else
+            snprintf(out, cap, "%d other player%s online. Nearest first.  Map button: refresh", s_onlineN,
+                     s_onlineN == 1 ? "" : "s");
+        break;
+
     case COOP_PAGE_LOBBY_SAVE:
         snprintf(out, cap, "Your game ends when you go to the lobby. Save it first?");
         break;
@@ -1683,6 +1843,39 @@ static void Coop_Confirm(void)
         case COOP_ROOT_ACCEPT:   s_page = COOP_PAGE_INVITE; s_sel = 0; s_msg[0] = '\0'; break;
         case COOP_ROOT_DECLINE:  ShNetInvite_Decline(); s_sel = 0; break;
         default:                 Pc_CoopMenu_Close(); break;
+        }
+        break;
+
+    case COOP_PAGE_ONLINE:
+        if (s_sel < s_onlineN)
+        {
+            const CoopOnline* o = &s_online[s_sel];
+            char              who[SHNET_NAME_MAX + 8];
+            int               sec = 0, st;
+            if (!s_onlineInvite) break;
+            ShSocial_FormatName(o->name, o->tag, (o->rf & SHNET_RF_DUPNAME) != 0, who, (int)sizeof(who));
+            st = ShNetInvite_StateOf(o->id, &sec);
+            if (Coop_OnlineInOurGame(o->id))        snprintf(s_msg, sizeof(s_msg), "%s is already in your game.", who);
+            else if (o->rf & SHNET_RF_ROOMHOST)    snprintf(s_msg, sizeof(s_msg), "%s is hosting a game of their own.", who);
+            else if (st == SHNET_INVST_INVITED || st == SHNET_INVST_SAVING)
+                snprintf(s_msg, sizeof(s_msg), "%s is already invited.", who);
+            else if (st == SHNET_INVST_DECLINED)   snprintf(s_msg, sizeof(s_msg), "%s declined. Ask again in %d s.", who, sec);
+            else
+            {
+                const int pageWas = s_page;
+                if (ShNetInvite_SendTo(o->id, who, (o->rf & SHNET_RF_SPLIT) ? 2 : 1) && s_page == pageWas)
+                    snprintf(s_msg, sizeof(s_msg), "%s was invited.", who);
+            }
+        }
+        else if (s_sel == s_onlineN)
+        {
+            Coop_OnlineRefresh();
+        }
+        else
+        {
+            s_msg[0] = '\0';
+            if (s_onlineBack < 0) Pc_CoopMenu_Close();
+            else { s_page = (CoopPage)s_onlineBack; s_sel = s_onlineBackRow; }
         }
         break;
 
@@ -1879,9 +2072,11 @@ static void Coop_Confirm(void)
         }
         case COOP_IG_PLAYERS: s_page = COOP_PAGE_PLAYERS; s_sel = 0; break;
         case COOP_IG_INVITE:
-            ShNetInvite_Send();
-            /* Hosting already: it went out. Otherwise the menu now asks how to host. */
-            if (!ShNetInvite_Blocked() && s_page == COOP_PAGE_INGAME) Pc_CoopMenu_Close();
+            if (ShNetInvite_Blocked()) { snprintf(s_msg, sizeof(s_msg), "Can't invite during a boss fight"); break; }
+            Coop_OpenOnline(1, COOP_PAGE_INGAME, s_sel);
+            break;
+        case COOP_IG_PLAYERLIST:
+            Coop_OpenOnline(0, COOP_PAGE_INGAME, s_sel);
             break;
         case COOP_IG_INVITE_CANCEL: ShNetInvite_Cancel();  s_sel = 0; break;
         case COOP_IG_ACCEPT:
@@ -2120,7 +2315,6 @@ static int Coop_Adjust(int dir)
         if (Coop_RootRow(s_sel) == COOP_ROOT_MUSIC) { Pc_CoopMusic_Step(dir); return 1; }
         return 0;
     case COOP_PAGE_INGAME:
-        if (Coop_InGameRow(s_sel) == COOP_IG_INVITE) { ShNetInvite_Cycle(dir); return 1; }
         return 0;
     case COOP_PAGE_HOST_SETUP:
         switch (Coop_SetupRow(s_sel))
@@ -2202,6 +2396,11 @@ void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int
     {
         s_page = COOP_PAGE_HOST;
         s_sel  = 0;
+    }
+    /* The online list follows a roster that arrived since it was built. */
+    if (s_page == COOP_PAGE_ONLINE && ShNet_PeerCount() != s_onlineSeen)
+    {
+        Coop_OnlineBuild();
     }
     rows = Pc_CoopMenu_RowCount();
 
