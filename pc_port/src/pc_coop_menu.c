@@ -35,6 +35,7 @@
 #endif
 #include <stdlib.h>
 #include <SDL.h>
+#include "pc_discord.h" /* Pc_MapAreaName: returns a pointer, so it must be declared */
 
 const char* ShNet_LocalName(void);
 
