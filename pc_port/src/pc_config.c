@@ -92,7 +92,7 @@ s_PcConfig g_PcConfig = {
     .onlineSteam           = 0,
     .onlineSteamAppId      = 480, /* Spacewar; see sh_net_steam.h */
     .onlineSteamMaxPlayers = 4,
-    .onlineSteamPublic     = 0,   /* friends only: an invite is the point */
+    .onlineSteamPublic     = 1,   /* rooms and lobbies listed (the host setup's Room List row) unless the host hid them last time */
     .onlineSteamAutoHost   = 0,
     .keyOnlinePlayers = "F11",
     .keyOnlineMemo    = "M",
@@ -844,6 +844,23 @@ void PcConfig_Load(const char* path)
         {
             strncpy(g_PcConfig.onlineName, value, sizeof(g_PcConfig.onlineName) - 1);
             g_PcConfig.onlineName[sizeof(g_PcConfig.onlineName) - 1] = ' ';
+        }
+        else if (strncmp(key, "online_block_", 13) == 0)
+        {
+            /* "<token hex> <name>": one /block entry (sh_net_social.c). */
+            int          slot = atoi(key + 13);
+            unsigned int tok  = (unsigned int)strtoul(value, NULL, 16);
+            const char*  sp   = strchr(value, ' ');
+            if (slot >= 0 && slot < PC_ONLINE_BLOCK_MAX && tok != 0)
+            {
+                g_PcConfig.onlineBlocks[slot].token = tok;
+                snprintf(g_PcConfig.onlineBlocks[slot].name, sizeof(g_PcConfig.onlineBlocks[slot].name), "%s",
+                         sp ? sp + 1 : "?");
+            }
+        }
+        else if (strcmp(key, "online_color") == 0)
+        {
+            snprintf(g_PcConfig.onlineColor, sizeof(g_PcConfig.onlineColor), "%s", value);
         }
         else if (strcmp(key, "online_password") == 0)
         {

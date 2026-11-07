@@ -14,6 +14,7 @@
 #include "sh_net_chat.h"
 #include "sh_net_chat_filter.h"
 #include "sh_net_session.h"
+#include "sh_net_social.h"
 #include "pc_config.h"
 #include "pc_mouse_cursor.h" /* the wheel reads back through the history */
 #include "sh_log.h"
@@ -28,14 +29,17 @@
 #define CHAT_SHOWN_OPEN 10    /* lines drawn while composing */
 #define CHAT_SHOWN_TOUCH 5    /* lines drawn while typing on a touchscreen */
 #define CHAT_SYSTEM  (-1)     /* a line of the game's own: shown on every channel */
+#define CHAT_PM      SHNETCHAT_PM /* a private message, either way: shown on every channel */
 #define CHAT_INPUT_MAX 450    /* typed bytes; sent as several lines of at most CHAT_PIECE_MAX */
 #define CHAT_PIECE_MAX 150    /* one line on the wire: SHNET_CHAT_MAX is 160 with the NUL */
 
 typedef struct
 {
-    char         text[SHNET_CHAT_MAX + SHNET_NAME_MAX + 4];
+    char         text[SHNET_CHAT_MAX + SHNET_NAME_MAX + 12];
     int          scope;
     unsigned int ms;          /* arrival, for the fade */
+    int          nameLen;     /* the speaker's name at the start of text, drawn in their colour; 0 none */
+    float        nr, ng, nb;
 } ChatLine;
 
 static ChatLine s_log[CHAT_LOG_MAX];
@@ -76,7 +80,7 @@ static int           s_haveKeys;
 /* Log                                                                 */
 /* ------------------------------------------------------------------ */
 
-static void Chat_Push(int scope, const char* line)
+static ChatLine* Chat_Push(int scope, const char* line)
 {
     ChatLine* l;
     if (s_logCount == CHAT_LOG_MAX)
@@ -86,13 +90,61 @@ static void Chat_Push(int scope, const char* line)
     }
     l = &s_log[s_logCount++];
     SDL_strlcpy(l->text, line, sizeof(l->text));
-    l->scope = scope;
-    l->ms    = SDL_GetTicks();
+    l->scope   = scope;
+    l->ms      = SDL_GetTicks();
+    l->nameLen = 0;
     if (scope != CHAT_SYSTEM)
     {
         SH_DBG("[CHAT] %s %s", ShNetChat_ScopeName(scope), line);
     }
     if (s_open && s_scroll > 0) s_scroll++; /* reading back: the view stays where it is */
+    return l;
+}
+
+/* "name: text", the name in the speaker's colour. */
+static void Chat_PushSaid(int scope, unsigned long long id, const char* name, const char* text)
+{
+    char      line[sizeof(s_log[0].text)];
+    ChatLine* l;
+    snprintf(line, sizeof(line), "%s: %s", name, text);
+    l = Chat_Push(scope, line);
+    l->nameLen = (int)strlen(name);
+    if (l->nameLen > (int)strlen(l->text)) l->nameLen = (int)strlen(l->text);
+    ShSocial_Color(id, &l->nr, &l->ng, &l->nb);
+}
+
+void ShNetChat_AddWhisper(const char* text)
+{
+    if (text && text[0])
+    {
+        Chat_Push(CHAT_PM, text);
+    }
+}
+
+/* Players on this map called `name`, us included: a Level line names its
+ * speaker with their #tag only when two of them share it here. */
+static int Chat_SameNameHere(const char* name)
+{
+    int i, n = ShNet_GhostCount(), k = 0;
+    if (g_PcConfig.onlineName[0] && !SDL_strcasecmp(g_PcConfig.onlineName, name)) k++;
+    for (i = 0; i < n; i++)
+    {
+        const ShNetGhost* g = ShNet_Ghost(i);
+        if (g && !SDL_strcasecmp(g->name, name)) k++;
+    }
+    return k;
+}
+
+/* The room's members called `name`: two of them, and Coop lines carry tags. */
+static int Chat_SameNameInRoom(const char* name)
+{
+    int i, n = ShSession_Active() ? ShSession_MemberCount() : 0, k = 0;
+    for (i = 0; i < n; i++)
+    {
+        const ShSessionMember* m = ShSession_Member(i);
+        if (m && !SDL_strcasecmp(m->name, name)) k++;
+    }
+    return k;
 }
 
 void ShNetChat_AddSystem(const char* text)
@@ -111,6 +163,7 @@ const char* ShNetChat_ScopeName(int scope)
     case SHNET_CHAT_GAME:   return "Level";
     case SHNET_CHAT_COOP:   return Chat_InMenus() ? "Lobby" : "Coop";
     case SHNET_CHAT_ALL:    return "All";
+    case CHAT_PM:           return "Whisper";
     default:                return "";
     }
 }
@@ -124,7 +177,7 @@ static void Chat_MemberName(unsigned long long id, char* out, int cap)
         const ShSessionMember* m = ShSession_Member(i);
         if (m && m->steamId == id && m->name[0])
         {
-            SDL_strlcpy(out, m->name, (size_t)cap);
+            ShSocial_FormatName(m->name, (unsigned int)m->tag, Chat_SameNameInRoom(m->name) > 1, out, cap);
             return;
         }
     }
@@ -133,9 +186,8 @@ static void Chat_MemberName(unsigned long long id, char* out, int cap)
 
 void ShNetChat_CoopIn(unsigned long long from, const unsigned char* p, int len)
 {
-    char name[SHSESSION_NAME_MAX];
+    char name[SHSESSION_NAME_MAX + 8];
     char text[SHNET_CHAT_MAX];
-    char line[sizeof(s_log[0].text)];
     int  n = len - 1;
     if (len < 2) return;
     if (n > SHNET_CHAT_MAX - 1) n = SHNET_CHAT_MAX - 1;
@@ -143,10 +195,13 @@ void ShNetChat_CoopIn(unsigned long long from, const unsigned char* p, int len)
     text[n] = '\0';
     text[strcspn(text, "\r\n")] = '\0';
     if (!text[0]) return;
+    /* In someone else's game a player we blocked is still there, but what
+     * they say is not. */
+    if (ShSocial_BlockedId(from)) return;
     ShNetChat_Censor(text);
     Chat_MemberName(from, name, (int)sizeof(name));
-    snprintf(line, sizeof(line), "%s: %s", name, text);
-    Chat_Push(SHNET_CHAT_COOP, line);
+    Chat_PushSaid(SHNET_CHAT_COOP, from, name, text);
+    ShSocial_Speak(from, text);
 }
 
 /* The bound key's name for the controls line, or NULL when unbound. */
@@ -234,17 +289,24 @@ static void Chat_HelpTick(void)
 void ShNetChat_Tick(void)
 {
     int          scope;
-    unsigned int fromId;
+    unsigned int fromId, tag, rf, token;
     char         name[SHNET_NAME_MAX];
+    char         who[SHNET_NAME_MAX + 8];
     char         text[SHNET_CHAT_MAX];
-    char         line[sizeof(s_log[0].text)];
 
     Chat_HelpTick();
-    while (ShNet_PopChat(&scope, &fromId, name, sizeof(name), text, sizeof(text)))
+    ShSocial_Tick();
+    while (ShNet_PopChatEx(&scope, &fromId, name, sizeof(name), text, sizeof(text), &tag, &rf, &token))
     {
+        int showTag;
+        if (ShSocial_BlockedToken(token)) continue;
         ShNetChat_Censor(text); /* an older server relays them as typed */
-        snprintf(line, sizeof(line), "%s: %s", name[0] ? name : "?", text);
-        Chat_Push(scope == SHNET_CHAT_GAME ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL, line);
+        /* The #tag only where the name alone is not enough: on Global, when
+         * anyone online shares it; on Level, when someone on this map does. */
+        showTag = (scope == SHNET_CHAT_GAME) ? Chat_SameNameHere(name) > 1 : (rf & SHNET_RF_DUPNAME) != 0;
+        ShSocial_FormatName(name[0] ? name : "?", tag, showTag, who, (int)sizeof(who));
+        Chat_PushSaid(scope == SHNET_CHAT_GAME ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL, fromId, who, text);
+        if (fromId != ShNet_SelfId()) ShSocial_Speak(fromId, text);
     }
 }
 
@@ -483,8 +545,7 @@ int ShNetChat_Hidden(void)
 static void Chat_SendCoop(const char* piece)
 {
     unsigned char b[1 + SHNET_CHAT_MAX];
-    char          name[SHSESSION_NAME_MAX];
-    char          line[sizeof(s_log[0].text)];
+    char          name[SHSESSION_NAME_MAX + 8];
     int           n = (int)strlen(piece);
     if (n > SHNET_CHAT_MAX - 1) n = SHNET_CHAT_MAX - 1;
     b[0] = SHNET_CTRL_CHAT;
@@ -493,8 +554,7 @@ static void Chat_SendCoop(const char* piece)
     ShSession_SendGame(SHNET_MSG_S_CTRL, b, 2 + n, 0, 1);
     Chat_MemberName(ShSession_SelfId(), name, (int)sizeof(name));
     if (name[0] == '?' && g_PcConfig.onlineName[0]) SDL_strlcpy(name, g_PcConfig.onlineName, sizeof(name));
-    snprintf(line, sizeof(line), "%s: %s", name, piece);
-    Chat_Push(SHNET_CHAT_COOP, line);
+    Chat_PushSaid(SHNET_CHAT_COOP, ShSession_SelfId(), name, piece);
 }
 
 static void Chat_Submit(void)
@@ -505,7 +565,26 @@ static void Chat_Submit(void)
         const int coop  = (scope == SHNET_CHAT_COOP);
         /* All shows everything but speaks to everyone: it sends as Global. */
         const int sendScope = (scope == SHNET_CHAT_GAME) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
+        int       wait;
         ShNetChat_Censor(s_input);
+        if (s_input[0] == '/')
+        {
+            char line[CHAT_INPUT_MAX];
+            SDL_strlcpy(line, s_input, sizeof(line));
+            ShNetChat_Close();
+            SH_DBG("[CHAT] command %s", line[1] == 'w' || !SDL_strncasecmp(line, "/msg", 4) ? "(whisper)" : line);
+            ShSocial_Command(line);
+            return;
+        }
+        if (!coop && sendScope == SHNET_CHAT_GLOBAL && ShNet_Status() == SHNET_ST_CONNECTED &&
+            (wait = ShSocial_GlobalWaitSec()) > 0)
+        {
+            /* The line stays in the box, to send when the wait is over. */
+            char note[96];
+            snprintf(note, sizeof(note), "[Global chat: one message every 10 seconds; wait %d s]", wait);
+            ShNetChat_AddSystem(note);
+            return;
+        }
         if (coop && !ShSession_Active())
         {
             ShNetChat_AddSystem("[not in a co-op game]");
@@ -535,6 +614,7 @@ static void Chat_Submit(void)
                 else      ShNet_SendChat(sendScope, piece);
                 p += n;
             }
+            if (!coop && sendScope == SHNET_CHAT_GLOBAL) ShSocial_GlobalSent();
         }
         else
         {
@@ -776,6 +856,14 @@ float ShNetChat_LineAlpha(int i)
 {
     const ChatLine* l = Chat_At(i);
     return l ? Chat_Alpha(l) : 0.0f;
+}
+
+int ShNetChat_LineName(int i, float* r, float* g, float* b)
+{
+    const ChatLine* l = Chat_At(i);
+    if (!l || l->nameLen <= 0) return 0;
+    *r = l->nr; *g = l->ng; *b = l->nb;
+    return l->nameLen;
 }
 
 int ShNetChat_Composing(void)

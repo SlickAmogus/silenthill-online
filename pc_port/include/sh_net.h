@@ -49,7 +49,7 @@ enum
 /* About one snapshot datagram (SHNET_SNAP_MAX, 49): the server sends the
  * nearest peers first, so anything past this is the far end. */
 #define SHNET_MAX_GHOSTS 48
-#define SHNET_MAX_PEERS  128
+#define SHNET_MAX_PEERS  512 /* the server's default player cap */
 #define SHNET_MAX_MEMOS  96
 #define SHNET_MAX_EVENTS 8
 
@@ -70,6 +70,7 @@ typedef struct
     unsigned short animIdx;
     unsigned short animFrame;
     char           name[SHNET_NAME_MAX];
+    unsigned int   tag, rf, token; /* from the roster, like the name */
 } ShNetGhost;
 
 typedef struct
@@ -94,7 +95,29 @@ typedef struct
     int          pingMs;
     int          uptimeMin;
     char         name[SHNET_NAME_MAX];
+    unsigned int tag;   /* the server's 4-digit tag this session, 0 from an older server */
+    unsigned int rf;    /* SHNET_RF_* */
+    unsigned int token; /* address token, what a /block list stores */
 } ShNetPeer;
+
+/* A LOOKUP answer (sh_net_social.c asks). */
+typedef struct
+{
+    int          req, status, matches;
+    unsigned int playerId, tag, rf, token;
+    int          mapIdx;
+    char         name[SHNET_NAME_MAX];
+    int          room, roomCount, roomMax;
+} ShNetLookup;
+
+/* A private message, either way (SHNET_PM_*). */
+typedef struct
+{
+    unsigned int otherId, tag, rf, token;
+    int          dir;
+    char         name[SHNET_NAME_MAX];
+    char         text[SHNET_CHAT_MAX];
+} ShNetWhisper;
 
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
@@ -251,6 +274,18 @@ void ShNet_SendChat(int scope, const char* text);
 
 /* Pop the oldest received chat line. Returns 1 when one was waiting. The chat
  * UI drains this each frame. */
+/* Social (worker relays; sh_net_social.c is the game-thread side). */
+int          ShNet_SendLookup(int req, const char* query);
+int          ShNet_TakeLookup(ShNetLookup* out);
+int          ShNet_SendWhisper(unsigned int toId, const char* text);
+int          ShNet_TakeWhisper(ShNetWhisper* out);
+int          ShNet_SendReport(unsigned int who, const char* reason);
+unsigned int ShNet_SelfTag(void);
+int          ShNet_SendInviteEx(unsigned int toId, int action, int code, int extra);
+int          ShNet_TakeInviteEx(unsigned int* outFromId, int* outAction, int* outCode, char* outName, int nameCap,
+                                int* outExtra);
+int ShNet_PopChatEx(int* outScope, unsigned int* outFromId, char* outName, int nameCap,
+                    char* outText, int textCap, unsigned int* outTag, unsigned int* outRf, unsigned int* outToken);
 int  ShNet_PopChat(int* outScope, unsigned int* outFromId, char* outName, int nameCap,
                    char* outText, int textCap);
 

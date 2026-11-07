@@ -1534,6 +1534,7 @@ static void Nu_ChatColor(int scope, float* r, float* g, float* b)
     case SHNET_CHAT_GAME:   *r = 0.88f; *g = 0.80f; *b = 0.58f; break;
     case SHNET_CHAT_COOP:   *r = 0.64f; *g = 0.88f; *b = 0.66f; break;
     case SHNET_CHAT_ALL:    *r = 0.86f; *g = 0.86f; *b = 0.86f; break;
+    case SHNETCHAT_PM:      *r = 0.92f; *g = 0.70f; *b = 0.95f; break;
     default:                *r = 0.70f; *g = 0.70f; *b = 0.70f; break;
     }
 }
@@ -1608,8 +1609,31 @@ static void Nu_DrawChat(int px)
         float       cr, cg, cb;
         int         st[NU_WRAP_MAX], ln[NU_WRAP_MAX];
         const int   r = Nu_Wrap(t, wrapW, px, st, ln, NU_WRAP_MAX);
+        float       nr, ng, nb;
+        const int   nameLen = ShNetChat_LineName(i, &nr, &ng, &nb);
+        const float y0      = y;
         Nu_ChatColor(ShNetChat_LineScope(i), &cr, &cg, &cb);
         Nu_DrawWrapped(t, st, ln, r, x, &y, lh, px, cr, cg, cb, ShNetChat_LineAlpha(i));
+        /* The speaker's name in their colour: the same leading text drawn
+         * again over the row, so it lands on the same glyphs, then the
+         * channel tag before it put back in the channel's colour. */
+        if (nameLen > 0 && r > 0 && ShNetChat_LineAlpha(i) > 0.0f)
+        {
+            const int pre = (t == lb) ? (int)(strlen(t) - strlen(ShNetChat_LineText(i))) : 0;
+            const int end = pre + nameLen;
+            if (end <= ln[0] && end < NU_TEXT_MAX)
+            {
+                char seg[NU_TEXT_MAX];
+                memcpy(seg, t, (size_t)end);
+                seg[end] = '\0';
+                Nu_DrawText(seg, x, y0, px, nr, ng, nb, ShNetChat_LineAlpha(i));
+                if (pre > 0)
+                {
+                    seg[pre] = '\0';
+                    Nu_DrawText(seg, x, y0, px, cr, cg, cb, ShNetChat_LineAlpha(i));
+                }
+            }
+        }
     }
 
     if (comp)

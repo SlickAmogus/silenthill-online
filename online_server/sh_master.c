@@ -1384,12 +1384,12 @@ static void SrvLoadDb(void)
 /* Message handlers                                                    */
 /* ------------------------------------------------------------------ */
 
-#ifndef SH_MASTER_EMBED
-static int AdmIsBanned(shn_u32 ipNet, shn_u32 uid);
 static shn_u32 SrvAddrToken(shn_u32 ipNet);
 static shn_u16 SrvNewTag(void);
 static int     SrvIsSplitP2(const Client* c);
 static void    SrvDupRefresh(void);
+#ifndef SH_MASTER_EMBED
+static int AdmIsBanned(shn_u32 ipNet, shn_u32 uid);
 #endif
 
 static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int len)
@@ -2784,10 +2784,18 @@ static void SrvSendRoomRoster(Client* c, int joined)
     {
         Client* m = &g_clients[i];
         if (!m->used || m->room != c->room) continue;
-        if (off + 4 + SHNET_NAME_MAX + 1 > (int)sizeof(buf)) break;
+        if (off + 4 + SHNET_NAME_MAX + 1 + 8 > (int)sizeof(buf)) break;
         ShnPutU32(buf, &off, m->playerId);
         ShnPutStr(buf, &off, m->name, SHNET_NAME_MAX);
         ShnPutU8(buf, &off, (shn_u8)(m->roomHost ? 1 : 0));
+        /* A social client reads each member's tag and address token (the
+         * entry size tells it). */
+        if (c->caps & SHNET_CAP_SOCIAL)
+        {
+            ShnPutU16(buf, &off, m->tag);
+            ShnPutU16(buf, &off, 0);
+            ShnPutU32(buf, &off, m->addrTok);
+        }
         n++;
     }
     buf[cntOff] = (shn_u8)n;
