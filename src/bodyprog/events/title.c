@@ -532,6 +532,8 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                 /* The overlay handles the mouse itself (hover + click), so drop
                  * mouse-bound pad bits here or a click confirms twice. */
                 unsigned int clk = g_Controller0->clickedBtnFlags & ~Pc_MouseCursor_BoundPadBits();
+                extern void Pc_CoopMenu_MapPressed(void);
+                if (clk & g_GameWorkPtr->config.controllerConfig.map) Pc_CoopMenu_MapPressed();
                 Pc_CoopMenu_Update(
                     (clk & g_GameWorkPtr->config.controllerConfig.cancel) != 0,
                     (g_Controller0->pulsedBtnFlags & ControllerFlag_LStickUp) != 0,
@@ -1063,12 +1065,30 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
     /* Same for the multiplayer front end and a room being waited in: the
      * timer would cut to the intro movie under a lobby (and a guest pulled
      * off the menu misses the host's start). The title music plays on. */
+    /* Typing a chat line is not idling either. */
     {
         extern int ShSession_Active(void);
-        if (Pc_CoopMenu_IsOpen() || ShSession_Active())
+        extern int ShNetChat_IsOpen(void);
+        if (Pc_CoopMenu_IsOpen() || ShSession_Active() || ShNetChat_IsOpen())
         {
             g_SysWork.counters_1C[1] = 0;
         }
+    }
+    /* Online players sit on the title to chat and wait for each other: the
+     * attract movie and demo take twice as long to start. Half of whatever
+     * the idle timer gained since the last frame is taken back. */
+    {
+        static s32 s_idlePrev;
+        static s32 s_idleOdd;
+        s32        now = g_SysWork.counters_1C[1];
+        if (now > s_idlePrev)
+        {
+            s32 gained = (now - s_idlePrev) + s_idleOdd;
+            s_idleOdd  = gained & 1;
+            now        = s_idlePrev + (gained >> 1);
+            g_SysWork.counters_1C[1] = now;
+        }
+        s_idlePrev = now;
     }
 #endif
 

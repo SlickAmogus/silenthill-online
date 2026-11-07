@@ -265,10 +265,11 @@ static void Chat_HelpTick(void)
 #endif
     if (touch)
     {
-        snprintf(line, sizeof(line), "%s: the buttons at the top of the screen: the lines open chat, the two heads "
-                 "the multiplayer menu%s.", mode == 2 ? "Co-op" : "Online",
-                 mode == 2 ? ", the speech bubble voice lines" : " (leave a message, invite a player)");
+        snprintf(line, sizeof(line), "%s: The C button opens chat, and the M button opens the Multiplayer Menu. "
+                 "The speech bubble plays voice lines.  Type /help in chat for commands.",
+                 mode == 2 ? "Co-op" : "Online");
         ShNetChat_AddSystem(line);
+        s_hintShown = 1;
         return;
     }
     line[0] = '\0';

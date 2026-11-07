@@ -58,7 +58,8 @@ enum
     PC_COOP_VIEW_SETTINGS,
     PC_COOP_VIEW_ROOMS,
     PC_COOP_VIEW_PLAYERS,
-    PC_COOP_VIEW_SAVES   /* the Start From list: two-line entries, newest first */
+    PC_COOP_VIEW_SAVES,  /* the Start From list: two-line entries, newest first */
+    PC_COOP_VIEW_ONLINE  /* everyone on the server: name and tag, where, status, ping */
 };
 int         Pc_CoopMenu_View(void);
 /* One entry of the Start From list (row 0 is New Game): where, the time on
@@ -114,6 +115,13 @@ void        Pc_CoopMenu_OpenInviteAnswer(void);
 void        Pc_CoopMenu_JoinAtTitle(int code);
 void        Pc_CoopMenu_LobbyAtTitle(void);
 void        Pc_CoopMenu_InviteTick(void);
+/* Everyone on the server as a menu page (the touch P button, the M menu's
+ * Player List; invite = 1 picks someone to invite). The map button refreshes it. */
+void        Pc_CoopMenu_OpenOnline(int invite);
+void        Pc_CoopMenu_MapPressed(void);
+/* One row of that page, for the renderer; gray = cannot be invited (hosting). */
+int         Pc_CoopMenu_OnlineEntry(int i, char* name, int nameCap, unsigned int* tag, unsigned long long* id,
+                                    char* where, int whereCap, char* status, int statusCap, int* ping, int* gray);
 
 #ifdef __cplusplus
 }
