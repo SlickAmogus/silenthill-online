@@ -43,7 +43,7 @@ enum { TB_AIM = 0, TB_ITEM, TB_MAP, TB_START, TB_RUN, TB_BACK, TB_FIRE, TB_MENU,
        TB_SKIP,
        TB_LIGHT, TB_VIEW, TB_CAM, TB_QSAVE, TB_QLOAD, TB_BONUS, TB_CLICK,
        TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP, TB_VOICE,
-       TB_CHAT, TB_CHANNEL, TB_RESET,
+       TB_CHAT, TB_CHANNEL, TB_RESET, TB_PLIST,
        TB_COUNT };
 
 typedef struct
@@ -152,6 +152,9 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
     [TB_CHANNEL] = { 0.320f, 0.068f, 0.055f, 0 },
     /* The voice wheel (what holding B opens on a keyboard), beside it. */
     [TB_VOICE] = { 0.590f, 0.068f, 0.055f, 0 },
+    /* The main menu and the lobby only: everyone on the server (P), beside
+     * chat. Both sit nearer the middle there (Tc_PlaceSocialButtons). */
+    [TB_PLIST] = { 0.540f, 0.068f, 0.055f, 0 },
 };
 
 typedef struct
@@ -336,10 +339,10 @@ static int Tc_CoopButtonOn(void)
     return (g_PcCoopGame || ShNet_WorldConnected()) && Tc_MenuAllowed();
 }
 
+/* The voice wheel works in single player too; only co-op partners hear it. */
 static int Tc_VoiceButtonOn(void)
 {
-    extern int g_PcCoopGame;
-    return g_PcCoopGame && Tc_MenuAllowed();
+    return g_GameWork.gameState == GameState_InGame && Tc_MenuAllowed();
 }
 
 /* Stamped with g_TickCount by a puzzle that reads taps itself rather than
@@ -731,7 +734,17 @@ typedef struct
 enum { TG_C_TRIANGLE = 0, TG_C_CIRCLE, TG_C_CROSS, TG_C_SQUARE,
        TG_C_L1, TG_C_L2, TG_C_START, TG_C_MENU, TG_C_SELECT, TG_C_R2, TG_C_R1,
        TG_C_QSAVE, TG_C_QLOAD, TG_C_CAM,
+       TG_C_CHAT, TG_C_COOP, TG_C_VOICE,
        TG_C_COUNT };
+
+/* Chat (C), the multiplayer menu (M) and the voice wheel: a row of their own
+ * under the camera button, in the open middle between the stick and the face
+ * buttons. The context style's buttons of the same names do the work; these
+ * only press them (Tg_SocialOn says which are live). */
+#define TG_SOC_R  0.050f
+#define TG_SOC_Y  (TG_CAM_Y + TG_CAM_R + TG_SOC_R + 0.04f)
+#define TG_SOC_DX 0.125f
+static int Tg_SocialOn(int c);
 
 /* Camera style: round, under Menu at the top centre. */
 #define TG_CAM_R    0.050f
@@ -750,6 +763,17 @@ extern void Pc_QuickSave_TouchRequest(int load);
 static int Tc_QuickButtonsOn(void)
 {
     return g_PcConfig.touchQuickSaveLoad != 0;
+}
+
+static int Tc_ChatButtonOn(void);
+static int Tc_CoopButtonOn(void);
+static int Tc_VoiceButtonOn(void);
+static int Tg_SocialOn(int c)
+{
+    if (c == TG_C_CHAT)  return Tc_ChatButtonOn();
+    if (c == TG_C_COOP)  return Tc_CoopButtonOn();
+    if (c == TG_C_VOICE) return Tc_VoiceButtonOn();
+    return 1;
 }
 
 /* The quick-options panel has no PSX button to press, so its control carries no
@@ -821,6 +845,9 @@ static void Tg_Layout(float aspectW)
         s_TgCtls[TG_C_QSAVE] = (s_TgCtl){ (0.34f + startX) * 0.5f,            qy, TG_QS_R, TG_QS_R, 1, TG_NOBIT };
         s_TgCtls[TG_C_QLOAD] = (s_TgCtl){ (selectX + aspectW - 0.34f) * 0.5f, qy, TG_QS_R, TG_QS_R, 1, TG_NOBIT };
         s_TgCtls[TG_C_CAM]   = (s_TgCtl){ mid, TG_CAM_Y, TG_CAM_R, TG_CAM_R, 1, TG_NOBIT };
+        s_TgCtls[TG_C_CHAT]  = (s_TgCtl){ mid - TG_SOC_DX, TG_SOC_Y, TG_SOC_R, TG_SOC_R, 1, TG_NOBIT };
+        s_TgCtls[TG_C_COOP]  = (s_TgCtl){ mid,             TG_SOC_Y, TG_SOC_R, TG_SOC_R, 1, TG_NOBIT };
+        s_TgCtls[TG_C_VOICE] = (s_TgCtl){ mid + TG_SOC_DX, TG_SOC_Y, TG_SOC_R, TG_SOC_R, 1, TG_NOBIT };
     }
     s_TgCtls[TG_C_R2]     = (s_TgCtl){ aspectW - 0.34f,   0.08f, TG_SHLD_W, TG_SHLD_H, 0, TG_R2 };
     s_TgCtls[TG_C_R1]     = (s_TgCtl){ aspectW - 0.14f,   0.08f, TG_SHLD_W, TG_SHLD_H, 0, TG_R1 };
@@ -843,6 +870,8 @@ static int Tg_HitCtl(float hx, float hy)
     for (i = 0; i < TG_C_COUNT; i++)
     {
         if ((i == TG_C_QSAVE || i == TG_C_QLOAD) && !Tc_QuickButtonsOn())
+            continue;
+        if ((i == TG_C_CHAT || i == TG_C_COOP || i == TG_C_VOICE) && !Tg_SocialOn(i))
             continue;
 
         float dx = hx - s_TgCtls[i].cx;
@@ -1095,6 +1124,8 @@ static int Tc_ExtraButton(int b, int mode)
         return mode == TC_MODE_MAP || mode == TC_MODE_PAPERMAP;
     if (b == TB_CHANNEL)
         return mode == TC_MODE_CHAT;
+    if (b == TB_PLIST)
+        return mode == TC_MODE_LOBBY;
     if (b == TB_RESET)
         return mode == TC_MODE_BACK_CURSOR && g_GameWork.gameState == GameState_OptionScreen &&
                g_GameWork.gameStateSteps[0] == OptionsMenuState_PcOptions;
@@ -1232,6 +1263,14 @@ static void Tc_PlaceCamButton(float aspect)
 {
     s_Buttons[TB_CAM].cx = s_Buttons[TB_MENU].cx + (0.135f / aspect);
     s_Buttons[TB_CAM].cy = s_Buttons[TB_MENU].cy;
+}
+
+/* On the main menu and in the lobby, chat and the player list sit as a pair
+ * either side of the middle; in play, chat keeps its place beside M. */
+static void Tc_PlaceSocialButtons(int mode)
+{
+    s_Buttons[TB_CHAT].cx  = (mode == TC_MODE_LOBBY) ? 0.455f : 0.410f;
+    s_Buttons[TB_PLIST].cx = 0.545f;
 }
 
 /* Aim is up by any route: the left double tap, the context Aim button, or
@@ -1393,6 +1432,7 @@ void Pc_Touch_Update(void)
     s_AdvanceFrames = 0;
     s_FireHeld    = 0;
     Tc_PlaceCamButton(aspect);
+    Tc_PlaceSocialButtons(Tc_Mode());
 
     if (Tc_GamepadStyle())
     {
@@ -2013,6 +2053,12 @@ void Pc_Touch_Update(void)
                 s_tgSaveWas = saveNow;
                 s_tgLoadWas = loadNow;
             }
+
+            /* Chat, M and the voice wheel press the context buttons, whose
+             * edge handlers below do the rest in either style. */
+            if (s_TgHeld[TG_C_CHAT] && Tg_SocialOn(TG_C_CHAT))   s_Buttons[TB_CHAT].holdFrames  = 1;
+            if (s_TgHeld[TG_C_COOP] && Tg_SocialOn(TG_C_COOP))   s_Buttons[TB_COOP].holdFrames  = 1;
+            if (s_TgHeld[TG_C_VOICE] && Tg_SocialOn(TG_C_VOICE)) s_Buttons[TB_VOICE].holdFrames = 1;
         }
         if (s_Buttons[TB_LIGHT].holdFrames > 0) Tc_PressAction(&s_PadWord, cfg->light);
         /* The raw L2 bit, which is exactly what the Gamepad style's second
@@ -2129,6 +2175,20 @@ void Pc_Touch_Update(void)
                 ShNetChat_CycleScope();
             s_chatWas = chatNow;
             s_chanWas = chanNow;
+        }
+
+        /* The player list (the main menu and the lobby): opens the online
+         * page of the multiplayer menu, which closes from its own Back. */
+        {
+            static int s_plistWas;
+            const int  plistNow = (s_Buttons[TB_PLIST].holdFrames > 0);
+
+            if (plistNow && !s_plistWas && Tc_ChatButtonOn())
+            {
+                extern void Pc_CoopMenu_OpenOnline(int invite);
+                Pc_CoopMenu_OpenOnline(0);
+            }
+            s_plistWas = plistNow;
         }
 
         /* Quick Save / Quick Load, edge-triggered on the latch for the same
@@ -2371,6 +2431,8 @@ static const s_TcGlyph s_TcFont[] = {
     { 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } },
     { 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } },
     { 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } },
+    { 'M', { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 } },
+    { 'P', { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 } },
     { '1', { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E } },
     { '2', { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F } },
 };
@@ -2378,6 +2440,11 @@ static const s_TcGlyph s_TcFont[] = {
 #define TC_GLYPH_W   5
 #define TC_GLYPH_H   7
 #define TC_GLYPH_ADV 6 /* one column of spacing */
+
+/* Horizontal scale for rings and letters, in percent: 100 everywhere but the
+ * letter buttons over a stretched menu (set around their draw). */
+static int s_TcSqX = 100;
+static int s_TcLetterSqX = 100;
 
 /* One glyph as few rectangles as possible: each horizontal run is extended
  * down while the rows below repeat it, so an L is two quads, not eleven. */
@@ -2422,8 +2489,8 @@ static void Tc_Glyph(s_TcBatch* b, const unsigned char* rows, int x, int y, int 
             for (k = row; k <= r1; k++)
                 used[k] |= mask;
 
-            Tc_Rect(b, x + col * px, y + row * px,
-                    x + (c1 + 1) * px, y + (r1 + 1) * px, lum);
+            Tc_Rect(b, x + (col * px * s_TcSqX) / 100, y + row * px,
+                    x + ((c1 + 1) * px * s_TcSqX) / 100, y + (r1 + 1) * px, lum);
             col = c1 + 1;
         }
     }
@@ -2449,7 +2516,7 @@ static int Tc_TextWidth(const char* s)
 /* Centred on (cx, cy), px prim units per font pixel. */
 static void Tc_Text(s_TcBatch* b, const char* s, int cx, int cy, int px, int lum)
 {
-    int x = cx - (Tc_TextWidth(s) * px) / 2;
+    int x = cx - ((Tc_TextWidth(s) * px * s_TcSqX) / 100) / 2;
     int y = cy - (TC_GLYPH_H * px) / 2;
     int i, g;
 
@@ -2463,7 +2530,7 @@ static void Tc_Text(s_TcBatch* b, const char* s, int cx, int cy, int px, int lum
                 break;
             }
         }
-        x += TC_GLYPH_ADV * px;
+        x += (TC_GLYPH_ADV * px * s_TcSqX) / 100;
     }
 }
 
@@ -2490,10 +2557,10 @@ static void Tc_Ring(s_TcBatch* b, int cx, int cy, int rOuter, int rInner, int lu
     for (i = 0; i < 8; i++)
     {
         int j = (i + 1) & 7;
-        int ox0 = cx + ((SX[i] * rOuter) / 100), oy0 = cy + ((SY[i] * rOuter) / 100);
-        int ox1 = cx + ((SX[j] * rOuter) / 100), oy1 = cy + ((SY[j] * rOuter) / 100);
-        int ix0 = cx + ((SX[i] * rInner) / 100), iy0 = cy + ((SY[i] * rInner) / 100);
-        int ix1 = cx + ((SX[j] * rInner) / 100), iy1 = cy + ((SY[j] * rInner) / 100);
+        int ox0 = cx + ((SX[i] * rOuter * s_TcSqX) / 10000), oy0 = cy + ((SY[i] * rOuter) / 100);
+        int ox1 = cx + ((SX[j] * rOuter * s_TcSqX) / 10000), oy1 = cy + ((SY[j] * rOuter) / 100);
+        int ix0 = cx + ((SX[i] * rInner * s_TcSqX) / 10000), iy0 = cy + ((SY[i] * rInner) / 100);
+        int ix1 = cx + ((SX[j] * rInner * s_TcSqX) / 10000), iy1 = cy + ((SY[j] * rInner) / 100);
 
         Tc_Quad(b, ox0, oy0, ox1, oy1, ix0, iy0, ix1, iy1, lum);
     }
@@ -2639,6 +2706,30 @@ void Pc_Touch_Draw(void)
                 continue;
             }
 
+            if (c == TG_C_CHAT || c == TG_C_COOP || c == TG_C_VOICE)
+            {
+                int br = TC_UR(s_TgCtls[c].hw);
+
+                if (!Tg_SocialOn(c))
+                    continue;
+                if (c != TG_C_VOICE)
+                {
+                    Tc_LetterButton(&batch, c == TG_C_CHAT ? "C" : "M", bx, by, br, lum);
+                }
+                else
+                {
+                    /* The speech bubble, as the context style draws it. */
+                    int sr = (br * 34) / 100, t = (br * 8) / 100;
+                    int tx = bx - (sr * 55) / 100, ty = by + (sr * 75) / 100;
+
+                    Tc_Ring(&batch, bx, by, br, (br * 80) / 100, lum);
+                    Tc_Ring(&batch, bx, by - (br * 6) / 100, sr, sr - t - t, lum);
+                    Tc_Quad(&batch, tx - t, ty - t, tx + t + t, ty - t - t,
+                                    tx - t - t, ty + sr / 2, tx, ty + sr / 2, lum);
+                }
+                continue;
+            }
+
             if (s_TgCtls[c].circle)
             {
                 int br = TC_UR(s_TgCtls[c].hw);
@@ -2767,6 +2858,23 @@ void Pc_Touch_Draw(void)
     }
 
     Tc_PlaceCamButton(Tc_Aspect());
+    Tc_PlaceSocialButtons(mode);
+    /* The menus' 4:3 picture fills a wide screen, so a ring drawn in its units
+     * comes out wide. The letter buttons there are drawn narrower by the same
+     * amount, which is where their (screen-shaped) touch area already is. */
+    s_TcLetterSqX = 100;
+    if (mode != TC_MODE_GAMEPLAY)
+    {
+        int   sw = 0, sh = 0;
+        float fx = 0.0f, fy = 0.0f;
+        PsyX_GetScreenSize(&sw, &sh);
+        if (sw > 0 && sh > 0 && PsyX_MapWindowToViewport(1, sh / 2, &fx, &fy) && fx < 0.02f &&
+            (rectB - rectT) > 0.0f)
+        {
+            float k = ((rectR - rectL) / (rectB - rectT)) / Tc_Aspect();
+            if (k > 0.3f && k < 1.0f) s_TcLetterSqX = (int)(k * 100.0f);
+        }
+    }
 
     for (i = 0; i < TB_COUNT; i++)
     {
@@ -2845,6 +2953,15 @@ void Pc_Touch_Draw(void)
         if (i == TB_RESET)
         {
             Tc_LetterButton(&batch, "R", cx, cy, r, lum);
+            continue;
+        }
+        /* Chat, the multiplayer menu and the player list wear their keys'
+         * letters: C, M and P. */
+        if (i == TB_CHAT || i == TB_COOP || i == TB_PLIST)
+        {
+            s_TcSqX = s_TcLetterSqX;
+            Tc_LetterButton(&batch, i == TB_CHAT ? "C" : i == TB_COOP ? "M" : "P", cx, cy, r, lum);
+            s_TcSqX = 100;
             continue;
         }
 
