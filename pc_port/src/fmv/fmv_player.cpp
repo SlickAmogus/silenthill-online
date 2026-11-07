@@ -47,6 +47,21 @@ extern "C" const char* PcPort_GetGameDataPath(void);
 extern "C" const char* PcPort_GetGameDiscPath(void);
 extern "C" unsigned int PcPort_FileTableStartSector(int fileIdx);
 
+/* The browser build has no network thread: the online client is stepped from
+ * the frame loop and g_PsyX_FrameYieldHook. A movie runs for seconds without
+ * either, and the server drops a client that goes silent that long. */
+#ifdef __EMSCRIPTEN__
+extern "C" void (*g_PsyX_FrameYieldHook)(void);
+#endif
+static void FmvDelay(Uint32 ms)
+{
+    SDL_Delay(ms);
+#ifdef __EMSCRIPTEN__
+    if (g_PsyX_FrameYieldHook)
+        g_PsyX_FrameYieldHook();
+#endif
+}
+
 /* FMV diagnostics need to survive the brief tick=23 MovieIntro state — if
  * the game exits before the next stdout flush, plain printf output never
  * hits the log file. Redirect every [FMV] line through SH_DBG (which
@@ -1263,7 +1278,7 @@ static int PlayFromBin(int table_idx, int max_frames)
         nextFrameDelay -= delta;
 
         if (nextFrameDelay > 0) {
-            SDL_Delay(1);
+            FmvDelay(1);
             continue;
         }
 
@@ -1329,7 +1344,7 @@ static int PlayFromBin(int table_idx, int max_frames)
                 !ks[SDL_SCANCODE_SPACE] && !PsyX_Pad_SkipButtonHeld() &&
                 !FmvTouchHeld())
                 break;
-            SDL_Delay(16);
+            FmvDelay(16);
             wait_frames++;
         }
         SDL_PumpEvents();
@@ -2278,7 +2293,7 @@ static int PlayFromFFmpeg(const char* path)
                 else if (held) { printf("[FMV] ffmpeg: skipped\n"); stop = 1; break; }
                 SDL_Event ev;
                 while (SDL_PollEvent(&ev)) if (ev.type == SDL_QUIT) FmvQuitNow("ffmpeg playback");
-                SDL_Delay(1);
+                FmvDelay(1);
             }
             if (stop || queued == 0)
                 break; /* skip, or worker done and ring drained */
@@ -2310,7 +2325,7 @@ static int PlayFromFFmpeg(const char* path)
                 SDL_Event ev;
                 while (SDL_PollEvent(&ev)) if (ev.type == SDL_QUIT) FmvQuitNow("ffmpeg playback");
                 if (stop || elapsed >= q->target) break;
-                SDL_Delay(1);
+                FmvDelay(1);
                 elapsed += Util_GetHPCTime(&tmr, 1);
             }
             if (stop)
@@ -2347,7 +2362,7 @@ static int PlayFromFFmpeg(const char* path)
          * bleed a phantom Confirm into the next game state. */
         if (audioDev) SDL_PauseAudioDevice(audioDev, 1);
         for (int w = 0; w < 30 && FfmpegSkipHeld(); w++)
-            SDL_Delay(16);
+            FmvDelay(16);
         SDL_PumpEvents();
         SDL_FlushEvent(SDL_KEYDOWN);
         SDL_FlushEvent(SDL_KEYUP);
@@ -2577,7 +2592,7 @@ static int FMV_PlayImpl(int file_idx, int max_frames)
         }
 
         if (nextFrameDelay > 0) {
-            SDL_Delay(1);
+            FmvDelay(1);
             continue;
         }
 
@@ -2655,7 +2670,7 @@ done:
                 !ks[SDL_SCANCODE_SPACE] && !PsyX_Pad_SkipButtonHeld() &&
                 !FmvTouchHeld())
                 break;
-            SDL_Delay(16);
+            FmvDelay(16);
             wait_frames++;
         }
         SDL_PumpEvents();
