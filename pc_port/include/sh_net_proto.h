@@ -82,7 +82,7 @@ typedef char shn_static_assert_widths[
  * can join a PC: the executable's hash differed per platform, and on Android
  * was the system's own app_process. Bump it whenever the co-op wire format or
  * the shared game logic changes in a way the previous build cannot follow. */
-#define SHNET_COOP_BUILD   "coop-2026-11-04"
+#define SHNET_COOP_BUILD   "coop-2026-11-07"
 
 /* SHNET_MSG_S_NPC kinds. Not host-only: every player shares the monsters it
  * runs (sh_net_npc.c), so these ride the one type the room server relays
@@ -176,8 +176,63 @@ enum
      * co-op room. C->S (u32 toId, u8 action, u8 pad, u16 code); the server
      * forwards it as S->C (u32 fromId, u8 action, u8 pad, u16 code, name).
      * An unknown toId comes back to the sender as SHNET_INV_GONE. */
-    SHNET_MSG_INVITE        = 0x6A
+    SHNET_MSG_INVITE        = 0x6A,
+
+    /* Social (clients that send SHNET_CAP_SOCIAL). Every player has a tag for
+     * the session, a 4-digit number the server hands out and keeps unique, so
+     * "Harry#2048" names exactly one person. Commands find each other by it. */
+    SHNET_MSG_LOOKUP      = 0x6B, /* C->S  u16 req, u16 pad, query[SHNET_QUERY_MAX] ("name" or "name#1234")
+                                   * S->C  u16 req, u8 SHNET_LOOK_*, u8 matches, then one SHNET_LOOKUP_ENTRY */
+    SHNET_MSG_WHISPER     = 0x6C, /* C->S  u32 to, text[SHNET_CHAT_MAX]
+                                   * S->C  u32 other, u16 otherTag, u8 SHNET_PM_*, u8 SHNET_RF_*, u32 otherToken,
+                                   *       name[SHNET_NAME_MAX] (the other party), text[SHNET_CHAT_MAX] */
+    SHNET_MSG_REPORT      = 0x6D, /* C->S  u32 who, reason[SHNET_REPORT_MAX]; answered with an EVENT */
+    SHNET_MSG_ROOM_BLOCKS = 0x6E  /* C->S  room host: u8 n, n x u32 address tokens it will not take in */
 };
+
+#define SHNET_QUERY_MAX  (SHNET_NAME_MAX + 8)
+#define SHNET_REPORT_MAX 120
+#define SHNET_TAG_MIN    1000
+#define SHNET_TAG_MAX    9999
+
+/* HELLO's caps field (after uid). */
+#define SHNET_CAP_SOCIAL   (1u << 0) /* reads tags/tokens, sends LOOKUP/WHISPER/REPORT */
+#define SHNET_CAP_SPLIT_P2 (1u << 1) /* a split-screen Player 2 window: in rooms only, never named to others */
+
+/* Per-player flags in the social roster, chat, whisper and lookup entries. */
+#define SHNET_RF_DUPNAME   (1u << 0) /* someone else online has this name: show the tag */
+#define SHNET_RF_ROOMHOST  (1u << 1) /* hosts a co-op room */
+#define SHNET_RF_INROOM    (1u << 2) /* in a co-op room (host or guest) */
+#define SHNET_RF_SPLIT     (1u << 3) /* plays split screen with a Player 2 beside them */
+
+/* LOOKUP answer. */
+enum
+{
+    SHNET_LOOK_OK        = 0,
+    SHNET_LOOK_NOTFOUND  = 1,
+    SHNET_LOOK_AMBIGUOUS = 2, /* the name alone fits several: add the #tag */
+    SHNET_LOOK_SELF      = 3
+};
+/* u32 id, u16 tag, u8 SHNET_RF_*, u8 map (0xFF none), u32 token, name, u16 room, u8 in room, u8 room max */
+#define SHNET_LOOKUP_ENTRY (4 + 2 + 1 + 1 + 4 + SHNET_NAME_MAX + 2 + 1 + 1)
+
+/* WHISPER direction, S->C. */
+enum
+{
+    SHNET_PM_IN   = 0, /* from them to you */
+    SHNET_PM_OUT  = 1, /* yours, delivered to them */
+    SHNET_PM_GONE = 2  /* yours, not delivered: they left */
+};
+
+/* The social roster entry: SHNET_ROSTER_ENTRY, then u16 tag, u8 SHNET_RF_*, u8 pad, u32 token. The
+ * roster header's last u16 carries the entry size when it is this one. */
+#define SHNET_ROSTER_ENTRY_SOCIAL (36 + 8)
+
+/* Global chat: one line per player per this long. The pieces one long message
+ * is sent as count once (up to SHNET_CHAT_BURST lines, SHNET_CHAT_BURST_MS apart). */
+#define SHNET_CHAT_GLOBAL_GAP_MS 10000
+#define SHNET_CHAT_BURST         3
+#define SHNET_CHAT_BURST_MS      1500
 
 /* SHNET_MSG_INVITE actions. */
 enum
@@ -189,8 +244,14 @@ enum
     SHNET_INV_BUSY    = 5, /* already in a game or weighing another invite */
     SHNET_INV_JOIN    = 6, /* the room is open: join code `code` */
     SHNET_INV_GONE    = 7, /* server: that player is no longer here */
-    SHNET_INV_SAVING  = 8  /* yes, but saving my own game first: keep the invite open */
+    SHNET_INV_SAVING  = 8, /* yes, but saving my own game first: keep the invite open */
+    SHNET_INV_FULL    = 9  /* server: the inviter's game has no seat left (to both ends) */
 };
+/* INVITE's pad byte on ACCEPT and SAVING: seats wanted (2 = a split-screen
+ * pair). The server holds that many seats in the inviter's room until the
+ * guest arrives, cancels, or the hold runs out. On JOIN it says where the
+ * host is: SHNET_INVJ_LOBBY = still in the lobby, not yet in a game. */
+#define SHNET_INVJ_LOBBY 1
 
 /* Marker kinds. */
 enum
@@ -531,6 +592,8 @@ static inline unsigned long long ShnGetU64(const shn_u8* b, int* off)
  * are attributed to. The session's player id is reused across visits, so it
  * cannot be. 0 = an older client; the server uses its player id then. */
 #define SHNET_HELLO_LEN_UID (SHNET_HELLO_LEN + 4)
+/* + caps u32 (SHNET_CAP_*). WELCOME then ends with u16 tag, u16 pad. */
+#define SHNET_HELLO_LEN_CAPS (SHNET_HELLO_LEN_UID + 4)
 
 /* SipHash-2-4 (Aumasson and Bernstein), the standard keyed hash for exactly
  * this: short inputs, a secret key, outputs an attacker must not predict. */

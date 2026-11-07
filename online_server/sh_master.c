@@ -94,6 +94,7 @@ typedef socklen_t ShSockLen;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <sys/stat.h>
 
@@ -242,6 +243,29 @@ typedef struct
      * one push can change what a packet means without touching the protocol
      * version, so a room only admits its host's build. */
     char               build[SHNET_BUILD_MAX];
+
+    /* Social (SHNET_CAP_SOCIAL). The tag is this session's 4-digit number,
+     * unique among everyone connected; the token stands for the address in
+     * blocks without telling anyone what the address is. */
+    shn_u32            caps;
+    shn_u16            tag;
+    shn_u32            addrTok;
+    int                dupName;      /* another player online has this name (g_namesDirty) */
+    unsigned int       chatGlobalMs; /* the last global line that started a message */
+    unsigned int       chatPieceMs;
+    int                chatPieces;
+    unsigned int       pmMs;
+    int                pmBurst;
+    unsigned int       reportMs;
+    int                reported;     /* reportMs is meaningful */
+
+    /* Room host: address tokens it refuses (its players' /block list), and
+     * seats held for invited players on their way in. A hold matches the
+     * player by id, and a split-screen Player 2 by the address of the player
+     * who held two seats. */
+    shn_u32            blockTok[64];
+    int                blockN;
+    struct { shn_u32 playerId; shn_u32 ip; int seats; unsigned int untilMs; } resv[8];
 } Client;
 
 typedef struct
@@ -282,6 +306,8 @@ static shn_u32       g_nextPlayerId = 1;
  * before, and why a newcomer could be handed someone else's). */
 #define SRV_IDENT(c) ((c)->uid ? (c)->uid : (c)->playerId)
 static shn_u8        g_cookieKey[16];
+static shn_u8        g_tokKey[16];     /* address tokens (SrvTokKeyInit) */
+static int           g_namesDirty = 1; /* SrvDupRefresh must look again */
 
 static ShSock        g_sock = SH_INVALID_SOCK;
 static unsigned short g_port = SHNET_DEFAULT_PORT;
@@ -1038,9 +1064,12 @@ static void SrvBroadcastEvent(int kind, shn_u32 who, const char* text, Client* e
     }
 }
 
-static void SrvSendChat(Client* c, int scope, shn_u32 fromId, const char* name, const char* text)
+static shn_u8 SrvRf(const Client* c);
+static Client* SrvRoomHost(shn_u16 room);
+
+static void SrvSendChat(Client* c, int scope, shn_u32 fromId, const char* name, const char* text, const Client* from)
 {
-    shn_u8 buf[SHNET_HDR_SIZE + 8 + SHNET_NAME_MAX + SHNET_CHAT_MAX];
+    shn_u8 buf[SHNET_HDR_SIZE + 16 + SHNET_NAME_MAX + SHNET_CHAT_MAX];
     int    off = SHNET_HDR_SIZE;
 
     ShnPutU8(buf, &off, (shn_u8)scope);
@@ -1049,6 +1078,13 @@ static void SrvSendChat(Client* c, int scope, shn_u32 fromId, const char* name, 
     ShnPutU32(buf, &off, fromId);
     ShnPutStr(buf, &off, name, SHNET_NAME_MAX);
     ShnPutStr(buf, &off, text, SHNET_CHAT_MAX);
+    /* Appended for social clients (an older one stops reading at the text):
+     * the sender's tag, flags and address token, so a line can be named
+     * exactly and dropped by anyone who blocked them. */
+    ShnPutU16(buf, &off, from ? from->tag : 0);
+    ShnPutU8(buf, &off, from ? SrvRf(from) : 0);
+    ShnPutU8(buf, &off, 0);
+    ShnPutU32(buf, &off, from ? from->addrTok : 0);
     SrvSendTo(c, buf, off - SHNET_HDR_SIZE, SHNET_MSG_CHAT_MSG);
 }
 
@@ -1078,6 +1114,27 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
     {
         return;
     }
+    /* Global chat: one message per SHNET_CHAT_GLOBAL_GAP_MS. The game sends a
+     * long message as up to SHNET_CHAT_BURST lines in one go; those are the
+     * same message. The game says "wait" itself; this is for one that does not. */
+    if (scope == SHNET_CHAT_GLOBAL)
+    {
+        const unsigned int now = SrvMillis();
+        if (c->chatGlobalMs && now - c->chatGlobalMs < SHNET_CHAT_GLOBAL_GAP_MS)
+        {
+            if (now - c->chatPieceMs > SHNET_CHAT_BURST_MS || ++c->chatPieces > SHNET_CHAT_BURST)
+            {
+                return;
+            }
+            c->chatPieceMs = now;
+        }
+        else
+        {
+            c->chatGlobalMs = now ? now : 1u;
+            c->chatPieceMs  = c->chatGlobalMs;
+            c->chatPieces   = 1;
+        }
+    }
     ShNetChat_Censor(text);
 
     /* Talk inside a co-op room (map scope from a room member) is the players'
@@ -1100,7 +1157,7 @@ static void SrvHandleChatSay(Client* c, const shn_u8* p, int len)
         {
             continue;
         }
-        SrvSendChat(o, scope, c->playerId, c->name, text);
+        SrvSendChat(o, scope, c->playerId, c->name, text, c);
     }
 }
 
@@ -1139,7 +1196,7 @@ static void SrvSendChallenge(const struct sockaddr_in* to)
 
 static void SrvSendWelcome(Client* c)
 {
-    shn_u8 buf[SHNET_HDR_SIZE + 16 + SHNET_SERVER_MAX + SHNET_MOTD_MAX];
+    shn_u8 buf[SHNET_HDR_SIZE + 20 + SHNET_SERVER_MAX + SHNET_MOTD_MAX];
     int    off = SHNET_HDR_SIZE;
 
     ShnPutU32(buf, &off, c->session);
@@ -1150,6 +1207,8 @@ static void SrvSendWelcome(Client* c)
     ShnPutU16(buf, &off, (shn_u16)g_featureFlags);
     ShnPutStr(buf, &off, g_serverName, SHNET_SERVER_MAX);
     ShnPutStr(buf, &off, g_motd, SHNET_MOTD_MAX);
+    ShnPutU16(buf, &off, c->tag);
+    ShnPutU16(buf, &off, 0);
     SrvSendTo(c, buf, off - SHNET_HDR_SIZE, SHNET_MSG_WELCOME);
 }
 
@@ -1327,6 +1386,10 @@ static void SrvLoadDb(void)
 
 #ifndef SH_MASTER_EMBED
 static int AdmIsBanned(shn_u32 ipNet, shn_u32 uid);
+static shn_u32 SrvAddrToken(shn_u32 ipNet);
+static shn_u16 SrvNewTag(void);
+static int     SrvIsSplitP2(const Client* c);
+static void    SrvDupRefresh(void);
 #endif
 
 static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int len)
@@ -1340,6 +1403,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     shn_u32  proof;
     shn_u32  cookie;
     shn_u32  uid;
+    shn_u32  caps;
     Client*  c;
     char     addr[64];
     char     text[SHNET_EVENT_MAX];
@@ -1366,6 +1430,7 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     proof  = ShnGetU32(p, &off);
     cookie = ShnGetU32(p, &off);
     uid    = (len >= SHNET_HELLO_LEN_UID) ? ShnGetU32(p, &off) : 0;
+    caps   = (len >= SHNET_HELLO_LEN_CAPS) ? ShnGetU32(p, &off) : 0;
 
     if (ver != SHNET_PROTO_VER)
     {
@@ -1424,6 +1489,12 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
     }
 
     SrvSanitize(name, SHNET_NAME_MAX);
+    /* '#' starts a tag in every command ("Harry#2048"); a name that held one
+     * could pose as someone else's tagged name. */
+    {
+        char* h;
+        for (h = name; *h; h++) if (*h == '#') *h = '-';
+    }
 
     /* An identical HELLO from an address already in the table is a retry the
      * WELCOME did not reach: answer again with the SAME session, or the client
@@ -1480,20 +1551,30 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
         }
         SrvSessHashAdd(i);
         c->mapIdx   = -1;
+        c->tag      = SrvNewTag();
+        c->addrTok  = SrvAddrToken(from->sin_addr.s_addr);
 
         fresh       = 1;
 
-        snprintf(text, sizeof(text), "%s entered the fog", name);
-        SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
-        SrvFeed("+ %s joined from %s (id %u, build %s)", name, addr, c->playerId, build);
+        /* A split-screen Player 2 is part of Player 1's game, not a visitor
+         * of its own. */
+        if (!(caps & SHNET_CAP_SPLIT_P2))
+        {
+            snprintf(text, sizeof(text), "%s entered the fog", name);
+            SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
+        }
+        SrvFeed("+ %s#%04u joined from %s (id %u, build %s%s)", name, (unsigned)c->tag, addr, c->playerId, build,
+                (caps & SHNET_CAP_SPLIT_P2) ? ", split-screen Player 2" : "");
     }
 
     c->addr    = *from;
     c->charaId = charaId;
     c->lastRxMs = now;
+    if (strncmp(c->name, name, SHNET_NAME_MAX) != 0) g_namesDirty = 1;
     memcpy(c->name, name, SHNET_NAME_MAX);
     memcpy(c->build, build, SHNET_BUILD_MAX);
-    c->uid = uid;
+    c->uid  = uid;
+    c->caps = caps;
 
     /* A client retries HELLO until it hears WELCOME; one answer per gap is
      * enough to get through loss and keeps a HELLO loop from being a pump. */
@@ -1576,8 +1657,19 @@ static void SrvHandleRosterReq(Client* c)
     shn_u8 buf[SHNET_MTU];
     int    i;
     int    sent  = 0;
-    int    total = SrvClientCount();
+    int    total = 0;
     unsigned int now = SrvMillis();
+    /* A social client gets the tag, flags and address token on every entry;
+     * the header's last field says how long an entry is. */
+    const int social = (c->caps & SHNET_CAP_SOCIAL) != 0;
+    const int entry  = social ? SHNET_ROSTER_ENTRY_SOCIAL : SHNET_ROSTER_ENTRY;
+    const int perDg  = (SHNET_MAX_PAYLOAD - 8) / entry;
+
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        if (g_clients[i].used && !SrvIsSplitP2(&g_clients[i])) total++;
+    }
+    SrvDupRefresh();
 
     i = 0;
     while (sent < total)
@@ -1590,12 +1682,12 @@ static void SrvHandleRosterReq(Client* c)
         ShnPutU16(buf, &off, (shn_u16)total);
         ShnPutU16(buf, &off, 0); /* count, back-patched */
         ShnPutU16(buf, &off, (shn_u16)sent);
-        ShnPutU16(buf, &off, 0);
+        ShnPutU16(buf, &off, (shn_u16)(social ? entry : 0));
 
-        for (; i < g_clientHigh && count < SHNET_ROSTER_MAX; i++)
+        for (; i < g_clientHigh && count < perDg; i++)
         {
             Client* o = &g_clients[i];
-            if (!o->used)
+            if (!o->used || SrvIsSplitP2(o))
             {
                 continue;
             }
@@ -1607,6 +1699,13 @@ static void SrvHandleRosterReq(Client* c)
             ShnPutU16(buf, &off, (shn_u16)(o->pingMs > 65535 ? 65535 : o->pingMs));
             ShnPutU16(buf, &off, (shn_u16)((now - o->joinMs) / 60000u));
             ShnPutStr(buf, &off, o->name, SHNET_NAME_MAX);
+            if (social)
+            {
+                ShnPutU16(buf, &off, o->tag);
+                ShnPutU8(buf, &off, SrvRf(o));
+                ShnPutU8(buf, &off, 0);
+                ShnPutU32(buf, &off, o->addrTok);
+            }
             count++;
         }
 
@@ -2179,7 +2278,8 @@ static void SrvExpire(unsigned int now)
         }
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
-        SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
+        g_namesDirty = 1;
+        if (!SrvIsSplitP2(c)) SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
     }
     while (g_clientHigh > 0 && !g_clients[g_clientHigh - 1].used)
     {
@@ -2215,6 +2315,454 @@ static int SrvRoomCount(shn_u16 room)
     for (i = 0; i < g_clientHigh; i++)
         if (g_clients[i].used && g_clients[i].room == room) n++;
     return n;
+}
+
+/* Seats held for invited players on their way in (see Client.resv). */
+#define SRV_HOLD_ACCEPT_MS 90000u
+#define SRV_HOLD_SAVING_MS 330000u
+#define SRV_HOLD_SLOTS     ((int)(sizeof(((Client*)0)->resv) / sizeof(((Client*)0)->resv[0])))
+
+static int SrvHoldIsFor(const Client* host, int k, const Client* who)
+{
+    if (host->resv[k].playerId != 0 && host->resv[k].playerId == who->playerId) return 1;
+    /* The seat a split-screen pair held for Player 2: the same address. */
+    return SrvIsSplitP2(who) && host->resv[k].ip == who->addr.sin_addr.s_addr;
+}
+
+/* Seats held for anyone but `except`. Holds that ran out are let go here. */
+static int SrvRoomHeld(Client* host, unsigned int now, const Client* except)
+{
+    int k, n = 0;
+    for (k = 0; k < SRV_HOLD_SLOTS; k++)
+    {
+        if (host->resv[k].seats <= 0) continue;
+        if ((int)(host->resv[k].untilMs - now) <= 0) { host->resv[k].seats = 0; continue; }
+        if (except && SrvHoldIsFor(host, k, except)) continue;
+        n += host->resv[k].seats;
+    }
+    return n;
+}
+
+static void SrvRoomHold(Client* host, const Client* guest, int seats, unsigned int ms)
+{
+    int                k, slot = -1;
+    const unsigned int now = SrvMillis();
+    for (k = 0; k < SRV_HOLD_SLOTS; k++)
+    {
+        if (host->resv[k].seats > 0 && host->resv[k].playerId == guest->playerId) { slot = k; break; }
+    }
+    for (k = 0; slot < 0 && k < SRV_HOLD_SLOTS; k++)
+    {
+        if (host->resv[k].seats <= 0 || (int)(host->resv[k].untilMs - now) <= 0) slot = k;
+    }
+    if (slot < 0) return;
+    host->resv[slot].playerId = guest->playerId;
+    host->resv[slot].ip       = guest->addr.sin_addr.s_addr;
+    host->resv[slot].seats    = seats;
+    host->resv[slot].untilMs  = now + ms;
+}
+
+static void SrvRoomUnhold(Client* host, shn_u32 playerId)
+{
+    int k;
+    for (k = 0; k < SRV_HOLD_SLOTS; k++)
+    {
+        if (host->resv[k].seats > 0 && host->resv[k].playerId == playerId) host->resv[k].seats = 0;
+    }
+}
+
+static int SrvRoomHasHold(Client* host, const Client* who)
+{
+    int                k;
+    const unsigned int now = SrvMillis();
+    for (k = 0; k < SRV_HOLD_SLOTS; k++)
+    {
+        if (host->resv[k].seats > 0 && (int)(host->resv[k].untilMs - now) > 0 && SrvHoldIsFor(host, k, who)) return 1;
+    }
+    return 0;
+}
+
+/* The guest is in: one seat of their hold is used. A pair's second seat
+ * stays, now for Player 2 by address alone. */
+static void SrvRoomUseHold(Client* host, const Client* who)
+{
+    int k;
+    for (k = 0; k < SRV_HOLD_SLOTS; k++)
+    {
+        if (host->resv[k].seats > 0 && SrvHoldIsFor(host, k, who))
+        {
+            host->resv[k].seats--;
+            if (host->resv[k].playerId == who->playerId) host->resv[k].playerId = 0;
+            return;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Social: tags, address tokens, lookup, whispers, reports             */
+/* ------------------------------------------------------------------ */
+
+/* The address-token key. Kept beside the marker store so a token a player
+ * saved in a /block list still means the same address after a restart; a
+ * This-PC relay is one evening's room and keeps it in memory only. */
+static void SrvTokKeyInit(void)
+{
+#ifndef SH_MASTER_EMBED
+    char        path[600];
+    const char* slash = strrchr(g_dbPath, '/');
+    FILE*       f;
+#if defined(_WIN32)
+    const char* bs = strrchr(g_dbPath, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    if (slash && g_dbPath[0])
+        snprintf(path, sizeof(path), "%.*saddrkey.bin", (int)(slash - g_dbPath + 1), g_dbPath);
+    else
+        snprintf(path, sizeof(path), "addrkey.bin");
+    f = fopen(path, "rb");
+    if (f)
+    {
+        size_t got = fread(g_tokKey, 1, sizeof(g_tokKey), f);
+        fclose(f);
+        if (got == sizeof(g_tokKey)) return;
+    }
+    SrvRandomBytes(g_tokKey, (int)sizeof(g_tokKey));
+    f = fopen(path, "wb");
+    if (f)
+    {
+        fwrite(g_tokKey, 1, sizeof(g_tokKey), f);
+        fclose(f);
+    }
+    else
+    {
+        SrvLog("could not write %s: block lists will not survive a restart", path);
+    }
+#else
+    SrvRandomBytes(g_tokKey, (int)sizeof(g_tokKey));
+#endif
+}
+
+static shn_u32 SrvAddrToken(shn_u32 ipNet)
+{
+    shn_u8  d[4];
+    shn_u32 t;
+    memcpy(d, &ipNet, 4);
+    t = (shn_u32)ShnSipHash(g_tokKey, d, 4);
+    return t ? t : 1u;
+}
+
+static int SrvIsSplitP2(const Client* c)
+{
+    return (c->caps & SHNET_CAP_SPLIT_P2) != 0;
+}
+
+static shn_u16 SrvNewTag(void)
+{
+    int tries;
+    for (tries = 0; tries < 20000; tries++)
+    {
+        shn_u32 r;
+        shn_u16 t;
+        int     i, taken = 0;
+        SrvRandomBytes(&r, (int)sizeof(r));
+        t = (shn_u16)(SHNET_TAG_MIN + (r % (SHNET_TAG_MAX - SHNET_TAG_MIN + 1)));
+        for (i = 0; i < g_clientHigh; i++)
+        {
+            if (g_clients[i].used && g_clients[i].tag == t) { taken = 1; break; }
+        }
+        if (!taken) return t;
+    }
+    return 0; /* 9000 tags and at most SRV_MAX_CLIENTS players: unreachable */
+}
+
+static int SrvNameEq(const char* a, const char* b)
+{
+    for (;; a++, b++)
+    {
+        int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
+        if (ca != cb) return 0;
+        if (!ca) return 1;
+    }
+}
+
+/* Who shares a name with whom, worked out again only when someone arrived,
+ * left or renamed: a busy server asks it for every roster and chat line. */
+static void SrvDupRefresh(void)
+{
+    int i, k;
+    if (!g_namesDirty) return;
+    g_namesDirty = 0;
+    for (i = 0; i < g_clientHigh; i++) g_clients[i].dupName = 0;
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        Client* a = &g_clients[i];
+        if (!a->used || a->dupName || SrvIsSplitP2(a)) continue;
+        for (k = i + 1; k < g_clientHigh; k++)
+        {
+            Client* b = &g_clients[k];
+            if (b->used && !SrvIsSplitP2(b) && SrvNameEq(a->name, b->name))
+            {
+                a->dupName = 1;
+                b->dupName = 1;
+            }
+        }
+    }
+}
+
+static int SrvSplitFor(const Client* c); /* a split-screen Player 2 shares this player's address and name */
+
+static shn_u8 SrvRf(const Client* c)
+{
+    shn_u8 f = 0;
+    SrvDupRefresh();
+    if (c->dupName)  f |= SHNET_RF_DUPNAME;
+    if (c->room)     f |= SHNET_RF_INROOM;
+    if (c->roomHost) f |= SHNET_RF_ROOMHOST;
+    if (SrvSplitFor(c)) f |= SHNET_RF_SPLIT;
+    return f;
+}
+
+static int SrvSplitFor(const Client* c)
+{
+    int  i;
+    char want[SHNET_NAME_MAX + 8];
+    if (SrvIsSplitP2(c)) return 0;
+    snprintf(want, sizeof(want), "%s (1)", c->name);
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        const Client* o = &g_clients[i];
+        if (o->used && SrvIsSplitP2(o) && o->addr.sin_addr.s_addr == c->addr.sin_addr.s_addr &&
+            SrvNameEq(o->name, want))
+            return 1;
+    }
+    return 0;
+}
+
+/* "name" or "name#1234", case-insensitive; split-screen Player 2 windows are
+ * never anyone's answer. */
+static int SrvLookup(const char* query, Client** out)
+{
+    char    name[SHNET_QUERY_MAX];
+    int     tag = 0, n = 0, i;
+    char*   hash;
+    Client* hit = NULL;
+
+    snprintf(name, sizeof(name), "%s", query);
+    hash = strrchr(name, '#');
+    if (hash && strlen(hash + 1) == 4 && isdigit((unsigned char)hash[1]) && isdigit((unsigned char)hash[2]) &&
+        isdigit((unsigned char)hash[3]) && isdigit((unsigned char)hash[4]))
+    {
+        tag   = atoi(hash + 1);
+        *hash = '\0';
+    }
+    {
+        size_t len = strlen(name);
+        while (len && name[len - 1] == ' ') name[--len] = '\0';
+    }
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        Client* o = &g_clients[i];
+        if (!o->used || SrvIsSplitP2(o)) continue;
+        if (tag && o->tag != tag) continue;
+        if (name[0] && !SrvNameEq(o->name, name)) continue;
+        if (!name[0] && !tag) continue;
+        hit = o;
+        n++;
+    }
+    *out = (n == 1) ? hit : NULL;
+    return n;
+}
+
+static void SrvHandleLookup(Client* c, const shn_u8* p, int len)
+{
+    shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_LOOKUP_ENTRY];
+    int     off = 0, o = SHNET_HDR_SIZE, n, status;
+    shn_u16 req;
+    char    query[SHNET_QUERY_MAX];
+    Client* t = NULL;
+
+    if (len < 4 + SHNET_QUERY_MAX) return;
+    req = ShnGetU16(p, &off);
+    (void)ShnGetU16(p, &off);
+    ShnGetStr(p, &off, SHNET_QUERY_MAX, query, sizeof(query));
+    ShnSanitizeText(query);
+    n = SrvLookup(query, &t);
+    status = (n == 0) ? SHNET_LOOK_NOTFOUND : (n > 1) ? SHNET_LOOK_AMBIGUOUS : (t == c) ? SHNET_LOOK_SELF : SHNET_LOOK_OK;
+    ShnPutU16(buf, &o, req);
+    ShnPutU8(buf, &o, (shn_u8)status);
+    ShnPutU8(buf, &o, (shn_u8)(n > 255 ? 255 : n));
+    {
+        Client* h = (t && t->room) ? SrvRoomHost(t->room) : NULL;
+        ShnPutU32(buf, &o, t ? t->playerId : 0);
+        ShnPutU16(buf, &o, t ? t->tag : 0);
+        ShnPutU8(buf, &o, t ? SrvRf(t) : 0);
+        ShnPutU8(buf, &o, (shn_u8)((t && t->mapIdx >= 0) ? t->mapIdx : 0xFF));
+        ShnPutU32(buf, &o, t ? t->addrTok : 0);
+        ShnPutStr(buf, &o, t ? t->name : "", SHNET_NAME_MAX);
+        /* A room's code is only handed out when the room is listed: a hidden
+         * room is joined by the code its host chose to share. */
+        ShnPutU16(buf, &o, (t && t->room && h && !h->roomHidden) ? t->room : 0);
+        ShnPutU8(buf, &o, (shn_u8)(t && t->room ? SrvRoomCount(t->room) : 0));
+        ShnPutU8(buf, &o, (shn_u8)(h ? h->roomMax : 0));
+    }
+    SrvSendTo(c, buf, o - SHNET_HDR_SIZE, SHNET_MSG_LOOKUP);
+}
+
+/* Private messages: delivered, never logged. The last few between any two
+ * players are kept in memory only, and written out only when one of them
+ * reports the other. */
+#define SRV_PM_RING   2048
+#define SRV_PM_GAP_MS 600
+#define SRV_REPORT_GAP_MS 60000u
+typedef struct
+{
+    shn_u32 fromId, toId;
+    shn_u32 fromIp, toIp;
+    char    fromName[SHNET_NAME_MAX], toName[SHNET_NAME_MAX];
+    shn_u16 fromTag, toTag;
+    long    unixTime;
+    char    text[SHNET_CHAT_MAX];
+} PmRec;
+static PmRec* g_pm;
+static int    g_pmHead, g_pmCount;
+
+static void SrvPmKeep(const Client* a, const Client* b, const char* text)
+{
+    PmRec* r;
+    if (!g_pm)
+    {
+        g_pm = (PmRec*)calloc(SRV_PM_RING, sizeof(PmRec));
+        if (!g_pm) return;
+    }
+    r = &g_pm[g_pmHead];
+    g_pmHead = (g_pmHead + 1) % SRV_PM_RING;
+    if (g_pmCount < SRV_PM_RING) g_pmCount++;
+    r->fromId = a->playerId; r->toId = b->playerId;
+    r->fromIp = a->addr.sin_addr.s_addr; r->toIp = b->addr.sin_addr.s_addr;
+    memcpy(r->fromName, a->name, SHNET_NAME_MAX);
+    memcpy(r->toName, b->name, SHNET_NAME_MAX);
+    r->fromTag = a->tag; r->toTag = b->tag;
+    r->unixTime = (long)time(NULL);
+    snprintf(r->text, sizeof(r->text), "%s", text);
+}
+
+static void SrvSendWhisper(Client* to, const Client* other, int dir, const char* text)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 12 + SHNET_NAME_MAX + SHNET_CHAT_MAX];
+    int    o = SHNET_HDR_SIZE;
+    ShnPutU32(buf, &o, other ? other->playerId : 0);
+    ShnPutU16(buf, &o, other ? other->tag : 0);
+    ShnPutU8(buf, &o, (shn_u8)dir);
+    ShnPutU8(buf, &o, other ? SrvRf(other) : 0);
+    ShnPutU32(buf, &o, other ? other->addrTok : 0);
+    ShnPutStr(buf, &o, other ? other->name : "", SHNET_NAME_MAX);
+    ShnPutStr(buf, &o, text, SHNET_CHAT_MAX);
+    SrvSendTo(to, buf, o - SHNET_HDR_SIZE, SHNET_MSG_WHISPER);
+}
+
+static void SrvHandleWhisper(Client* c, const shn_u8* p, int len)
+{
+    int          off = 0, i;
+    shn_u32      to;
+    char         text[SHNET_CHAT_MAX];
+    Client*      t = NULL;
+    unsigned int now = SrvMillis();
+
+    if (len < 4 + SHNET_CHAT_MAX) return;
+    to = ShnGetU32(p, &off);
+    ShnGetStr(p, &off, SHNET_CHAT_MAX, text, sizeof(text));
+    SrvSanitizeChat(text, SHNET_CHAT_MAX);
+    if (!text[0] || to == c->playerId) return;
+    /* A long message arrives as up to three pieces at once; past that, one
+     * line per SRV_PM_GAP_MS. */
+    if (now - c->pmMs < SRV_PM_GAP_MS)
+    {
+        if (++c->pmBurst > SHNET_CHAT_BURST) return;
+    }
+    else
+    {
+        c->pmBurst = 1;
+    }
+    c->pmMs = now;
+    ShNetChat_Censor(text);
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        if (g_clients[i].used && g_clients[i].playerId == to) { t = &g_clients[i]; break; }
+    }
+    if (!t || SrvIsSplitP2(t))
+    {
+        SrvSendWhisper(c, NULL, SHNET_PM_GONE, text);
+        return;
+    }
+    SrvPmKeep(c, t, text);
+    SrvSendWhisper(t, c, SHNET_PM_IN, text);
+    SrvSendWhisper(c, t, SHNET_PM_OUT, text);
+}
+
+static void SrvHandleReport(Client* c, const shn_u8* p, int len)
+{
+    int          off = 0, i, n = 0;
+    shn_u32      who;
+    char         reason[SHNET_REPORT_MAX];
+    Client*      t = NULL;
+    char         ca[64], ta[64];
+    unsigned int now = SrvMillis();
+
+    if (len < 4 + SHNET_REPORT_MAX) return;
+    who = ShnGetU32(p, &off);
+    ShnGetStr(p, &off, SHNET_REPORT_MAX, reason, sizeof(reason));
+    SrvSanitizeChat(reason, SHNET_REPORT_MAX);
+    if (c->reported && now - c->reportMs < SRV_REPORT_GAP_MS)
+    {
+        SrvSendEvent(c, SHNET_EV_SERVER, 0, "You sent a report a moment ago; wait a minute before the next");
+        return;
+    }
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        if (g_clients[i].used && g_clients[i].playerId == who) { t = &g_clients[i]; break; }
+    }
+    if (!t || t == c)
+    {
+        SrvSendEvent(c, SHNET_EV_SERVER, 0, "That player is no longer here");
+        return;
+    }
+    c->reportMs = now;
+    c->reported = 1;
+    SrvAddrStr(&c->addr, ca, (int)sizeof(ca));
+    SrvAddrStr(&t->addr, ta, (int)sizeof(ta));
+    SrvLog("[USER REPORT] %s#%04u (id %u, %s) reported %s#%04u (id %u, %s): %s", c->name, (unsigned)c->tag,
+           c->playerId, ca, t->name, (unsigned)t->tag, t->playerId, ta, reason[0] ? reason : "(no reason given)");
+    for (i = 0; g_pm && i < g_pmCount; i++)
+    {
+        const PmRec* r = &g_pm[(g_pmHead - g_pmCount + i + SRV_PM_RING) % SRV_PM_RING];
+        char         when[32];
+        time_t       tt = (time_t)r->unixTime;
+        struct tm*   tm;
+        if (!((r->fromId == c->playerId && r->toId == t->playerId) ||
+              (r->fromId == t->playerId && r->toId == c->playerId)))
+            continue;
+        tm = localtime(&tt);
+        if (tm) strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", tm);
+        else    snprintf(when, sizeof(when), "%ld", r->unixTime);
+        SrvLog("[USER REPORT]   %s %s#%04u -> %s#%04u: %s", when, r->fromName, (unsigned)r->fromTag, r->toName,
+               (unsigned)r->toTag, r->text);
+        n++;
+    }
+    SrvLog("[USER REPORT]   (%d private message%s between them)", n, n == 1 ? "" : "s");
+    SrvSendEvent(c, SHNET_EV_SERVER, 0, "Report sent to the server admin. Thank you");
+}
+
+/* The room host's /block list, so the server refuses those addresses at the
+ * door with the same words any other refusal gets. */
+static void SrvHandleRoomBlocks(Client* c, const shn_u8* p, int len)
+{
+    int off = 0, n, i;
+    if (len < 1) return;
+    n = (int)ShnGetU8(p, &off);
+    if (n > (int)(sizeof(c->blockTok) / sizeof(c->blockTok[0]))) n = (int)(sizeof(c->blockTok) / sizeof(c->blockTok[0]));
+    if (1 + n * 4 > len) n = (len - 1) / 4;
+    for (i = 0; i < n; i++) c->blockTok[i] = ShnGetU32(p, &off);
+    c->blockN = n;
 }
 
 /* ROOM_JOINED (to the one who just joined, yourId prefixed) or ROOM_ROSTER
@@ -2286,6 +2834,7 @@ static void SrvRoomLeave(Client* c, int notify)
     int     wasHost = c->roomHost;
     if (!room) return;
     c->room = 0; c->roomHost = 0; c->roomMax = 0; c->roomHidden = 0;
+    if (wasHost) memset(c->resv, 0, sizeof(c->resv));
     if (!notify) return;
     if (wasHost)
     {
@@ -2394,7 +2943,26 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
             }
         }
     }
-    if (SrvRoomCount(code) >= host->roomMax) { SrvRoomJoinFailed(c, now); SrvSendRoomReject(c, 3, "room is full"); return; }
+    {
+        int k;
+        for (k = 0; k < host->blockN; k++)
+        {
+            if (host->blockTok[k] == c->addrTok)
+            {
+                SrvSendRoomReject(c, 4, "Unable to join this room.");
+                return;
+            }
+        }
+    }
+    /* Seats held for invited players count as taken, except for the player
+     * they are held for. */
+    if (SrvRoomCount(code) >= host->roomMax ||
+        (!SrvRoomHasHold(host, c) && SrvRoomCount(code) + SrvRoomHeld(host, now, c) >= host->roomMax))
+    {
+        SrvRoomJoinFailed(c, now);
+        SrvSendRoomReject(c, 3, "room is full");
+        return;
+    }
     if (!SrvSameBuild(host, c))
     {
         SrvLog("  %s (id %u, build %s) refused room %u: host is on build %s",
@@ -2403,6 +2971,7 @@ static void SrvHandleRoomJoin(Client* c, const shn_u8* p, int len)
         return;
     }
     SrvRoomLeave(c, 1);
+    SrvRoomUseHold(host, c);
     c->room = code; c->roomHost = 0; c->roomMax = host->roomMax;
     SrvFeed("  %s (id %u) joined room %u", c->name, c->playerId, code);
     SrvSendRoomRoster(c, 1);
@@ -2450,7 +3019,7 @@ static void SrvHandleRoomList(Client* c, const shn_u8* p, int len)
         Client* h = &g_clients[i];
         if (!h->used || !h->roomHost || h->roomHidden) continue;
         if (skip > 0) { skip--; continue; }
-        if (n >= SRV_ROOMS_PER_PAGE || off + 2 + 1 + 1 + SHNET_NAME_MAX + 1 + 2 > (int)sizeof(buf))
+        if (n >= SRV_ROOMS_PER_PAGE || off + 2 + 1 + 1 + SHNET_NAME_MAX + 1 + 6 + 2 > (int)sizeof(buf))
         {
             more = 1;
             break;
@@ -2462,6 +3031,16 @@ static void SrvHandleRoomList(Client* c, const shn_u8* p, int len)
         /* The host's map (from its living-world state), so the browser can say
          * where the game is; 0xFF when the host has not reported one. */
         ShnPutU8(buf, &off, (shn_u8)((h->mapIdx < 0) ? 0xFF : h->mapIdx));
+        /* Social clients: the host's tag and ping, and the seats held for
+         * invited players. A reader works the entry size out from the
+         * datagram, so an older one is simply not given these. */
+        if (c->caps & SHNET_CAP_SOCIAL)
+        {
+            ShnPutU16(buf, &off, h->tag);
+            ShnPutU16(buf, &off, (shn_u16)(h->pingMs > 9999 ? 9999 : h->pingMs));
+            ShnPutU8(buf, &off, (shn_u8)SrvRoomHeld(h, SrvMillis(), NULL));
+            ShnPutU8(buf, &off, 0);
+        }
         n++;
     }
     buf[cntOff] = (shn_u8)n;
@@ -2479,21 +3058,23 @@ static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
     shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_NAME_MAX];
     int     off = 0, o = SHNET_HDR_SIZE, i;
     shn_u32 to;
-    int     action;
+    int     action, seatsWanted;
     shn_u16 code;
     Client* t = NULL;
 
     if (len < 8) return;
     to     = ShnGetU32(p, &off);
     action = (int)ShnGetU8(p, &off);
-    (void)ShnGetU8(p, &off);
+    seatsWanted = (int)ShnGetU8(p, &off);
     code   = ShnGetU16(p, &off);
-    if (action < SHNET_INV_INVITE || action > SHNET_INV_SAVING || action == SHNET_INV_GONE || to == c->playerId) return;
+    if (action < SHNET_INV_INVITE || action > SHNET_INV_SAVING || action == SHNET_INV_GONE || to == c->playerId ||
+        SrvIsSplitP2(c))
+        return;
     for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && g_clients[i].playerId == to) { t = &g_clients[i]; break; }
     }
-    if (t == NULL)
+    if (t == NULL || SrvIsSplitP2(t))
     {
         ShnPutU32(buf, &o, to);
         ShnPutU8(buf, &o, SHNET_INV_GONE);
@@ -2503,9 +3084,58 @@ static void SrvHandleInvite(Client* c, const shn_u8* p, int len)
         SrvSendTo(c, buf, o - SHNET_HDR_SIZE, SHNET_MSG_INVITE);
         return;
     }
+    /* A yes holds the seats it needs in the inviter's room, so two players
+     * saying yes to the last seat cannot both get in: the one who is too late
+     * hears so at once, and so does the inviter. */
+    if (action == SHNET_INV_ACCEPT || action == SHNET_INV_SAVING || action == SHNET_INV_JOIN)
+    {
+        Client*            host  = (action == SHNET_INV_JOIN) ? c : t;
+        Client*            guest = (action == SHNET_INV_JOIN) ? t : c;
+        const unsigned int now   = SrvMillis();
+        if (host->roomHost && host->room && guest->room != host->room)
+        {
+            int seats = (seatsWanted == 2) ? 2 : 1;
+            int k;
+            if (action == SHNET_INV_JOIN)
+            {
+                /* After a yes: keep the hold the yes made, or make one. */
+                seats = 1;
+                for (k = 0; k < SRV_HOLD_SLOTS; k++)
+                {
+                    if (host->resv[k].seats > 0 && host->resv[k].playerId == guest->playerId) seats = host->resv[k].seats;
+                }
+            }
+            if (SrvRoomCount(host->room) + SrvRoomHeld(host, now, guest) + seats > host->roomMax)
+            {
+                int side;
+                SrvRoomUnhold(host, guest->playerId);
+                for (side = 0; side < 2; side++)
+                {
+                    Client* to2   = side ? host : guest;
+                    Client* from2 = side ? guest : host;
+                    o = SHNET_HDR_SIZE;
+                    ShnPutU32(buf, &o, from2->playerId);
+                    ShnPutU8(buf, &o, SHNET_INV_FULL);
+                    ShnPutU8(buf, &o, (shn_u8)seats);
+                    ShnPutU16(buf, &o, 0);
+                    ShnPutStr(buf, &o, from2->name, SHNET_NAME_MAX);
+                    SrvSendTo(to2, buf, o - SHNET_HDR_SIZE, SHNET_MSG_INVITE);
+                }
+                SrvFeed("  invite %s -> %s: room %u is full", host->name, guest->name, host->room);
+                return;
+            }
+            SrvRoomHold(host, guest, seats, action == SHNET_INV_SAVING ? SRV_HOLD_SAVING_MS : SRV_HOLD_ACCEPT_MS);
+        }
+    }
+    else if (action == SHNET_INV_CANCEL || action == SHNET_INV_DECLINE)
+    {
+        if (c->roomHost) SrvRoomUnhold(c, t->playerId);
+        if (t->roomHost) SrvRoomUnhold(t, c->playerId);
+    }
+    o = SHNET_HDR_SIZE;
     ShnPutU32(buf, &o, c->playerId);
     ShnPutU8(buf, &o, (shn_u8)action);
-    ShnPutU8(buf, &o, 0);
+    ShnPutU8(buf, &o, (shn_u8)seatsWanted); /* seats on a yes; where the host is on a JOIN */
     ShnPutU16(buf, &o, code);
     ShnPutStr(buf, &o, c->name, SHNET_NAME_MAX);
     SrvSendTo(t, buf, o - SHNET_HDR_SIZE, SHNET_MSG_INVITE);
@@ -2620,7 +3250,8 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     /* A This-PC co-op host is a relay for one room of friends, not a living
      * world: chat and the marker store have no business on it. */
     if (type == SHNET_MSG_CHAT_SAY || type == SHNET_MSG_MEMO_PLACE ||
-        type == SHNET_MSG_MEMO_QUERY || type == SHNET_MSG_MEMO_RATE)
+        type == SHNET_MSG_MEMO_QUERY || type == SHNET_MSG_MEMO_RATE ||
+        type == SHNET_MSG_WHISPER || type == SHNET_MSG_REPORT)
     {
         return;
     }
@@ -2642,6 +3273,10 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     case SHNET_MSG_COOP_RELAY:    SrvHandleCoopRelay(c, pay, (int)payLen);  break;
     case SHNET_MSG_ROOM_KICK:     SrvHandleRoomKick(c, pay, (int)payLen);   break;
     case SHNET_MSG_INVITE:        SrvHandleInvite(c, pay, (int)payLen);     break;
+    case SHNET_MSG_LOOKUP:        SrvHandleLookup(c, pay, (int)payLen);     break;
+    case SHNET_MSG_WHISPER:       SrvHandleWhisper(c, pay, (int)payLen);    break;
+    case SHNET_MSG_REPORT:        SrvHandleReport(c, pay, (int)payLen);     break;
+    case SHNET_MSG_ROOM_BLOCKS:   SrvHandleRoomBlocks(c, pay, (int)payLen); break;
     case SHNET_MSG_BYE:
     {
         char text[SHNET_EVENT_MAX];
@@ -2653,7 +3288,8 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
         }
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
-        SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
+        g_namesDirty = 1;
+        if (!SrvIsSplitP2(c)) SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
         break;
     }
     default: break;
@@ -3584,6 +4220,13 @@ static Client* AdmFindPlayer(const char* who)
         for (i = 0; i < g_clientHigh; i++)
             if (g_clients[i].used && g_clients[i].playerId == (shn_u32)id) return &g_clients[i];
     }
+    if (strchr(who, '#'))
+    {
+        n = SrvLookup(who, &hit);
+        if (n == 1) return hit;
+        AdmPrintf("no player \"%s\" (see players)\n", who);
+        return NULL;
+    }
     for (i = 0; i < g_clientHigh; i++)
     {
         if (g_clients[i].used && !AdmStrCaseCmp(g_clients[i].name, who))
@@ -3593,7 +4236,7 @@ static Client* AdmFindPlayer(const char* who)
         }
     }
     if (n == 1) return hit;
-    if (n > 1) AdmPrintf("more than one player is called \"%s\"; use their id (see players)\n", who);
+    if (n > 1) AdmPrintf("more than one player is called \"%s\"; use name#tag or their id (see players)\n", who);
     else       AdmPrintf("no player \"%s\" (see players)\n", who);
     return NULL;
 }
@@ -3608,6 +4251,7 @@ static void AdmRemove(Client* c, const char* why, const char* verb)
     SrvFeed("- %s %s by the admin (id %u)", c->name, verb, c->playerId);
     SrvRoomLeave(c, 1);
     c->used = 0;
+    g_namesDirty = 1;
     SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
 }
 
@@ -3615,15 +4259,18 @@ static void AdmCmdPlayers(void)
 {
     unsigned int now = SrvMillis();
     int          i, n = 0;
-    AdmPrintf("%-6s %-24s %-24s %4s %6s %5s %-10s %s\n", "id", "name", "address", "map", "room", "ping", "uid", "build");
+    AdmPrintf("%-6s %-30s %-24s %4s %6s %5s %-10s %s\n", "id", "name#tag", "address", "map", "room", "ping", "uid", "build");
     for (i = 0; i < g_clientHigh; i++)
     {
         const Client* c = &g_clients[i];
         char          a[64];
+        char          nt[SHNET_NAME_MAX + 8];
         if (!c->used) continue;
         SrvAddrStr(&c->addr, a, (int)sizeof(a));
-        AdmPrintf("%-6u %-24s %-24s %4d %6u %5d %-10u %s  (online %us)\n", c->playerId, c->name, a, c->mapIdx,
-                  (unsigned)c->room, c->pingMs, c->uid, c->build, (now - c->joinMs) / 1000u);
+        snprintf(nt, sizeof(nt), "%s#%04u", c->name, (unsigned)c->tag);
+        AdmPrintf("%-6u %-30s %-24s %4d %6u %5d %-10u %s  (online %us)%s\n", c->playerId, nt, a, c->mapIdx,
+                  (unsigned)c->room, c->pingMs, c->uid, c->build, (now - c->joinMs) / 1000u,
+                  SrvIsSplitP2(c) ? "  split P2" : "");
         n++;
     }
     {
@@ -3723,7 +4370,8 @@ static void AdmHelp(void)
 {
     AdmPrintf(
         "players                      who is on, with ids, addresses and rooms\n"
-        "kick <id|name> [reason]      remove a player (they can reconnect)\n"
+        "kick <id|name|name#tag> [reason]\n"
+        "                             remove a player (they can reconnect)\n"
         "ban <id|name|ip> [minutes] [reason]\n"
         "                             ban by address and player id; no minutes = forever\n"
         "unban <ip|uid>               lift a ban\n"
@@ -3891,7 +4539,7 @@ static void AdmRun(char* line)
         /* And a chat line, which stays readable after the toast has gone. */
         for (i = 0; i < g_clientHigh; i++)
         {
-            if (g_clients[i].used) SrvSendChat(&g_clients[i], SHNET_CHAT_GLOBAL, 0, "Server", rest);
+            if (g_clients[i].used) SrvSendChat(&g_clients[i], SHNET_CHAT_GLOBAL, 0, "Server", rest, NULL);
         }
         AdmPrintf("sent\n");
     }
@@ -4494,6 +5142,7 @@ int ShMaster_Serve(void)
     SrvLog("%s (protocol v%d, log %s)", SRV_LOG_START, SHNET_PROTO_VER, g_logFile ? g_logAbs : "off");
 #endif
     SrvLoadDb();
+    SrvTokKeyInit();
     SrvPurgeDeaths();
     g_lastSaveMs = SrvMillis();
     g_startUnix  = (long)time(NULL);
