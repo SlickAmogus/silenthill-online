@@ -42,6 +42,12 @@ static const BcRow s_rows[] = {
     { "Quick Options",  { "key_quick_options", NULL,             "pad_quick_options", NULL },             BCF_GLOBAL },
     { "Quick Save",     { "key_quicksave",     NULL,             NULL,                NULL },             BCF_GLOBAL },
     { "Quick Load",     { "key_quickload",     NULL,             NULL,                NULL },             BCF_GLOBAL },
+    /* Online. Keyboard only: on a phone these are the touch buttons. */
+    { "Chat",             { "key_chat_game",      NULL,          NULL,                NULL },             BCF_GLOBAL },
+    { "Chat Channel",     { "key_chat_cycle",     NULL,          NULL,                NULL },             BCF_GLOBAL },
+    { "Multiplayer Menu", { "key_online_memo",    NULL,          NULL,                NULL },             BCF_GLOBAL },
+    { "Voice Lines",      { "key_vocalize",       NULL,          NULL,                NULL },             BCF_GLOBAL },
+    { "Player List",      { "key_online_players", NULL,          NULL,                NULL },             BCF_GLOBAL },
 };
 
 #define BC_ROWS ((int)(sizeof(s_rows) / sizeof(s_rows[0])))

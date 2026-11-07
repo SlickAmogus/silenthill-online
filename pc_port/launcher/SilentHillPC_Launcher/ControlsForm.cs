@@ -97,6 +97,8 @@ public class ControlsForm : Form
         { "key_l1", "A" }, { "key_r1", "D" }, { "key_l2", "Right Shift" }, { "key_r2", "Left Shift" },
         { "key_l3", "NONE" }, { "key_r3", "NONE" }, { "key_start", "Return" }, { "key_select", "Space" },
         { "key_quicksave", "F6" }, { "key_quickload", "F8" },
+        { "key_chat_game", "Y" }, { "key_chat_cycle", "U" }, { "key_online_memo", "M" },
+        { "key_vocalize", "B" }, { "key_online_players", "F11" },
         { "key_quick_options", "F10" }, { "pad_quick_options", "NONE" },
         { "key_change_cam", "F9" }, { "pad_change_cam", "rightstick" },
         { "key_swap_shoulder", "Mouse3" }, { "key_console", "`" },
@@ -359,7 +361,9 @@ public class ControlsForm : Form
          * last bind (Rear Look, ~y+827). The sensitivity column carries five FOV/zoom
          * sliders (First/Third/OTS FOV, then Thirdperson + OTS Aim Zoom) at a tight
          * 58px pitch so they fit this height without expanding the form. */
-        ClientSize = new Size(860, 877);
+        /* +148 for the Multiplayer rows under Rear Look; a smaller screen
+         * scales the whole form down to fit (OnLoad). */
+        ClientSize = new Size(860, 1025);
 
         tips = new ToolTip { AutoPopDelay = 20000, InitialDelay = 350, ReshowDelay = 80, ShowAlways = true };
 
@@ -472,6 +476,19 @@ public class ControlsForm : Form
         tips.SetToolTip(inputs["key_quick_heal"], Loc.T("Uses the best healing item you carry (a stronger one when badly hurt)."));
         tips.SetToolTip(inputs["key_quick_turn"], Loc.T("Quick 180° turn (animated, not a snap)."));
         tips.SetToolTip(boxRearLookKb, Loc.T("Hold to look behind Harry (Thirdperson / Over-the-Shoulder only). Bind it with Alt. Cam Controls ticked."));
+
+        // Multiplayer keys (keyboard; phones use their touch buttons).
+        int mpY = cycleHealY + rowH * 4 + 8;
+        AddKeyRow("Chat", "key_chat_game", colKbX, mpY, labelW, inputW, false);
+        AddKeyRow("Chat Channel", "key_chat_cycle", colKbX, mpY + rowH, labelW, inputW, false);
+        AddKeyRow("Multiplayer Menu", "key_online_memo", colKbX, mpY + rowH * 2, labelW, inputW, false);
+        AddKeyRow("Voice Lines", "key_vocalize", colKbX, mpY + rowH * 3, labelW, inputW, false);
+        AddKeyRow("Player List", "key_online_players", colKbX, mpY + rowH * 4, labelW, inputW, false);
+        tips.SetToolTip(inputs["key_chat_game"], Loc.T("Opens the chat box to type a message."));
+        tips.SetToolTip(inputs["key_chat_cycle"], Loc.T("Switches which channel your messages go to: Global, Level, Coop or All."));
+        tips.SetToolTip(inputs["key_online_memo"], Loc.T("Opens the multiplayer menu: leave a message, invite a player, co-op options."));
+        tips.SetToolTip(inputs["key_vocalize"], Loc.T("Hold in a co-op game for the voice-line wheel."));
+        tips.SetToolTip(inputs["key_online_players"], Loc.T("Shows who is online and the game you are in."));
 
         // Controller binds — primary + an alternate (second button) per action.
         for (int i = 0; i < ControllerBinds.Length; i++)

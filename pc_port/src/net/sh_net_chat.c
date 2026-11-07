@@ -149,6 +149,88 @@ void ShNetChat_CoopIn(unsigned long long from, const unsigned char* p, int len)
     Chat_Push(SHNET_CHAT_COOP, line);
 }
 
+/* The bound key's name for the controls line, or NULL when unbound. */
+static const char* Chat_KeyName(const char* bound, const char* fallback)
+{
+    const char* k = (bound && bound[0]) ? bound : fallback;
+    if (!k || !k[0] || SDL_strcasecmp(k, "NONE") == 0) return NULL;
+    return k;
+}
+
+static void Chat_Part(char* out, int cap, const char* key, const char* what)
+{
+    size_t n = strlen(out);
+    if (!key || (int)n >= cap - 1) return;
+    snprintf(out + n, (size_t)(cap - (int)n), "%s%s %s", n ? ",  " : "", key, what);
+}
+
+/* The multiplayer controls, to this player alone, a moment after each load
+ * into the living world and again when a co-op game starts: nothing else in
+ * the game says which keys chat or open the menu. Shown as bound, or as the
+ * touch buttons on a touchscreen. */
+static void Chat_HelpTick(void)
+{
+    extern int          g_PcCoopGame;
+    extern int          ShNet_WorldConnected(void);
+    static int          s_shown;   /* 1 the living world's line, 2 co-op's */
+    static unsigned int s_since;
+    const int mode = g_PcCoopGame ? 2 : (ShNet_WorldConnected() ? 1 : 0);
+    const int live = g_GameWork.gameState == GameState_InGame && !(g_SysWork.sysFlags & SysFlag_DemoActive) &&
+                     g_SysWork.sysState == SysState_Gameplay;
+    int       touch = 0;
+    char      line[256];
+
+    if (g_GameWork.gameState == GameState_MainMenu)
+    {
+        s_shown = 0;
+        s_since = 0;
+        return;
+    }
+    if (!live || mode <= s_shown)
+    {
+        s_since = 0;
+        return;
+    }
+    if (!s_since)
+    {
+        s_since = SDL_GetTicks() | 1u;
+        return;
+    }
+    if (SDL_GetTicks() - s_since < 2500u) return;
+    s_shown = mode;
+    s_since = 0;
+
+#if defined(SH_IOS) || defined(__ANDROID__)
+    touch = 1;
+#elif defined(__EMSCRIPTEN__)
+    {
+        extern int Web_IsTouchDevice(void);
+        touch = Web_IsTouchDevice();
+    }
+#endif
+    if (touch)
+    {
+        snprintf(line, sizeof(line), "%s: the buttons at the top of the screen: the lines open chat, the two heads "
+                 "the multiplayer menu%s.", mode == 2 ? "Co-op" : "Online",
+                 mode == 2 ? ", the speech bubble voice lines" : " (leave a message, invite a player)");
+        ShNetChat_AddSystem(line);
+        return;
+    }
+    line[0] = '\0';
+    Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyChatGame, NULL), "chat");
+    Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyChatCycle, NULL), "switch channel");
+    Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyOnlineMemo, NULL),
+              mode == 2 ? "multiplayer menu" : "multiplayer menu (leave a message, invite a player)");
+    if (mode == 2) Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyVocalize, "B"), "(hold) voice lines");
+    Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyOnlinePlayers, NULL), "who is online");
+    if (!line[0]) return;
+    {
+        char full[320];
+        snprintf(full, sizeof(full), "%s keys: %s.  Change them under Controls.", mode == 2 ? "Co-op" : "Online", line);
+        ShNetChat_AddSystem(full);
+    }
+}
+
 void ShNetChat_Tick(void)
 {
     int          scope;
@@ -157,6 +239,7 @@ void ShNetChat_Tick(void)
     char         text[SHNET_CHAT_MAX];
     char         line[sizeof(s_log[0].text)];
 
+    Chat_HelpTick();
     while (ShNet_PopChat(&scope, &fromId, name, sizeof(name), text, sizeof(text)))
     {
         ShNetChat_Censor(text); /* an older server relays them as typed */
