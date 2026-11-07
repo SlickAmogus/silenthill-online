@@ -70,6 +70,11 @@ void        ShNetInvite_DropWaiting(void);
 void ShNetInvite_JoinCode(int code, const char* name);
 void ShNetInvite_OnFollow(int code, int lobby); /* Player 2: Player 1 is joining that room */
 
+/* Where an invite to this player stands, for the invite list; *outSec is the
+ * time left (invited) or the wait before asking again (declined). */
+enum { SHNET_INVST_NONE = 0, SHNET_INVST_INVITED, SHNET_INVST_SAVING, SHNET_INVST_DECLINED, SHNET_INVST_BUSY };
+int  ShNetInvite_StateOf(unsigned int id, int* outSec);
+
 #ifdef __cplusplus
 }
 #endif

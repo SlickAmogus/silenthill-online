@@ -78,6 +78,10 @@ static unsigned int s_joinMs;
 static char         s_joinName[SHNET_NAME_MAX + 8];
 
 static struct { unsigned int id; unsigned int untilMs; } s_cool[INV_COOL_MAX];
+/* Players who answered "busy" lately, for the invite list. */
+#define INV_BUSY_MS 60000u
+static struct { unsigned int id; unsigned int untilMs; } s_busy[INV_COOL_MAX];
+static int s_busyNext;
 
 static int Inv_InGame(void)
 {
@@ -359,6 +363,42 @@ static int Inv_OutSlot(unsigned int id)
 }
 
 /* The invite goes out now: we host a room on the server it can take them into. */
+static void Inv_BusyAdd(unsigned int id, unsigned int now)
+{
+    int i;
+    for (i = 0; i < INV_COOL_MAX && s_busy[i].id != id; i++) {}
+    if (i == INV_COOL_MAX)
+    {
+        i = s_busyNext;
+        s_busyNext = (s_busyNext + 1) % INV_COOL_MAX;
+    }
+    s_busy[i].id      = id;
+    s_busy[i].untilMs = now + INV_BUSY_MS;
+}
+
+int ShNetInvite_StateOf(unsigned int id, int* outSec)
+{
+    const unsigned int now = SDL_GetTicks();
+    int                i, k = Inv_OutSlot(id), sec;
+    if (outSec) *outSec = 0;
+    if (!id) return SHNET_INVST_NONE;
+    if (k >= 0)
+    {
+        if (outSec) *outSec = (int)(((s_out[k].saving ? INV_SAVE_WAIT_MS : INV_EXPIRE_MS) - (now - s_out[k].ms) + 999u) / 1000u);
+        return s_out[k].saving ? SHNET_INVST_SAVING : SHNET_INVST_INVITED;
+    }
+    if ((sec = Inv_CooldownSec(id, now)) > 0)
+    {
+        if (outSec) *outSec = sec;
+        return SHNET_INVST_DECLINED;
+    }
+    for (i = 0; i < INV_COOL_MAX; i++)
+    {
+        if (s_busy[i].id == id && (int)(s_busy[i].untilMs - now) > 0) return SHNET_INVST_BUSY;
+    }
+    return SHNET_INVST_NONE;
+}
+
 static void Inv_SendNow(unsigned int id, const char* name, unsigned int now)
 {
     int i, slot = Inv_OutSlot(id);
@@ -375,7 +415,7 @@ static void Inv_SendNow(unsigned int id, const char* name, unsigned int now)
     s_out[slot].saving = 0;
     snprintf(s_out[slot].name, sizeof(s_out[slot].name), "%s", name);
     SH_DBG("[INVITE] invited %s (%u)", name, id);
-    Inv_Toast("Invite sent to %s", name);
+    Inv_Toast("%s was invited", name);
 }
 
 static void Inv_Want(unsigned int id, const char* name, int seats, unsigned int now)
@@ -792,7 +832,8 @@ static void Inv_Handle(unsigned int from, int action, int code, int extra, const
         if (s_inFrom == from)
         {
             s_inFrom = 0;
-            Inv_Toast("%s withdrew the invite", name[0] ? name : "They");
+            Inv_Toast((extra & SHNET_INVC_FULL) ? "%s's game filled up before you answered"
+                                                : "%s withdrew the invite", name[0] ? name : "They");
         }
         else if (s_acceptFrom == from)
         {
@@ -846,6 +887,7 @@ static void Inv_Handle(unsigned int from, int action, int code, int extra, const
             Inv_Toast("%s is busy right now (hosting a game, a menu or a scene)", s_out[k].name);
             s_out[k].to = 0;
         }
+        Inv_BusyAdd(from, now);
         break;
 
     case SHNET_INV_GONE:
@@ -904,9 +946,25 @@ void ShNetInvite_Tick(void)
         if (s_out[i].to && now - s_out[i].ms > (s_out[i].saving ? INV_SAVE_WAIT_MS : INV_EXPIRE_MS))
         {
             ShNet_SendInvite(s_out[i].to, SHNET_INV_CANCEL, 0);
-            Inv_Toast("No answer from %s", s_out[i].name);
+            Inv_Toast("%s didn't answer the invite in time", s_out[i].name);
             if (s_out[i].saving) Inv_CooldownAdd(s_out[i].to, now);
             s_out[i].to = 0;
+        }
+    }
+
+    /* Our game filled up: the invites still waiting for an answer have no
+     * seat to offer, so they are called off rather than left to fail on a yes.
+     * One already saving was told yes is coming; the server holds its seat. */
+    if (Inv_HostingServerRoom() && ShSession_MemberCount() >= Inv_MaxPlayers())
+    {
+        for (i = 0; i < INV_OUT_MAX; i++)
+        {
+            if (s_out[i].to && !s_out[i].saving)
+            {
+                ShNet_SendInviteEx(s_out[i].to, SHNET_INV_CANCEL, 0, SHNET_INVC_FULL);
+                Inv_Toast("Your game is full: the invite to %s was called off", s_out[i].name);
+                s_out[i].to = 0;
+            }
         }
     }
 
