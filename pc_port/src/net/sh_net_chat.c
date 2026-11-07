@@ -46,7 +46,7 @@ static ChatLine s_log[CHAT_LOG_MAX];
 static int      s_logCount;
 
 static int  s_open;
-static int  s_hintShown;                 /* "Press Tab..." once per run */
+static int  s_hintShown;                 /* the chat hint (channels, /help): once per run, if the keys line has not said it */
 static int  s_scope = SHNET_CHAT_ALL;    /* the channel shown, and sent to (All sends to Global) */
 static int  s_vis[CHAT_LOG_MAX];         /* indices into s_log shown this frame */
 static int  s_scroll;                    /* composing: lines scrolled back from the newest */
@@ -273,7 +273,14 @@ static void Chat_HelpTick(void)
     }
     line[0] = '\0';
     Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyChatGame, NULL), "chat");
-    Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyChatCycle, NULL), "switch channel");
+    /* The channel key switches without typing; mid-line it would type its
+     * letter, so Tab does it there. */
+    {
+        const char* cyc = Chat_KeyName(g_PcConfig.keyChatCycle, NULL);
+        char        both[48];
+        if (cyc) snprintf(both, sizeof(both), "%s or Tab", cyc);
+        Chat_Part(line, (int)sizeof(line), cyc ? both : "Tab", "switch channel");
+    }
     Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyOnlineMemo, NULL),
               mode == 2 ? "multiplayer menu" : "multiplayer menu (leave a message, invite a player)");
     if (mode == 2) Chat_Part(line, (int)sizeof(line), Chat_KeyName(g_PcConfig.keyVocalize, "B"), "(hold) voice lines");
@@ -281,8 +288,10 @@ static void Chat_HelpTick(void)
     if (!line[0]) return;
     {
         char full[320];
-        snprintf(full, sizeof(full), "%s keys: %s.  Change them under Controls.", mode == 2 ? "Co-op" : "Online", line);
+        snprintf(full, sizeof(full), "%s keys: %s.  Type /help in chat for commands.  Change keys under Controls.",
+                 mode == 2 ? "Co-op" : "Online", line);
         ShNetChat_AddSystem(full);
+        s_hintShown = 1;
     }
 }
 
@@ -379,7 +388,7 @@ void ShNetChat_Open(void)
     if (!s_hintShown)
     {
         s_hintShown = 1;
-        ShNetChat_AddSystem("Press Tab to switch channels");
+        ShNetChat_AddSystem("Tab switches channels.  Type /help for chat commands.");
     }
 }
 
