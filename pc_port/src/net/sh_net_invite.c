@@ -67,8 +67,10 @@ static int          s_savePhase;     /* 1 save screen asked for, 2 in it */
 static int          s_saveCancelled; /* the inviter withdrew while we were in there */
 
 /* Joining a room by its code (an invite's JOIN, /join, or Player 2 following
- * Player 1): 1 leaving our old room, 2 joining, 3 in it and waiting for the
- * host's world (or, from the menus, done once we are in). */
+ * Player 1): 4 giving Player 2 a moment to hear where we go, 1 leaving our
+ * old room, 2 joining, 3 in it and waiting for the host's world (or, from
+ * the menus, done once we are in). */
+#define INV_FOLLOW_MS 700u
 static int          s_joinStep;
 static int          s_joinCode;
 static int          s_joinLobby;     /* the host said they are still in the lobby */
@@ -616,9 +618,14 @@ void ShNetInvite_JoinCode(int code, const char* name)
     s_joinCode = code;
     s_joinMs   = SDL_GetTicks();
     snprintf(s_joinName, sizeof(s_joinName), "%s", name && name[0] ? name : "the host");
-    if (ShSession_Active())
+    if (ShSession_Active() && Pc_Split_Role() == 1)
     {
+        /* Player 2 hears it over the room we are about to leave. */
         Inv_TellPlayer2(code, s_joinLobby);
+        s_joinStep = 4;
+    }
+    else if (ShSession_Active())
+    {
         ShSession_RequestLeave();
         s_joinStep = 1;
     }
@@ -641,6 +648,15 @@ static void Inv_JoinTick(unsigned int now)
     char why[128];
     switch (s_joinStep)
     {
+    case 4:
+        if (now - s_joinMs > INV_FOLLOW_MS)
+        {
+            ShSession_RequestLeave();
+            s_joinMs   = now;
+            s_joinStep = 1;
+        }
+        break;
+
     case 1:
         if (!ShSession_Active() || now - s_joinMs > INV_LEAVE_MS)
         {

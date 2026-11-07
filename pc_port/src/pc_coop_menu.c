@@ -1675,7 +1675,7 @@ static void Coop_Confirm(void)
     case COOP_PAGE_ROOT:
         switch (Coop_RootRow(s_sel))
         {
-        case COOP_ROOT_HOST:     Coop_EnterHostSetup(); break;
+        case COOP_ROOT_HOST:     s_fromGame = 0; Coop_EnterHostSetup(); break;
         case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); break;
         case COOP_ROOT_SPLIT:    Coop_EnterSplit(); break;
         case COOP_ROOT_SETTINGS: s_page = COOP_PAGE_SETTINGS; s_sel = 0; s_msg[0] = '\0'; break;

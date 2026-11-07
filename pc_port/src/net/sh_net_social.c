@@ -147,7 +147,8 @@ void ShSocial_FormatName(const char* name, unsigned int tag, int showTag, char* 
 /* Blocks                                                              */
 /* ------------------------------------------------------------------ */
 
-static int s_blocksPushed;
+static unsigned int s_blocksPushedMs;
+static int          s_blocksPushed;
 
 static void Soc_PushBlocks(void)
 {
@@ -158,7 +159,8 @@ static void Soc_PushBlocks(void)
         if (g_PcConfig.onlineBlocks[i].token) toks[n++] = g_PcConfig.onlineBlocks[i].token;
     }
     ShSession_RequestBlocks(toks, n);
-    s_blocksPushed = 1;
+    s_blocksPushed   = 1;
+    s_blocksPushedMs = SDL_GetTicks();
 }
 
 int ShSocial_BlockedToken(unsigned int token)
@@ -768,7 +770,9 @@ void ShSocial_Tick(void)
     const unsigned int now = SDL_GetTicks();
     int i;
 
-    if (!s_blocksPushed) Soc_PushBlocks();
+    /* Again every few seconds: the session layer may not be up on the first
+     * frames, and the room link sends only when the list really changed. */
+    if (!s_blocksPushed || now - s_blocksPushedMs > 5000u) Soc_PushBlocks();
 
     while (ShNet_TakeLookup(&l))
     {

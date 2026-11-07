@@ -49,6 +49,7 @@
 #include "sh_net_emoji_png.h"
 #include "sh_net_chat.h"
 #include "sh_net_session.h"
+#include "sh_net_social.h"
 #include "sh_net_cutscene.h"
 #include "sh_net_voice.h"
 #include "sh_net_respawn.h" /* "YOU DIED / respawning in N" */
@@ -839,12 +840,53 @@ static void Nu_DrawEvents(int px)
 /* Player list                                                         */
 /* ------------------------------------------------------------------ */
 
+/* The F11 list scrolls when the server has more players than it shows:
+ * the wheel, Page Up / Page Down, Home / End. Blocked players are left out. */
+static int s_listScroll;
+
+static int Nu_ListVisible(int* idx, int cap)
+{
+    int i, n = 0, count = ShNet_PeerCount();
+    for (i = 0; i < count && n < cap; i++)
+    {
+        const ShNetPeer* p = ShNet_Peer(i);
+        if (!p || (p->playerId != ShNet_SelfId() && ShSocial_BlockedToken(p->token))) continue;
+        idx[n++] = i;
+    }
+    return n;
+}
+
+static void Nu_ListScroll(int total, int shown)
+{
+    static unsigned char s_prev[4];
+    const Uint8*         ks   = SDL_GetKeyboardState(NULL);
+    const int            maxS = total > shown ? total - shown : 0;
+    unsigned char        now[4];
+    int                  step = 0;
+    if (ShNetChat_IsOpen()) return; /* the wheel and paging belong to the chat history then */
+    now[0] = ks[SDL_SCANCODE_PAGEUP];
+    now[1] = ks[SDL_SCANCODE_PAGEDOWN];
+    now[2] = ks[SDL_SCANCODE_HOME];
+    now[3] = ks[SDL_SCANCODE_END];
+    step  -= Pc_MouseCursor_WheelNotches() * 3;
+    if (now[0] && !s_prev[0]) step -= shown - 1;
+    if (now[1] && !s_prev[1]) step += shown - 1;
+    if (now[2] && !s_prev[2]) step = -total;
+    if (now[3] && !s_prev[3]) step = total;
+    memcpy(s_prev, now, sizeof(s_prev));
+    s_listScroll += step;
+    if (s_listScroll > maxS) s_listScroll = maxS;
+    if (s_listScroll < 0) s_listScroll = 0;
+}
+
 static void Nu_DrawPlayerList(int px)
 {
+    static int  vis[SHNET_MAX_PEERS];
     const int   big   = (int)((float)px * 1.25f);
+    const int   small = (int)((float)px * 0.78f);
     const float pad   = (float)px * 0.9f;
     const float rowH  = (float)px * 1.45f;
-    const int   count = ShNet_PeerCount();
+    const int   count = Nu_ListVisible(vis, SHNET_MAX_PEERS);
     const int   shown = (count > NU_LIST_ROWS) ? NU_LIST_ROWS : count;
     const float w     = s_vpW * 0.42f < 420.0f ? 420.0f : s_vpW * 0.42f;
     const int   sess  = ShSession_MemberCount();
@@ -899,19 +941,31 @@ static void Nu_DrawPlayerList(int px)
                     x + pad, ty, px, 0.5f, 0.48f, 0.45f, 1.0f);
     }
 
+    Nu_ListScroll(count, shown);
+    if (s_listScroll > 0)
+    {
+        snprintf(buf, sizeof(buf), "%d above", s_listScroll);
+        Nu_DrawTextRight(buf, x + w - pad, ty - rowH * 0.62f, small, 0.45f, 0.45f, 0.43f, 1.0f);
+    }
     for (i = 0; i < shown; i++)
     {
-        const ShNetPeer* p = ShNet_Peer(i);
-        const int        me = p && p->playerId == ShNet_SelfId();
-        float            r = me ? 0.85f : 0.72f;
-        float            g = me ? 0.80f : 0.70f;
-        float            b = me ? 0.58f : 0.66f;
+        const ShNetPeer* p = ShNet_Peer(vis[s_listScroll + i]);
+        float            r, g, b, nw;
 
         if (!p)
         {
             continue;
         }
-        Nu_DrawText(p->name, x + pad, ty, px, r, g, b, 1.0f);
+        /* Each name in its colour, and the tag after it, small and grey:
+         * the name and number that reach exactly this player. */
+        ShSocial_Color(p->playerId, &r, &g, &b);
+        nw = Nu_DrawText(p->name, x + pad, ty, px, r, g, b, 1.0f);
+        if (p->tag)
+        {
+            char tag[8];
+            snprintf(tag, sizeof(tag), "#%04u", p->tag);
+            Nu_DrawText(tag, x + pad + nw, ty + (float)(px - small) * 0.55f, small, 0.50f, 0.50f, 0.50f, 1.0f);
+        }
         {
             /* Ours: the member of our game this living-world player is. */
             int k, inOurs = 0;
@@ -931,7 +985,11 @@ static void Nu_DrawPlayerList(int px)
 
     if (count > shown)
     {
-        snprintf(buf, sizeof(buf), "and %d more", count - shown);
+        const int below = count - shown - s_listScroll;
+        if (below > 0)
+            snprintf(buf, sizeof(buf), "%d more   (wheel or Page Down)", below);
+        else
+            snprintf(buf, sizeof(buf), "end of the list   (Home: back to the top)");
         Nu_DrawText(buf, x + pad, ty, px, 0.45f, 0.45f, 0.43f, 1.0f);
         ty += rowH;
     }
@@ -983,14 +1041,21 @@ static void Nu_DrawPlayerList(int px)
         for (k = 0; k < n; k++)
         {
             const ShSessionMember* m = ShSession_Member(k);
+            float                  mr, mg, mb, nw;
             if (!m)
             {
                 continue;
             }
-            Nu_DrawText(m->name, x + pad + (float)px, ty, px,
-                        m->linked ? 0.78f : 0.46f,
-                        m->linked ? 0.76f : 0.45f,
-                        m->linked ? 0.62f : 0.43f, 1.0f);
+            ShSocial_Color(m->steamId, &mr, &mg, &mb);
+            if (!m->linked) { mr *= 0.6f; mg *= 0.6f; mb *= 0.6f; }
+            nw = Nu_DrawText(m->name, x + pad + (float)px, ty, px, mr, mg, mb, 1.0f);
+            if (m->tag)
+            {
+                char tag[8];
+                snprintf(tag, sizeof(tag), "#%04u", (unsigned)m->tag);
+                Nu_DrawText(tag, x + pad + (float)px + nw, ty + (float)(px - small) * 0.55f, small,
+                            0.50f, 0.50f, 0.50f, 1.0f);
+            }
             if (m->mapIdx >= 0 && m->mapIdx < 64)
             {
                 char where[96];
@@ -1016,7 +1081,7 @@ static void Nu_DrawPlayerList(int px)
     }
 
     ty = y + h - pad - (float)px;
-    Nu_DrawText("F11 close     M leave a message", x + pad, ty, px,
+    Nu_DrawText("F11 close     M menu     Y chat (/help for commands)", x + pad, ty, px,
                 0.42f, 0.42f, 0.40f, 1.0f);
 }
 
@@ -2054,7 +2119,8 @@ static void Nu_DrawCoopMenu(int px)
         if (view == PC_COOP_VIEW_ROOMS)
         {
             Nu_DrawText("GAME", x0 + px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
-            Nu_DrawText("WHERE", x0 + w * 0.46f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawText("WHERE", x0 + w * 0.44f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
+            Nu_DrawTextRight("PING", x0 + w * 0.84f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
             Nu_DrawTextRight("PLAYERS", x1 - px * 0.8f, cy, pxSmall, 0.55f, 0.60f, 1.0f, 0.9f);
         }
         else
@@ -2112,7 +2178,24 @@ static void Nu_DrawCoopMenu(int px)
                                 pxSmall, 0.55f, 0.60f, 1.0f, 0.85f);
                 }
                 Nu_DrawTextFit(map >= 0 ? Pc_MapAreaName(map) : "In the lobby",
-                               r.x + r.w * 0.46f, ty, r.w * 0.36f, px, lt * 0.92f, lt * 0.92f, lt, 1.0f);
+                               r.x + r.w * 0.44f, ty, r.w * 0.27f, px, lt * 0.92f, lt * 0.92f, lt, 1.0f);
+                /* The way there and back again: our ping plus the host's. */
+                {
+                    int hostTag = 0, hostPing = -1, held = 0;
+                    ShSession_RoomGetEx(k, &hostTag, &hostPing, &held);
+                    if (hostPing >= 0 && ShNet_Status() == SHNET_ST_CONNECTED)
+                    {
+                        const int ms = hostPing + ShNet_PingMs();
+                        snprintf(cell, sizeof(cell), "%d ms", ms);
+                        Nu_DrawTextRight(cell, r.x + r.w * 0.84f, ty, px, ms < 120 ? 0.55f : ms < 250 ? 0.95f : 1.0f,
+                                         ms < 120 ? 0.85f : ms < 250 ? 0.82f : 0.50f, ms < 120 ? 0.60f : 0.45f, 1.0f);
+                    }
+                    else
+                    {
+                        Nu_DrawTextRight("-", r.x + r.w * 0.84f, ty, px, 0.55f, 0.56f, 0.62f, 1.0f);
+                    }
+                    players += held; /* seats held for invited players are not free */
+                }
                 snprintf(cell, sizeof(cell), "%d / %d", players, max);
                 Nu_DrawTextRight(cell, r.x + r.w - px * 0.8f, ty, px,
                                  players >= max ? 0.75f : 0.62f, players >= max ? 0.45f : 0.72f,
@@ -2124,7 +2207,15 @@ static void Nu_DrawCoopMenu(int px)
                 char                   cell[32];
                 if (m)
                 {
-                    float nw = Nu_DrawText(m->name, r.x + px * 0.8f, ty, px, lt, lt, lt, 1.0f);
+                    float nr, ng, nb, nw;
+                    ShSocial_Color(m->steamId, &nr, &ng, &nb);
+                    nw = Nu_DrawText(m->name, r.x + px * 0.8f, ty, px, nr * lt, ng * lt, nb * lt, 1.0f);
+                    if (m->tag)
+                    {
+                        snprintf(cell, sizeof(cell), "#%04u", (unsigned)m->tag);
+                        nw += Nu_DrawText(cell, r.x + px * 0.8f + nw, ty + (textH - Nu_TextH(pxSmall)) * 0.5f,
+                                          pxSmall, 0.50f, 0.50f, 0.50f, 1.0f);
+                    }
                     if (m->steamId == ShSession_HostId())
                     {
                         Nu_DrawText("HOST", r.x + px * 1.4f + nw, ty + (textH - Nu_TextH(pxSmall)) * 0.5f,
@@ -2219,7 +2310,7 @@ void ShNetUi_Draw(void)
     int       px;
     int       drawList, drawComposer, drawStatus;
 
-    if (!ShNet_Enabled() && !Pc_CoopMenu_IsOpen())
+    if (!ShNet_Enabled() && !Pc_CoopMenu_IsOpen() && !ShNetVoice_MenuOpen())
     {
         return;
     }
