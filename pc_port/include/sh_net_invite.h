@@ -55,6 +55,21 @@ void ShNetInvite_Accept(void);
 int  ShNetInvite_AcceptAfterSave(void);
 void ShNetInvite_Decline(void);
 
+/* Invite one player (from /invite or the Invite row). Hosting a server room:
+ * it goes out now. In a single-player game: the menu asks whether to host
+ * from here or from the lobby, and it goes out once the room is open. At the
+ * menus: the host setup opens. seats = 2 for a split-screen pair. */
+int  ShNetInvite_SendTo(unsigned int id, const char* name, int seats);
+/* The answer to that question. */
+void        ShNetInvite_HostFromHere(void);
+const char* ShNetInvite_WaitingName(void);  /* the player an invite waits on our room for, "" none */
+void        ShNetInvite_DropWaiting(void);
+/* Join a server room by its code (/join, an invite's answer, Player 2
+ * following Player 1): leaves the room we are in first, waits in the lobby
+ * on the title when the host is there, boots their game when they are in it. */
+void ShNetInvite_JoinCode(int code, const char* name);
+void ShNetInvite_OnFollow(int code, int lobby); /* Player 2: Player 1 is joining that room */
+
 #ifdef __cplusplus
 }
 #endif

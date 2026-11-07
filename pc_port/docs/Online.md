@@ -167,7 +167,26 @@ everyone for a day. Turn them off with `online_deaths = 0` if you would
 rather not know.
 
 **The player list.** `F11`. Everyone connected, the area they are in, and
-their ping.
+their ping. Each name is followed by a small grey number, its tag (see
+below). A long list scrolls with the mouse wheel, Page Up / Page Down, Home
+and End.
+
+**Names and tags.** Every player gets a 4-digit tag from the server for as
+long as they are connected, so `Harry#2048` names exactly one person even
+when the server is full of Harrys (it is the default name). The tag is
+always in the player list; in chat and over a head it only shows when the
+name alone is not enough: on Global when someone else online has the same
+name, on Level when someone on your map does, on Coop when someone in your
+game does. A name that is unique works everywhere without its tag. Tags are
+new every time you connect, and are only kept on the server.
+
+**Name colours.** Every other player's name gets a random colour that reads
+well over the fog and over dark rooms: over their head, in chat and in the
+player list. The colours are picked on your own screen; nobody else sees
+them. `/color` changes them.
+
+**Speech.** A line someone near you says on Global, Level or Coop shows over
+their head, in their colour, for about five seconds.
 
 ---
 
@@ -197,7 +216,65 @@ the box opens in a session it says "Press Tab to switch channels". On a touchscr
 the `M` menu hides the feed (the box still opens on its key, and shows the
 lines while it is open); the console's `chat hide` / `chat show` do the same.
 Racial slurs are masked with asterisks on the way in and on the way out, on
-the server and in the game.
+the server and in the game. Global takes one message every 10 seconds from
+each player; the box says how long is left and keeps what you typed.
+
+**Commands.** A line starting with `/` is a command. `/help` lists them and
+`/help <command>` explains one. A name can be typed as it is shown
+(`/whisper Harry Mason hello` works, so does `/whisper "Harry Mason" hello`),
+and needs its tag only when several players share it.
+
+| command | what |
+|---|---|
+| `/invite <name>` | invite a player into your game (below) |
+| `/whisper <name> <message>` | a private message (`/w`, `/msg` too) |
+| `/join <code>` | join the room with that code |
+| `/kick <name>` | remove a player from the game or lobby you host |
+| `/block <name>`, `/blocklist`, `/unblock <name or number>` | blocks (below) |
+| `/report <name> "reason"` | report a player to the server admin |
+| `/color <color>`, `/color <name> <color>` | your name colour, or someone else's, on your screen |
+| `/accept`, `/decline` | answer an invite |
+
+Colours are red, orange, yellow, lime, green, teal, cyan, sky, blue, purple,
+magenta, pink, gold, peach, mint, lavender, white, silver, or `#RRGGBB`.
+
+**Private messages** go through the server and are not logged there. The
+server keeps the last few between any two players in memory only, and
+writes them out only if one of them uses `/report`, together with the reason.
+
+**Blocks** are yours alone. A blocked player disappears from your world:
+you do not see them, their chat, their messages to you or their invites, and
+they cannot join games you host (they are told "Unable to join this room.");
+blocking someone who is in your game removes them. They are not told
+anything, and nothing changes on their side. In someone else's game they are
+still there, but what they say is not shown. A block covers everyone on that
+player's internet address, and the list is kept in `config.cfg`
+(`online_block_N`), with the name they had when you blocked them. The
+address itself never reaches your game: the server hands out an unreadable
+token for it instead.
+
+**Invites.** `/invite`, or **Invite** in the `M` menu. Hosting a game on the
+server (in the lobby or already playing), the invite goes straight out and
+whoever accepts joins you where you are, up to the player count you set. In a
+single-player game, the menu asks first:
+
+- **Host From Here** opens your game to other players on the spot, with the
+  settings you used last, and the invite goes out.
+- **Return to Lobby** offers to save, then shows the lobby settings (players,
+  room list, the rest; where it is hosted is the server) with **Start From:
+  Where I Am**, and opens the lobby on the title with the invite sent.
+
+You can also host from the menus first, start the game, and invite people as
+you meet them. A player who accepts holds a seat until they arrive, so two
+people cannot take the last one; whoever is too late is told the game is
+full. Accepting in a single-player game offers to save first. A player in
+someone else's co-op game can accept too (they leave it); a host with other
+players in their game is busy. A split-screen pair needs two seats: Player 2
+(shown as `Name (1)`, never invited on their own) follows Player 1
+automatically.
+
+**The voice wheel** (`B`) works in single player as well. Only the players
+in your co-op game ever hear it; the living world does not.
 
 ---
 

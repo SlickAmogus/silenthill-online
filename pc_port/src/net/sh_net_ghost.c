@@ -54,6 +54,7 @@
 #include "sh_net_art.h"
 #include "sh_net_ui.h"
 #include "sh_net_session.h" /* co-op peers drawn alongside living-world ghosts */
+#include "sh_net_social.h"  /* name colours, tags, blocks, speech */
 #include "sh_net_steam.h"   /* ShSteam_SelfId */
 #include "sh_log.h"
 #include "stb_image.h"
@@ -764,7 +765,7 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
 #define NAMEPLATE_SLOTS 8
 #define NAMEPLATE_PX    26
 
-static struct { char name[SHNET_NAME_MAX]; int w, h; int used; } s_np[NAMEPLATE_SLOTS];
+static struct { char name[SHNET_NAME_MAX + 8]; int w, h; int used; } s_np[NAMEPLATE_SLOTS];
 static int s_npNext;
 
 /* Slot index (0..NAMEPLATE_SLOTS-1) holding `name`, baking + registering it if
@@ -797,8 +798,7 @@ static int ShNetG_NameplateSlot(const char* name)
             return -1;
         }
         free(rgba);
-        strncpy(s_np[idx].name, name, SHNET_NAME_MAX - 1);
-        s_np[idx].name[SHNET_NAME_MAX - 1] = '\0';
+        snprintf(s_np[idx].name, sizeof(s_np[idx].name), "%s", name);
         s_np[idx].w    = w;
         s_np[idx].h    = h;
         s_np[idx].used = 1;
@@ -807,7 +807,115 @@ static int ShNetG_NameplateSlot(const char* name)
     }
 }
 
-static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name,
+static int ShNetG_SameName(const char* a, const char* b)
+{
+    for (;; a++, b++)
+    {
+        int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
+        int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (ca != cb) return 0;
+        if (!ca) return 1;
+    }
+}
+
+/* A name's colour as a vertex colour: the glyphs are white, and 128 is a
+ * texture drawn as it is. */
+static void ShNetG_NameColor(unsigned long long id, u8* r, u8* g, u8* b)
+{
+    float fr, fg, fb;
+    ShSocial_Color(id, &fr, &fg, &fb);
+    *r = (u8)(fr * 128.0f);
+    *g = (u8)(fg * 128.0f);
+    *b = (u8)(fb * 128.0f);
+}
+
+/* Speech over heads: what a nearby player said in chat, baked like the
+ * nameplates into a pool range of its own (two lines per bubble). */
+#define BUBBLE_SLOT0     464
+#define BUBBLE_SLOTS     16
+#define BUBBLE_PX        24
+#define BUBBLE_LINE_MAX  34
+static struct { char text[BUBBLE_LINE_MAX + 4]; int w, h; int used; } s_bb[BUBBLE_SLOTS];
+static int s_bbNext;
+
+static int ShNetG_BubbleSlot(const char* text)
+{
+    int            i, idx, w = 0, h = 0;
+    unsigned char* rgba;
+    for (i = 0; i < BUBBLE_SLOTS; i++)
+    {
+        if (s_bb[i].used && strcmp(s_bb[i].text, text) == 0) return i;
+    }
+    idx  = s_bbNext;
+    rgba = ShNetUi_RasterizeText(text, BUBBLE_PX, &w, &h);
+    if (!rgba) return -1;
+    if (HiresOverride_PoolSlotRegisterRGBA(BUBBLE_SLOT0 + idx, 0, rgba, w, h, w, h) != 0)
+    {
+        free(rgba);
+        return -1;
+    }
+    free(rgba);
+    snprintf(s_bb[idx].text, sizeof(s_bb[idx].text), "%s", text);
+    s_bb[idx].w    = w;
+    s_bb[idx].h    = h;
+    s_bb[idx].used = 1;
+    s_bbNext       = (s_bbNext + 1) % BUBBLE_SLOTS;
+    return idx;
+}
+
+static POLY_FT4* ShNetG_DrawBubble(GsOT* ot, POLY_FT4* poly, unsigned long long id, int gx, int gy, int gz)
+{
+    float       a = 1.0f;
+    const char* t = ShSocial_Speech(id, &a);
+    char        lines[2][BUBBLE_LINE_MAX + 4];
+    int         n = 0, k;
+    u8          cr, cg, cb;
+    if (!t || a <= 0.0f || (g_SysWork.sysFlags & SysFlag_CutsceneActive)) return poly;
+    /* Two lines at most, broken at a space; a longer line ends in "...". */
+    while (*t && n < 2)
+    {
+        int len = (int)strlen(t);
+        while (*t == ' ') { t++; len--; }
+        if (len <= 0) break;
+        if (len > BUBBLE_LINE_MAX)
+        {
+            int cut = BUBBLE_LINE_MAX;
+            while (cut > BUBBLE_LINE_MAX / 2 && t[cut] != ' ') cut--;
+            if (t[cut] != ' ') cut = BUBBLE_LINE_MAX;
+            if (n == 1)
+            {
+                snprintf(lines[n++], sizeof(lines[0]), "%.*s...", cut, t);
+                break;
+            }
+            len = cut;
+        }
+        snprintf(lines[n++], sizeof(lines[0]), "%.*s", len, t);
+        t += len;
+    }
+    ShNetG_NameColor(id, &cr, &cg, &cb);
+    for (k = 0; k < n; k++)
+    {
+        int     idx = ShNetG_BubbleSlot(lines[k]);
+        VECTOR3 centre, axisU, axisV;
+        s32     halfH = Q12(0.12f), halfW;
+        if (idx < 0) continue;
+        halfW     = (s32)(((long long)halfH * s_bb[idx].w) / (s_bb[idx].h ? s_bb[idx].h : 1));
+        centre.vx = gx;
+        centre.vy = gy - Q12(2.34f) - (n - 1 - k) * Q12(0.25f);
+        centre.vz = gz;
+        axisU.vx  = (halfW * GsWSMATRIX.m[0][0]) >> 12;
+        axisU.vy  = (halfW * GsWSMATRIX.m[0][1]) >> 12;
+        axisU.vz  = (halfW * GsWSMATRIX.m[0][2]) >> 12;
+        axisV.vx  = 0;
+        axisV.vy  = halfH;
+        axisV.vz  = 0;
+        poly = ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV, SHNET_CLUT(BUBBLE_SLOT0 + idx),
+                               s_bb[idx].w - 1, s_bb[idx].h - 1, cr, cg, cb, (int)(255.0f * a));
+    }
+    return poly;
+}
+
+static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name, unsigned long long id,
                                       int gx, int gy, int gz)
 {
     int     idx = ShNetG_NameplateSlot(name);
@@ -816,11 +924,13 @@ static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name
     VECTOR3 axisV;
     s32     halfH = Q12(0.16f);
     s32     halfW;
+    u8      cr, cg, cb;
 
     if (idx < 0)
     {
         return poly;
     }
+    ShNetG_NameColor(id, &cr, &cg, &cb);
     halfW = (s32)(((long long)halfH * s_np[idx].w) / (s_np[idx].h ? s_np[idx].h : 1));
 
     /* Just above the head. Feet are at gy, PSX -Y is up, the body is ~1.8m. */
@@ -836,7 +946,7 @@ static POLY_FT4* ShNetG_DrawNameplate(GsOT* ot, POLY_FT4* poly, const char* name
 
     return ShNetG_EmitQuad(ot, poly, &centre, &axisU, &axisV,
                            SHNET_CLUT(NAMEPLATE_SLOT0 + idx),
-                           s_np[idx].w - 1, s_np[idx].h - 1, 235, 230, 205, 255);
+                           s_np[idx].w - 1, s_np[idx].h - 1, cr, cg, cb, 255);
 }
 
 /* An untextured quad in world space, for the partner health bars. The same
@@ -1125,9 +1235,19 @@ void ShNet_DrawWorld(GsOT* ot)
                 if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
                     m->name[0] && m->name[0] != '?' && !(g_SysWork.sysFlags & SysFlag_CutsceneActive))
                 {
-                    poly = ShNetG_DrawNameplate(ot, poly, m->name, gx, gy, gz);
+                    /* The #tag only when two in the room share the name. */
+                    char label[SHNET_NAME_MAX + 8];
+                    int  k2, same = 0, mc = ShSession_MemberCount();
+                    for (k2 = 0; k2 < mc; k2++)
+                    {
+                        const ShSessionMember* o = ShSession_Member(k2);
+                        if (o && ShNetG_SameName(o->name, m->name)) same++;
+                    }
+                    ShSocial_FormatName(m->name, (unsigned int)m->tag, same > 1, label, (int)sizeof(label));
+                    poly = ShNetG_DrawNameplate(ot, poly, label, m->steamId, gx, gy, gz);
                     namesDrawn++;
                 }
+                poly = ShNetG_DrawBubble(ot, poly, m->steamId, gx, gy, gz);
                 if ((g_PcConfig.onlineHealthBars & 2) && m->healthPct1 != 0 && !(g_SysWork.sysFlags & SysFlag_CutsceneActive))
                 {
                     poly = ShNetG_DrawHealthBar(ot, poly, gx, gy, gz, m->healthPct1 - 1);
@@ -1192,6 +1312,11 @@ void ShNet_DrawWorld(GsOT* ot)
                 break;
             }
             if (!g || !ShNet_GhostInterp(i, &gx, &gy, &gz, &grot))
+            {
+                continue;
+            }
+            /* Someone we blocked is simply not in our world. */
+            if (ShSocial_BlockedToken(g->token))
             {
                 continue;
             }
@@ -1294,9 +1419,12 @@ void ShNet_DrawWorld(GsOT* ot)
             if (g_PcConfig.onlineNameplates && namesDrawn < NAMEPLATE_SLOTS &&
                 g->name[0] && g->name[0] != '?')
             {
-                poly = ShNetG_DrawNameplate(ot, poly, g->name, gx, gy, gz);
+                char label[SHNET_NAME_MAX + 8];
+                ShSocial_FormatName(g->name, g->tag, (g->rf & SHNET_RF_DUPNAME) != 0, label, (int)sizeof(label));
+                poly = ShNetG_DrawNameplate(ot, poly, label, g->playerId, gx, gy, gz);
                 namesDrawn++;
             }
+            poly = ShNetG_DrawBubble(ot, poly, g->playerId, gx, gy, gz);
         }
     }
 
