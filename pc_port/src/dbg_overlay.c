@@ -1944,15 +1944,15 @@ void DbgOverlay_Update(void)
     {
         static SDL_Scancode s_scList = SDL_SCANCODE_UNKNOWN;
         static SDL_Scancode s_scMemo = SDL_SCANCODE_UNKNOWN;
-        static int          s_netRes  = 0;
+        static int          s_netGen  = -1; /* resolved for this g_PcBindsGen */
         static int          s_prevList = 0;
         static int          s_prevMemo = 0;
         int curList, curMemo;
 
-        if (!s_netRes) {
+        if (s_netGen != g_PcBindsGen) {
             s_scList = SDL_GetScancodeFromName(g_PcConfig.keyOnlinePlayers);
             s_scMemo = SDL_GetScancodeFromName(g_PcConfig.keyOnlineMemo);
-            s_netRes = 1;
+            s_netGen = g_PcBindsGen;
         }
         curList = (s_scList != SDL_SCANCODE_UNKNOWN) ? ks[s_scList] : 0;
         curMemo = (s_scMemo != SDL_SCANCODE_UNKNOWN) ? ks[s_scMemo] : 0;
@@ -1961,11 +1961,11 @@ void DbgOverlay_Update(void)
          * has the keyboard or the console is up. */
         {
             static SDL_Scancode s_scVoice = SDL_SCANCODE_UNKNOWN;
-            static int          s_voiceRes = 0;
+            static int          s_voiceGen = -1;
             extern void         ShNetVoice_KeyHeld(int held);
-            if (!s_voiceRes) {
+            if (s_voiceGen != g_PcBindsGen) {
                 s_scVoice  = g_PcConfig.keyVocalize[0] ? SDL_GetScancodeFromName(g_PcConfig.keyVocalize) : SDL_SCANCODE_B;
-                s_voiceRes = 1;
+                s_voiceGen = g_PcBindsGen;
             }
             ShNetVoice_KeyHeld(s_scVoice != SDL_SCANCODE_UNKNOWN && ks[s_scVoice] && !textWasOpen &&
                                !g_PcConsoleInputActive && !ctrlHeld);
@@ -2032,7 +2032,7 @@ void DbgOverlay_Update(void)
         extern void ShNetChat_CycleScope(void);
         static SDL_Scancode s_scChatG = SDL_SCANCODE_UNKNOWN;
         static SDL_Scancode s_scChatC = SDL_SCANCODE_UNKNOWN;
-        static int          s_chatRes  = 0;
+        static int          s_chatGen  = -1;
         static int          s_prevChatG = 0, s_prevChatC = 0;
         extern int Pc_CoopMenu_Editing(void);
         extern int Pc_BindPanel_IsOpen(void);
@@ -2045,10 +2045,10 @@ void DbgOverlay_Update(void)
         int inMenus = g_GameWork.gameState == GameState_MainMenu && ShNetChat_Available() &&
                       !Pc_CoopMenu_Editing() && !Pc_BindPanel_IsOpen();
 
-        if (!s_chatRes) {
+        if (s_chatGen != g_PcBindsGen) {
             s_scChatG = SDL_GetScancodeFromName(g_PcConfig.keyChatGame);
             s_scChatC = SDL_GetScancodeFromName(g_PcConfig.keyChatCycle);
-            s_chatRes = 1;
+            s_chatGen = g_PcBindsGen;
         }
 
         if (ShNetChat_IsOpen()) {
