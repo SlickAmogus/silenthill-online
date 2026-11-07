@@ -77,6 +77,7 @@ typedef struct
     unsigned int   u0;
     unsigned short w0, w1, w2, w3;
     short          s0;
+    char           str[SHNET_CHAT_MAX]; /* LOOKUP query, WHISPER text, REPORT reason */
 } ShNetCmd;
 
 #define SHNET_CMD_RING 32
@@ -113,12 +114,19 @@ static struct
     struct { int scope; char text[SHNET_CHAT_MAX]; } chatOut[SHNET_CHAT_RING];
     int          chatOutHead, chatOutTail;
     struct { int scope; unsigned int fromId; char name[SHNET_NAME_MAX];
-             char text[SHNET_CHAT_MAX]; } chatIn[SHNET_CHAT_RING];
+             char text[SHNET_CHAT_MAX]; unsigned int tag, rf, token; } chatIn[SHNET_CHAT_RING];
     int          chatInHead, chatInTail;
 
     /* Living-world invites in (SHNET_MSG_INVITE), drained by sh_net_invite.c. */
-    struct { unsigned int fromId; int action; int code; char name[SHNET_NAME_MAX]; } invIn[8];
+    struct { unsigned int fromId; int action; int code; int extra; char name[SHNET_NAME_MAX]; } invIn[8];
     int          invInHead, invInTail;
+
+    /* Social answers in: lookups and whispers, drained by sh_net_social.c. */
+    ShNetLookup  lookIn[8];
+    int          lookInHead, lookInTail;
+    ShNetWhisper pmIn[16];
+    int          pmInHead, pmInTail;
+    unsigned int selfTag;
 
     int          localValid;
     int          localMap;
@@ -303,6 +311,7 @@ static void ShNetW_SendHello(ShNetWorker* w, int charaId)
     ShnPutU32(buf, &off, ShnPasswordProof(s_password, w->cookie));
     ShnPutU32(buf, &off, w->cookie);
     ShnPutU32(buf, &off, s_uid);
+    ShnPutU32(buf, &off, SHNET_CAP_SOCIAL);
 
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), w->session);
     ShNetW_Send(w, buf, off);
@@ -365,11 +374,27 @@ static void ShNetW_SendMemoQuery(ShNetWorker* w, int mapIdx)
 
 static void ShNetW_SendCmd(ShNetWorker* w, const ShNetCmd* c)
 {
-    unsigned char buf[SHNET_HDR_SIZE + 64];
+    unsigned char buf[SHNET_HDR_SIZE + 8 + SHNET_CHAT_MAX];
     int           off = SHNET_HDR_SIZE;
 
     switch (c->kind)
     {
+    case SHNET_MSG_LOOKUP:
+        ShnPutU16(buf, &off, c->w0);                /* request id */
+        ShnPutU16(buf, &off, 0);
+        ShnPutStr(buf, &off, c->str, SHNET_QUERY_MAX);
+        break;
+
+    case SHNET_MSG_WHISPER:
+        ShnPutU32(buf, &off, c->u0);
+        ShnPutStr(buf, &off, c->str, SHNET_CHAT_MAX);
+        break;
+
+    case SHNET_MSG_REPORT:
+        ShnPutU32(buf, &off, c->u0);
+        ShnPutStr(buf, &off, c->str, SHNET_REPORT_MAX);
+        break;
+
     case SHNET_MSG_MEMO_PLACE:
         ShnPutU8(buf, &off, (shn_u8)c->a);          /* kind */
         ShnPutU8(buf, &off, (shn_u8)c->b);          /* mapIdx */
@@ -395,7 +420,7 @@ static void ShNetW_SendCmd(ShNetWorker* w, const ShNetCmd* c)
     case SHNET_MSG_INVITE:
         ShnPutU32(buf, &off, c->u0);                /* to */
         ShnPutU8(buf, &off, (shn_u8)c->a);          /* SHNET_INV_* */
-        ShnPutU8(buf, &off, 0);
+        ShnPutU8(buf, &off, (shn_u8)c->b);          /* seats on a yes, SHNET_INVJ_* on a JOIN */
         ShnPutU16(buf, &off, c->w0);                /* room code (JOIN) */
         break;
 
@@ -538,6 +563,9 @@ static void ShNetW_NameGhosts(void)
             if (s_sh.peers[j].playerId == s_sh.ghosts[i].playerId)
             {
                 SDL_strlcpy(s_sh.ghosts[i].name, s_sh.peers[j].name, SHNET_NAME_MAX);
+                s_sh.ghosts[i].tag   = s_sh.peers[j].tag;
+                s_sh.ghosts[i].rf    = s_sh.peers[j].rf;
+                s_sh.ghosts[i].token = s_sh.peers[j].token;
                 break;
             }
         }
@@ -559,6 +587,7 @@ static void ShNetW_HandleWelcome(ShNetWorker* w, const unsigned char* p, int len
     s_sh.serverFlags = (int)ShnGetU16(p, &off);
     ShnGetStr(p, &off, SHNET_SERVER_MAX, s_sh.serverName, sizeof(s_sh.serverName));
     ShnGetStr(p, &off, SHNET_MOTD_MAX, s_sh.motd, sizeof(s_sh.motd));
+    s_sh.selfTag = (len >= off + 4) ? ShnGetU16(p, &off) : 0;
     ShnSanitizeText(s_sh.serverName);
     ShnSanitizeText(s_sh.motd);
 
@@ -629,7 +658,7 @@ static void ShNetW_HandleSnapshot(const unsigned char* p, int len, unsigned int 
 static void ShNetW_HandleRoster(ShNetWorker* w, const unsigned char* p, int len)
 {
     int off = 0;
-    int total, count, first, i;
+    int total, count, first, i, entry;
 
     if (len < 8)
     {
@@ -638,10 +667,12 @@ static void ShNetW_HandleRoster(ShNetWorker* w, const unsigned char* p, int len)
     total = (int)ShnGetU16(p, &off);
     count = (int)ShnGetU16(p, &off);
     first = (int)ShnGetU16(p, &off);
-    (void)ShnGetU16(p, &off);
+    /* A server that read our caps says how long its entries are. */
+    entry = (int)ShnGetU16(p, &off);
+    if (entry != SHNET_ROSTER_ENTRY_SOCIAL) entry = SHNET_ROSTER_ENTRY;
 
-    if (count < 0 || count > SHNET_ROSTER_MAX ||
-        8 + count * SHNET_ROSTER_ENTRY > len)
+    if (count < 0 || count > (SHNET_MAX_PAYLOAD - 8) / SHNET_ROSTER_ENTRY ||
+        8 + count * entry > len)
     {
         return;
     }
@@ -666,6 +697,13 @@ static void ShNetW_HandleRoster(ShNetWorker* w, const unsigned char* p, int len)
         tmp.uptimeMin = (int)ShnGetU16(p, &off);
         ShnGetStr(p, &off, SHNET_NAME_MAX, tmp.name, SHNET_NAME_MAX);
         ShNet_SanitizeName(tmp.name);
+        if (entry == SHNET_ROSTER_ENTRY_SOCIAL)
+        {
+            tmp.tag   = ShnGetU16(p, &off);
+            tmp.rf    = ShnGetU8(p, &off);
+            (void)ShnGetU8(p, &off);
+            tmp.token = ShnGetU32(p, &off);
+        }
 
         if (s_sh.peerCount < SHNET_MAX_PEERS)
         {
@@ -923,7 +961,7 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
                 }
                 s_sh.invIn[s_sh.invInHead].fromId = ShnGetU32(pay, &off);
                 s_sh.invIn[s_sh.invInHead].action = (int)ShnGetU8(pay, &off);
-                (void)ShnGetU8(pay, &off);
+                s_sh.invIn[s_sh.invInHead].extra  = (int)ShnGetU8(pay, &off);
                 s_sh.invIn[s_sh.invInHead].code   = (int)ShnGetU16(pay, &off);
                 ShnGetStr(pay, &off, SHNET_NAME_MAX, s_sh.invIn[s_sh.invInHead].name, SHNET_NAME_MAX);
                 ShNet_SanitizeName(s_sh.invIn[s_sh.invInHead].name);
@@ -950,7 +988,59 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
                 ShnGetStr(pay, &off, SHNET_CHAT_MAX, s_sh.chatIn[s_sh.chatInHead].text, SHNET_CHAT_MAX);
                 ShnSanitizeText(s_sh.chatIn[s_sh.chatInHead].text);
                 ShNet_SanitizeName(s_sh.chatIn[s_sh.chatInHead].name);
+                s_sh.chatIn[s_sh.chatInHead].tag = s_sh.chatIn[s_sh.chatInHead].rf = s_sh.chatIn[s_sh.chatInHead].token = 0;
+                if (payLen >= off + 8)
+                {
+                    s_sh.chatIn[s_sh.chatInHead].tag   = ShnGetU16(pay, &off);
+                    s_sh.chatIn[s_sh.chatInHead].rf    = ShnGetU8(pay, &off);
+                    (void)ShnGetU8(pay, &off);
+                    s_sh.chatIn[s_sh.chatInHead].token = ShnGetU32(pay, &off);
+                }
                 s_sh.chatInHead = next;
+            }
+            break;
+        case SHNET_MSG_LOOKUP:
+            if (payLen >= 4 + SHNET_LOOKUP_ENTRY)
+            {
+                int          off  = 0;
+                int          next = (s_sh.lookInHead + 1) % 8;
+                ShNetLookup* l    = &s_sh.lookIn[s_sh.lookInHead];
+                if (next == s_sh.lookInTail) s_sh.lookInTail = (s_sh.lookInTail + 1) % 8;
+                memset(l, 0, sizeof(*l));
+                l->req      = ShnGetU16(pay, &off);
+                l->status   = ShnGetU8(pay, &off);
+                l->matches  = ShnGetU8(pay, &off);
+                l->playerId = ShnGetU32(pay, &off);
+                l->tag      = ShnGetU16(pay, &off);
+                l->rf       = ShnGetU8(pay, &off);
+                l->mapIdx   = ShnGetU8(pay, &off);
+                if (l->mapIdx == 0xFF) l->mapIdx = -1;
+                l->token    = ShnGetU32(pay, &off);
+                ShnGetStr(pay, &off, SHNET_NAME_MAX, l->name, SHNET_NAME_MAX);
+                ShNet_SanitizeName(l->name);
+                l->room     = ShnGetU16(pay, &off);
+                l->roomCount = ShnGetU8(pay, &off);
+                l->roomMax  = ShnGetU8(pay, &off);
+                s_sh.lookInHead = next;
+            }
+            break;
+        case SHNET_MSG_WHISPER:
+            if (payLen >= 12 + SHNET_NAME_MAX + SHNET_CHAT_MAX)
+            {
+                int           off  = 0;
+                int           next = (s_sh.pmInHead + 1) % 16;
+                ShNetWhisper* m    = &s_sh.pmIn[s_sh.pmInHead];
+                if (next == s_sh.pmInTail) s_sh.pmInTail = (s_sh.pmInTail + 1) % 16;
+                m->otherId = ShnGetU32(pay, &off);
+                m->tag     = ShnGetU16(pay, &off);
+                m->dir     = ShnGetU8(pay, &off);
+                m->rf      = ShnGetU8(pay, &off);
+                m->token   = ShnGetU32(pay, &off);
+                ShnGetStr(pay, &off, SHNET_NAME_MAX, m->name, SHNET_NAME_MAX);
+                ShnGetStr(pay, &off, SHNET_CHAT_MAX, m->text, SHNET_CHAT_MAX);
+                ShNet_SanitizeName(m->name);
+                ShnSanitizeText(m->text);
+                s_sh.pmInHead = next;
             }
             break;
         case SHNET_MSG_ROOM_JOINED:
@@ -1865,6 +1955,12 @@ void ShNet_SendChat(int scope, const char* text)
 int ShNet_PopChat(int* outScope, unsigned int* outFromId, char* outName, int nameCap,
                   char* outText, int textCap)
 {
+    return ShNet_PopChatEx(outScope, outFromId, outName, nameCap, outText, textCap, NULL, NULL, NULL);
+}
+
+int ShNet_PopChatEx(int* outScope, unsigned int* outFromId, char* outName, int nameCap,
+                    char* outText, int textCap, unsigned int* outTag, unsigned int* outRf, unsigned int* outToken)
+{
     int got = 0;
     if (!s_enabled || !s_lock || !outText || textCap <= 0)
     {
@@ -1873,6 +1969,9 @@ int ShNet_PopChat(int* outScope, unsigned int* outFromId, char* outName, int nam
     SDL_LockMutex(s_lock);
     if (s_sh.chatInTail != s_sh.chatInHead)
     {
+        if (outTag)    *outTag    = s_sh.chatIn[s_sh.chatInTail].tag;
+        if (outRf)     *outRf     = s_sh.chatIn[s_sh.chatInTail].rf;
+        if (outToken)  *outToken  = s_sh.chatIn[s_sh.chatInTail].token;
         if (outScope)  *outScope  = s_sh.chatIn[s_sh.chatInTail].scope;
         if (outFromId) *outFromId = s_sh.chatIn[s_sh.chatInTail].fromId;
         if (outName && nameCap > 0)
@@ -1887,6 +1986,11 @@ int ShNet_PopChat(int* outScope, unsigned int* outFromId, char* outName, int nam
 
 int ShNet_SendInvite(unsigned int toId, int action, int code)
 {
+    return ShNet_SendInviteEx(toId, action, code, 0);
+}
+
+int ShNet_SendInviteEx(unsigned int toId, int action, int code, int extra)
+{
     ShNetCmd c;
     if (!s_enabled || !s_lock || toId == 0)
     {
@@ -1896,11 +2000,90 @@ int ShNet_SendInvite(unsigned int toId, int action, int code)
     c.kind = SHNET_MSG_INVITE;
     c.u0   = toId;
     c.a    = action;
+    c.b    = extra;
     c.w0   = (unsigned short)code;
     return ShNet_QueueCmd(&c);
 }
 
+int ShNet_SendLookup(int req, const char* query)
+{
+    ShNetCmd c;
+    if (!s_enabled || !s_lock || !query) return 0;
+    memset(&c, 0, sizeof(c));
+    c.kind = SHNET_MSG_LOOKUP;
+    c.w0   = (unsigned short)req;
+    SDL_strlcpy(c.str, query, SHNET_QUERY_MAX);
+    return ShNet_QueueCmd(&c);
+}
+
+int ShNet_SendWhisper(unsigned int toId, const char* text)
+{
+    ShNetCmd c;
+    if (!s_enabled || !s_lock || !toId || !text || !text[0]) return 0;
+    memset(&c, 0, sizeof(c));
+    c.kind = SHNET_MSG_WHISPER;
+    c.u0   = toId;
+    SDL_strlcpy(c.str, text, SHNET_CHAT_MAX);
+    return ShNet_QueueCmd(&c);
+}
+
+int ShNet_SendReport(unsigned int who, const char* reason)
+{
+    ShNetCmd c;
+    if (!s_enabled || !s_lock || !who) return 0;
+    memset(&c, 0, sizeof(c));
+    c.kind = SHNET_MSG_REPORT;
+    c.u0   = who;
+    SDL_strlcpy(c.str, reason ? reason : "", SHNET_REPORT_MAX);
+    return ShNet_QueueCmd(&c);
+}
+
+int ShNet_TakeLookup(ShNetLookup* out)
+{
+    int got = 0;
+    if (!s_enabled || !s_lock || !out) return 0;
+    SDL_LockMutex(s_lock);
+    if (s_sh.lookInTail != s_sh.lookInHead)
+    {
+        *out = s_sh.lookIn[s_sh.lookInTail];
+        s_sh.lookInTail = (s_sh.lookInTail + 1) % 8;
+        got = 1;
+    }
+    SDL_UnlockMutex(s_lock);
+    return got;
+}
+
+int ShNet_TakeWhisper(ShNetWhisper* out)
+{
+    int got = 0;
+    if (!s_enabled || !s_lock || !out) return 0;
+    SDL_LockMutex(s_lock);
+    if (s_sh.pmInTail != s_sh.pmInHead)
+    {
+        *out = s_sh.pmIn[s_sh.pmInTail];
+        s_sh.pmInTail = (s_sh.pmInTail + 1) % 16;
+        got = 1;
+    }
+    SDL_UnlockMutex(s_lock);
+    return got;
+}
+
+unsigned int ShNet_SelfTag(void)
+{
+    unsigned int t;
+    if (!s_lock) return 0;
+    SDL_LockMutex(s_lock);
+    t = s_sh.selfTag;
+    SDL_UnlockMutex(s_lock);
+    return t;
+}
+
 int ShNet_TakeInvite(unsigned int* outFromId, int* outAction, int* outCode, char* outName, int nameCap)
+{
+    return ShNet_TakeInviteEx(outFromId, outAction, outCode, outName, nameCap, NULL);
+}
+
+int ShNet_TakeInviteEx(unsigned int* outFromId, int* outAction, int* outCode, char* outName, int nameCap, int* outExtra)
 {
     int got = 0;
     if (!s_enabled || !s_lock)
@@ -1913,6 +2096,7 @@ int ShNet_TakeInvite(unsigned int* outFromId, int* outAction, int* outCode, char
         if (outFromId) *outFromId = s_sh.invIn[s_sh.invInTail].fromId;
         if (outAction) *outAction = s_sh.invIn[s_sh.invInTail].action;
         if (outCode)   *outCode   = s_sh.invIn[s_sh.invInTail].code;
+        if (outExtra)  *outExtra  = s_sh.invIn[s_sh.invInTail].extra;
         if (outName && nameCap > 0)
             SDL_strlcpy(outName, s_sh.invIn[s_sh.invInTail].name, (size_t)nameCap);
         s_sh.invInTail = (s_sh.invInTail + 1) % 8;

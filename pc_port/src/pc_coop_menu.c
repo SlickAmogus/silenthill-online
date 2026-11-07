@@ -54,8 +54,23 @@ typedef enum
     COOP_PAGE_INVITE,       /* accepting an invite: save first, or go */
     COOP_PAGE_SAVES,        /* Start From: every save to pick from */
     COOP_PAGE_GAMEOVER,     /* host, after a co-op game over: Yes / Load Game / Quit Without Saving */
-    COOP_PAGE_SETTINGS      /* phones and the browser: server, living world, name */
+    COOP_PAGE_SETTINGS,     /* phones and the browser: server, living world, name */
+    COOP_PAGE_INVITE_HOST,  /* inviting from a single-player game: Host From Here / Return to Lobby */
+    COOP_PAGE_LOBBY_SAVE    /* Return to Lobby: save first? */
 } CoopPage;
+
+/* The host setup reached from a running single-player game (Return to Lobby):
+ * the room is on the server (an invite is waiting on it), so the Host on row
+ * is gone, and Start From can be the game as it stands. */
+static int s_fromGame;
+/* After the warm reset to the title: open the lobby there. */
+static int s_titleHost;        /* host with the settings chosen in the game */
+static int s_titleLobby;       /* we are in a room already: show its lobby */
+static int s_titleJoin;        /* join this room code */
+static int s_lobbySavePhase;   /* Return to Lobby's save screen: 1 asked for, 2 in it */
+static unsigned int s_lobbySaveMs;
+#define COOP_LOAD_HERE (-2)    /* Start From: where I am, in the game I left */
+static void Coop_StartHosting(void);
 
 static unsigned long long s_playerId; /* the member COOP_PAGE_PLAYER is about */
 static char               s_playerName[SHSESSION_NAME_MAX];
@@ -109,13 +124,19 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 
 #define COOP_DEFAULT_SERVER "server.sh1pc.com"
 
-enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_MUSIC, COOP_ROOT_BACK };
-#define COOP_ROOT_MAX 6
+enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_MUSIC, COOP_ROOT_BACK,
+       COOP_ROOT_ACCEPT, COOP_ROOT_DECLINE };
+#define COOP_ROOT_MAX 8
 
 /* The title-menu rows this platform shows, in order. */
 static int Coop_RootRows(int* rows)
 {
     int n = 0;
+    if (ShNetInvite_Incoming(NULL, 0))
+    {
+        rows[n++] = COOP_ROOT_ACCEPT;
+        rows[n++] = COOP_ROOT_DECLINE;
+    }
     rows[n++] = COOP_ROOT_HOST;
     rows[n++] = COOP_ROOT_JOIN;
     if (!COOP_MOBILE && !COOP_WEB) rows[n++] = COOP_ROOT_SPLIT;
@@ -430,12 +451,14 @@ static void Coop_RefreshSaves(void)
     SH_DBG("[COOPSAVE] %d save(s) offered for Start From", s_saveCount);
 }
 
-/* New Game, then the saves newest first; wraps both ways. */
+/* New Game, then the saves newest first; wraps both ways. From a running
+ * game, Where I Am comes first. */
 static void Coop_StepSave(int dir)
 {
+    const int first = s_fromGame ? COOP_LOAD_HERE : -1;
     s_loadIdx += dir;
-    if (s_loadIdx >= s_saveCount) s_loadIdx = -1;
-    if (s_loadIdx < -1)           s_loadIdx = s_saveCount - 1;
+    if (s_loadIdx >= s_saveCount) s_loadIdx = first;
+    if (s_loadIdx < first)        s_loadIdx = s_saveCount - 1;
 }
 
 static void Coop_CycleSave(void)
@@ -449,6 +472,8 @@ static void Coop_SaveRowText(char* out, int cap)
 {
     if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
         snprintf(out, cap, "Start From:  %s", s_saves[s_loadIdx].where);
+    else if (s_loadIdx == COOP_LOAD_HERE)
+        snprintf(out, cap, "Start From:  Where I Am");
     else
         snprintf(out, cap, "Start From:  New Game");
 }
@@ -617,17 +642,32 @@ static void Coop_EnterHostSetup(void)
     s_setMaxPlayers = g_PcConfig.onlineSteamMaxPlayers;
     if (s_setMaxPlayers < 2) s_setMaxPlayers = 2;
     if (s_setMaxPlayers > 4) s_setMaxPlayers = 4;
-    s_setPublic   = 1; /* "Room List: Listed" by default so friends can browse to you */
+    s_setPublic   = g_PcConfig.onlineSteamPublic ? 1 : 0; /* what this host chose last time */
     s_setFps      = 60; /* co-op poses stream every frame; 60 is the smooth default */
     s_setLiving   = g_PcConfig.onlineCoopLiving ? 1 : 0; /* private unless the host chose otherwise */
     Coop_RefreshSaves(); /* default: start a fresh game */
+    if (s_fromGame) s_loadIdx = COOP_LOAD_HERE;
     s_page        = COOP_PAGE_HOST_SETUP;
     s_sel         = 0;
+}
+
+/* The Host on row is not shown from a running game: rows shift up by one. */
+static int Coop_SetupRow(int i)
+{
+    return s_fromGame ? i + 1 : i;
 }
 
 /* Queue the game boot for title.c. Reads the host-setup load choice. */
 static void Coop_RequestStart(void)
 {
+    if (s_loadIdx == COOP_LOAD_HERE)
+    {
+        s_startReq     = 4; /* the game we left, from the autosave made as we left it */
+        s_startSave[0] = '\0';
+        s_fromGame     = 0;
+        Pc_CoopMenu_Close();
+        return;
+    }
     if (s_loadIdx >= 0 && s_loadIdx < s_saveCount)
     {
         s_startReq = 2;
@@ -701,9 +741,106 @@ int Pc_CoopMenu_InviteHost(void)
     g_PcConfig.onlineCoopLiving = 1;
     PcConfig_SaveKeyValue("online_coop_living_world", "1");
     s_hostMode = COOP_HOST_SERVER;
-    ShSession_RequestHostServer(Coop_ServerIp(), Coop_ServerPort(), max, 1, 1);
-    SH_DBG("[COOP] invite: opening a private room for %d players", max);
+    /* This host's usual settings; only where it is hosted is decided for them. */
+    ShSession_RequestHostServer(Coop_ServerIp(), Coop_ServerPort(), max, !g_PcConfig.onlineSteamPublic, 1);
+    SH_DBG("[COOP] invite: opening a %s room for %d players", g_PcConfig.onlineSteamPublic ? "listed" : "hidden", max);
     return 1;
+}
+
+/* An invite out of a single-player game: host from here, or from the lobby. */
+void Pc_CoopMenu_OpenInviteHostChoice(void)
+{
+    if (!s_open || !s_inGame) Pc_CoopMenu_OpenInGame();
+    s_page   = COOP_PAGE_INVITE_HOST;
+    s_sel    = 0;
+    s_msg[0] = '\0';
+}
+
+/* /invite at the title, not hosting yet: the host setup, on the server. */
+void Pc_CoopMenu_OpenHostForInvite(void)
+{
+    if (!s_open) Pc_CoopMenu_Open();
+    s_fromGame = 0;
+    s_hostMode = COOP_HOST_SERVER;
+    Coop_EnterHostSetup();
+}
+
+void Pc_CoopMenu_OpenInviteAnswer(void)
+{
+    if (g_GameWork.gameState == GameState_InGame)
+    {
+        if (!s_open || !s_inGame) Pc_CoopMenu_OpenInGame();
+    }
+    else if (!s_open)
+    {
+        Pc_CoopMenu_Open();
+    }
+    s_page   = COOP_PAGE_INVITE;
+    s_sel    = 0;
+    s_msg[0] = '\0';
+}
+
+/* The invite page offers Save First only where there is a game of our own
+ * to lose: a single-player game in progress. */
+static int Coop_InviteCanSave(void)
+{
+    return g_GameWork.gameState == GameState_InGame && !g_PcCoopGame;
+}
+
+void Pc_CoopMenu_JoinAtTitle(int code)
+{
+    if (g_GameWork.gameState == GameState_MainMenu)
+    {
+        if (!s_open) Pc_CoopMenu_Open();
+        s_hostMode = COOP_HOST_SERVER;
+        ShSession_RequestJoinServer(Coop_ServerIp(), Coop_ServerPort(), code, 1);
+        s_page = COOP_PAGE_ROOMS;
+        s_sel  = 0;
+        SH_DBG("[COOP] joining room %d from the menus", code);
+        return;
+    }
+    s_titleJoin = code;
+}
+
+void Pc_CoopMenu_LobbyAtTitle(void)
+{
+    s_titleLobby = 1;
+}
+
+/* Return to Lobby: the settings were chosen in the game; the game we leave
+ * becomes the autosave Where I Am boots, and the title opens the room. */
+static void Coop_LeaveGameForLobby(void)
+{
+    if (s_loadIdx == COOP_LOAD_HERE && g_SavegamePtr != NULL)
+    {
+        SysWork_SavegameUpdatePlayer();
+        g_GameWork.autosave = *g_SavegamePtr;
+        if (g_GameWork.autosave.playerHealth <= 0) g_GameWork.autosave.playerHealth = Q12(100.0f);
+    }
+    s_titleHost = 1;
+    if (ShSession_Active()) ShSession_RequestLeave();
+    g_SysWork.sysFlags |= SysFlag_DoWarmReset;
+    Pc_CoopMenu_Close();
+    SH_DBG("[COOP] return to lobby: leaving the game to host from the title");
+}
+
+/* Once a frame, from the invite tick: the Return to Lobby save screen. */
+void Pc_CoopMenu_InviteTick(void)
+{
+    if (s_lobbySavePhase == 1)
+    {
+        if (g_GameWork.gameState != GameState_InGame) s_lobbySavePhase = 2;
+        else if (SDL_GetTicks() - s_lobbySaveMs > 5000u) s_lobbySavePhase = 0; /* it never came up */
+    }
+    else if (s_lobbySavePhase == 2 && g_GameWork.gameState == GameState_InGame &&
+             g_SysWork.sysState == SysState_Gameplay)
+    {
+        s_lobbySavePhase = 0;
+        Pc_CoopMenu_OpenInGame();
+        s_fromGame = 1;
+        s_hostMode = COOP_HOST_SERVER;
+        Coop_EnterHostSetup();
+    }
 }
 
 void Pc_CoopMenu_InviteJoin(int code)
@@ -740,6 +877,33 @@ int Pc_CoopMenu_TakeStartRequest(char* outName, int cap)
     int req = s_startReq;
     s_goDecided = 0; /* the title is up: the game over's choice is made */
     s_startReq = 0;
+    /* What a game left for the title to do. */
+    if (s_titleHost)
+    {
+        s_titleHost = 0;
+        if (!s_open) Pc_CoopMenu_Open();
+        s_inGame   = 0;
+        s_hostMode = COOP_HOST_SERVER;
+        Coop_StartHosting();
+        s_fromGame = (s_loadIdx == COOP_LOAD_HERE); /* Start From keeps Where I Am */
+    }
+    else if (s_titleJoin)
+    {
+        const int code = s_titleJoin;
+        s_titleJoin = 0;
+        Pc_CoopMenu_JoinAtTitle(code);
+    }
+    else if (s_titleLobby)
+    {
+        s_titleLobby = 0;
+        if (ShSession_Active())
+        {
+            if (!s_open) Pc_CoopMenu_Open();
+            s_inGame = 0;
+            s_page   = COOP_PAGE_HOST;
+            s_sel    = 0;
+        }
+    }
     if (outName && cap > 0)
     {
         snprintf(outName, cap, "%s", s_startSave);
@@ -749,12 +913,22 @@ int Pc_CoopMenu_TakeStartRequest(char* outName, int cap)
 
 static void Coop_StartHosting(void)
 {
-    /* The worker reads these out of config when it creates the lobby. */
+    /* The worker reads these out of config when it creates the lobby; kept,
+     * so the next game (and Host From Here) starts from what was used. */
+    {
+        static const char* const keys[3] = { "online_coop_living_world", "online_steam_max_players", "online_steam_public" };
+        char                     mp[8];
+        const char*              vals[3];
+        snprintf(mp, sizeof(mp), "%d", s_setMaxPlayers);
+        vals[0] = s_setLiving ? "1" : "0";
+        vals[1] = mp;
+        vals[2] = s_setPublic ? "1" : "0";
+        PcConfig_SaveKeyValues(keys, vals, 3);
+    }
     g_PcConfig.onlineSteamMaxPlayers = s_setMaxPlayers;
     g_PcConfig.onlineSteamPublic     = s_setPublic;
     g_PcConfig.fpsCap                = s_setFps;
     g_PcConfig.onlineCoopLiving      = s_setLiving;
-    PcConfig_SaveKeyValue("online_coop_living_world", s_setLiving ? "1" : "0");
     SH_DBG("[COOP] host mode %d: %d players, %s, fps %d",
            s_hostMode, s_setMaxPlayers, s_setPublic ? "public" : "private", s_setFps);
     if (s_hostMode == COOP_HOST_STEAM)
@@ -968,7 +1142,9 @@ int Pc_CoopMenu_RowCount(void)
     {
     case COOP_PAGE_ROOT:       { int r[COOP_ROOT_MAX]; return Coop_RootRows(r); } /* Host, Join, [Split Screen,] [Settings,] Music, Back */
     case COOP_PAGE_SETTINGS:   return 7; /* Living World IP, Living World, Name, Join Messages, Chat, Restart Connection, Back */
-    case COOP_PAGE_HOST_SETUP: return 12; /* Host on, Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Sync Consumables, Keep Items, Load, Open, Back */
+    case COOP_PAGE_HOST_SETUP: return s_fromGame ? 11 : 12; /* [Host on,] Players, Visibility, Living World, FPS, Enemy Damage, Enemy Health, Sync Consumables, Keep Items, Load, Open, Back */
+    case COOP_PAGE_INVITE_HOST: return 3; /* Host From Here, Return to Lobby, Cancel */
+    case COOP_PAGE_LOBBY_SAVE:  return 3; /* Save First, Continue Without Saving, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
     case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
@@ -977,7 +1153,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_INGAME:     { int r[COOP_IG_MAX]; return Coop_InGameRows(r); }
     case COOP_PAGE_PLAYERS:    return ShSession_MemberCount() + 1; /* members + Back */
     case COOP_PAGE_PLAYER:     return 4; /* Allow Cheats, Bring Here, Remove, Back */
-    case COOP_PAGE_INVITE:     return 3; /* Save First, Join Without Saving, Back */
+    case COOP_PAGE_INVITE:     return Coop_InviteCanSave() ? 4 : 3; /* [Save First,] Join, Decline, Back */
     case COOP_PAGE_SAVES:      return s_saveCount + 2; /* New Game, the saves, Back */
     case COOP_PAGE_GAMEOVER:   return s_goCanContinue ? 3 : 2; /* [Yes,] Load Game, Quit Without Saving */
     default:                   return 1;
@@ -993,6 +1169,8 @@ int Pc_CoopMenu_View(void)
     case COOP_PAGE_SPLIT_ONLINE: return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INGAME:     return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_INVITE:     return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_INVITE_HOST: return PC_COOP_VIEW_SETTINGS;
+    case COOP_PAGE_LOBBY_SAVE:  return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_GAMEOVER:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_SETTINGS:   return PC_COOP_VIEW_SETTINGS;
     case COOP_PAGE_ROOMS:      return PC_COOP_VIEW_ROOMS;
@@ -1026,6 +1204,8 @@ const char* Pc_CoopMenu_Title(void)
     case COOP_PAGE_PLAYERS:    return "PLAYERS";
     case COOP_PAGE_PLAYER:     return s_playerName;
     case COOP_PAGE_INVITE:     return "ACCEPT INVITE";
+    case COOP_PAGE_INVITE_HOST: return "INVITE";
+    case COOP_PAGE_LOBBY_SAVE:  return "RETURN TO LOBBY";
     case COOP_PAGE_GAMEOVER:   return "GAME OVER";
     case COOP_PAGE_SAVES:      return Coop_SavesLoadNow() ? "LOAD GAME" : "START FROM";
     case COOP_PAGE_SETTINGS:   return "MULTIPLAYER SETTINGS";
@@ -1050,8 +1230,28 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_ROOT_SPLIT:    snprintf(out, cap, "Split Screen"); break;
         case COOP_ROOT_SETTINGS: snprintf(out, cap, "Multiplayer Settings"); break;
         case COOP_ROOT_MUSIC:    Pc_CoopMusic_RowText(out, cap); break;
+        case COOP_ROOT_ACCEPT:
+        {
+            char who[SHNET_NAME_MAX + 8];
+            int  left = ShNetInvite_Incoming(who, (int)sizeof(who));
+            snprintf(out, cap, "Accept %s's Invite  (%d s)", who, left);
+            break;
+        }
+        case COOP_ROOT_DECLINE:  snprintf(out, cap, "Decline Invite"); break;
         default:                 snprintf(out, cap, "Back"); break;
         }
+        break;
+
+    case COOP_PAGE_INVITE_HOST:
+        if (i == 0)      snprintf(out, cap, "Host From Here");
+        else if (i == 1) snprintf(out, cap, "Return to Lobby");
+        else             snprintf(out, cap, "Cancel");
+        break;
+
+    case COOP_PAGE_LOBBY_SAVE:
+        if (i == 0)      snprintf(out, cap, "Save First");
+        else if (i == 1) snprintf(out, cap, "Continue Without Saving");
+        else             snprintf(out, cap, "Back");
         break;
 
     case COOP_PAGE_SETTINGS:
@@ -1065,6 +1265,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
 
     case COOP_PAGE_HOST_SETUP:
+        i = Coop_SetupRow(i);
         if (i == 0)
         {
             const char* where = (s_hostMode == COOP_HOST_STEAM)  ? "Steam"
@@ -1231,8 +1432,10 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         break;
 
     case COOP_PAGE_INVITE:
+        if (!Coop_InviteCanSave()) i++;
         if (i == 0)      snprintf(out, cap, "Save First");
-        else if (i == 1) snprintf(out, cap, "Join Without Saving");
+        else if (i == 1) snprintf(out, cap, Coop_InviteCanSave() ? "Join Without Saving" : "Join");
+        else if (i == 2) snprintf(out, cap, "Decline");
         else             snprintf(out, cap, "Back");
         break;
 
@@ -1404,13 +1607,27 @@ void Pc_CoopMenu_StatusText(char* out, int cap)
         char who[SHNET_NAME_MAX];
         int  left = ShNetInvite_Incoming(who, (int)sizeof(who));
         if (s_msg[0])  snprintf(out, cap, "%s", s_msg);
-        else if (left) snprintf(out, cap, "Your own game ends when you join %s. Save it first?  (%d s)", who, left);
+        else if (left && Coop_InviteCanSave())
+            snprintf(out, cap, "Your own game ends when you join %s. Save it first?  (%d s)", who, left);
+        else if (left) snprintf(out, cap, "Join %s's game?  (%d s)", who, left);
         else           snprintf(out, cap, "The invite is no longer open.");
         break;
     }
 
+    case COOP_PAGE_INVITE_HOST:
+        snprintf(out, cap, "To invite %s, host a game: from here, carrying on where you are, or from the lobby.",
+                 ShNetInvite_WaitingName());
+        break;
+
+    case COOP_PAGE_LOBBY_SAVE:
+        snprintf(out, cap, "Your game ends when you go to the lobby. Save it first?");
+        break;
+
     case COOP_PAGE_HOST_SETUP:
-        if (s_hostMode == COOP_HOST_THISPC)
+        if (s_fromGame)
+            snprintf(out, cap, "A room on your server (%s). %s joins once it is open.", Coop_ServerIp(),
+                     ShNetInvite_WaitingName()[0] ? ShNetInvite_WaitingName() : "Your invite");
+        else if (s_hostMode == COOP_HOST_THISPC)
             snprintf(out, cap, "This PC hosts. Friends join with your IP (forward UDP %d).", Coop_ServerPort());
         else if (s_hostMode == COOP_HOST_SERVER)
             snprintf(out, cap, "A room on your server (%s). Friends browse or enter the code.", Coop_ServerIp());
@@ -1458,12 +1675,67 @@ static void Coop_Confirm(void)
     case COOP_PAGE_ROOT:
         switch (Coop_RootRow(s_sel))
         {
-        case COOP_ROOT_HOST:     Coop_EnterHostSetup(); break;
+        case COOP_ROOT_HOST:     s_fromGame = 0; Coop_EnterHostSetup(); break;
         case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); break;
         case COOP_ROOT_SPLIT:    Coop_EnterSplit(); break;
         case COOP_ROOT_SETTINGS: s_page = COOP_PAGE_SETTINGS; s_sel = 0; s_msg[0] = '\0'; break;
         case COOP_ROOT_MUSIC:    Pc_CoopMusic_Step(1); break; /* a tap or Enter: the next track */
+        case COOP_ROOT_ACCEPT:   s_page = COOP_PAGE_INVITE; s_sel = 0; s_msg[0] = '\0'; break;
+        case COOP_ROOT_DECLINE:  ShNetInvite_Decline(); s_sel = 0; break;
         default:                 Pc_CoopMenu_Close(); break;
+        }
+        break;
+
+    case COOP_PAGE_INVITE_HOST:
+        if (s_sel == 0)
+        {
+            Pc_CoopMenu_Close();
+            ShNetInvite_HostFromHere();
+        }
+        else if (s_sel == 1)
+        {
+            s_page = COOP_PAGE_LOBBY_SAVE;
+            s_sel  = 0;
+        }
+        else
+        {
+            ShNetInvite_DropWaiting();
+            s_page = COOP_PAGE_INGAME;
+            s_sel  = 0;
+        }
+        break;
+
+    case COOP_PAGE_LOBBY_SAVE:
+        if (s_sel == 0)
+        {
+            if (Pc_Save_BossActive())
+            {
+                snprintf(s_msg, sizeof(s_msg), "Can't save during a boss fight");
+                break;
+            }
+            Pc_CoopMenu_Close();
+            if (Pc_Save_OpenSaveScreen())
+            {
+                s_lobbySavePhase = 1;
+                s_lobbySaveMs    = SDL_GetTicks();
+            }
+            else
+            {
+                Pc_CoopMenu_OpenInGame();
+                s_page = COOP_PAGE_LOBBY_SAVE;
+                snprintf(s_msg, sizeof(s_msg), "Can't save right now");
+            }
+        }
+        else if (s_sel == 1)
+        {
+            s_fromGame = 1;
+            s_hostMode = COOP_HOST_SERVER;
+            Coop_EnterHostSetup();
+        }
+        else
+        {
+            s_page = COOP_PAGE_INVITE_HOST;
+            s_sel  = 1;
         }
         break;
 
@@ -1488,20 +1760,24 @@ static void Coop_Confirm(void)
         break;
 
     case COOP_PAGE_HOST_SETUP:
+    {
         /* Setting rows cycle on confirm; no left/right needed. */
-        if (s_sel == 0)      { if (!COOP_WEB) s_hostMode = (s_hostMode + 1) % 3; }
-        else if (s_sel == 1) { s_setMaxPlayers = (s_setMaxPlayers >= 4) ? 2 : s_setMaxPlayers + 1; }
-        else if (s_sel == 2) { s_setPublic = !s_setPublic; }
-        else if (s_sel == 3) { s_setLiving = !s_setLiving; }
-        else if (s_sel == 4) { s_setFps = (s_setFps == 60) ? 30 : 60; }
-        else if (s_sel == 5) { Coop_StepScale(&g_PcConfig.onlineEnemyDamagePct, "online_enemy_damage", 1); }
-        else if (s_sel == 6) { Coop_StepScale(&g_PcConfig.onlineEnemyHealthPct, "online_enemy_health", 1); }
-        else if (s_sel == 7) { Coop_StepChoice(&g_PcConfig.onlineSyncConsumables, 3, "online_sync_consumables", 1); }
-        else if (s_sel == 8) { Coop_StepChoice(&g_PcConfig.onlineKeepItems, 4, "online_keep_items", 1); }
-        else if (s_sel == 9) { Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 9); }
-        else if (s_sel == 10) { Coop_StartHosting(); } /* Open Room / Lobby */
+        const int r = Coop_SetupRow(s_sel);
+        if (r == 0)      { if (!COOP_WEB) s_hostMode = (s_hostMode + 1) % 3; }
+        else if (r == 1) { s_setMaxPlayers = (s_setMaxPlayers >= 4) ? 2 : s_setMaxPlayers + 1; }
+        else if (r == 2) { s_setPublic = !s_setPublic; }
+        else if (r == 3) { s_setLiving = !s_setLiving; }
+        else if (r == 4) { s_setFps = (s_setFps == 60) ? 30 : 60; }
+        else if (r == 5) { Coop_StepScale(&g_PcConfig.onlineEnemyDamagePct, "online_enemy_damage", 1); }
+        else if (r == 6) { Coop_StepScale(&g_PcConfig.onlineEnemyHealthPct, "online_enemy_health", 1); }
+        else if (r == 7) { Coop_StepChoice(&g_PcConfig.onlineSyncConsumables, 3, "online_sync_consumables", 1); }
+        else if (r == 8) { Coop_StepChoice(&g_PcConfig.onlineKeepItems, 4, "online_keep_items", 1); }
+        else if (r == 9) { if (s_fromGame) Coop_StepSave(1); else Coop_OpenSaves(COOP_PAGE_HOST_SETUP, 9); }
+        else if (r == 10) { if (s_fromGame) Coop_LeaveGameForLobby(); else Coop_StartHosting(); } /* Open Room / Lobby */
+        else if (s_fromGame) { s_fromGame = 0; ShNetInvite_DropWaiting(); s_page = COOP_PAGE_INGAME; s_sel = 0; }
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
+    }
 
     case COOP_PAGE_SPLIT:
         if (s_sel == 0)
@@ -1604,7 +1880,8 @@ static void Coop_Confirm(void)
         case COOP_IG_PLAYERS: s_page = COOP_PAGE_PLAYERS; s_sel = 0; break;
         case COOP_IG_INVITE:
             ShNetInvite_Send();
-            if (!ShNetInvite_Blocked()) Pc_CoopMenu_Close();
+            /* Hosting already: it went out. Otherwise the menu now asks how to host. */
+            if (!ShNetInvite_Blocked() && s_page == COOP_PAGE_INGAME) Pc_CoopMenu_Close();
             break;
         case COOP_IG_INVITE_CANCEL: ShNetInvite_Cancel();  s_sel = 0; break;
         case COOP_IG_ACCEPT:
@@ -1682,13 +1959,16 @@ static void Coop_Confirm(void)
         break;
 
     case COOP_PAGE_INVITE:
-        if (!ShNetInvite_Incoming(NULL, 0) || s_sel == 2)
+    {
+        const int r = Coop_InviteCanSave() ? s_sel : s_sel + 1;
+        if (!ShNetInvite_Incoming(NULL, 0) || r >= 2)
         {
-            s_page = COOP_PAGE_INGAME;
+            if (r == 2 && ShNetInvite_Incoming(NULL, 0)) ShNetInvite_Decline();
+            s_page = s_inGame ? COOP_PAGE_INGAME : COOP_PAGE_ROOT;
             s_sel  = 0;
             s_msg[0] = '\0';
         }
-        else if (s_sel == 0)
+        else if (r == 0)
         {
             Pc_CoopMenu_Close();
             if (!ShNetInvite_AcceptAfterSave())
@@ -1704,6 +1984,7 @@ static void Coop_Confirm(void)
             if (!ShNetInvite_Blocked()) Pc_CoopMenu_Close();
         }
         break;
+    }
 
     case COOP_PAGE_PLAYER:
         if (s_sel == 0)
@@ -1842,7 +2123,7 @@ static int Coop_Adjust(int dir)
         if (Coop_InGameRow(s_sel) == COOP_IG_INVITE) { ShNetInvite_Cycle(dir); return 1; }
         return 0;
     case COOP_PAGE_HOST_SETUP:
-        switch (s_sel)
+        switch (Coop_SetupRow(s_sel))
         {
         case 0: if (!COOP_WEB) s_hostMode = (s_hostMode + 3 + dir) % 3; return 1;
         case 1: s_setMaxPlayers += dir; if (s_setMaxPlayers > 4) s_setMaxPlayers = 2; if (s_setMaxPlayers < 2) s_setMaxPlayers = 4; return 1;

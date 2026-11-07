@@ -55,6 +55,10 @@ unsigned long long CoopUdp_RoomId(void);     /* the room code, 0 if none */
 int                CoopUdp_MemberCount(void);
 unsigned long long CoopUdp_Member(int i);
 const char*        CoopUdp_NameOf(unsigned long long id);
+unsigned int       CoopUdp_TagOf(unsigned long long id); /* the server's #tag, 0 unknown */
+unsigned int       CoopUdp_TokenOf(unsigned long long id); /* their address token, 0 unknown */
+/* The room host's /block list (address tokens); sent whenever we host. */
+void               CoopUdp_SetBlocks(const unsigned int* toks, int n);
 void               CoopUdp_StatusLine(char* out, int cap);
 
 /* Relay one of the session's S_* packets to a room member (to == 0 = all). */
@@ -66,6 +70,8 @@ int  CoopUdp_Recv(unsigned long long* from, unsigned char* buf, int cap);
 int  CoopUdp_RoomListCount(void);
 int  CoopUdp_RoomListGet(int i, unsigned short* code, int* players, int* max, int* map,
                          char* host, int hostCap);
+/* From a server that sends them: the host's tag and ping (-1 unknown), seats held. */
+int  CoopUdp_RoomListGetEx(int i, int* hostTag, int* hostPing, int* held);
 
 #ifdef __cplusplus
 }
