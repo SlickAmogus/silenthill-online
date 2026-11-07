@@ -110,7 +110,7 @@ enum
 {
     SHNET_MSG_HELLO      = 0x01, /* C->S  join / reconnect */
     SHNET_MSG_WELCOME    = 0x02, /* S->C  accepted, here is your session */
-    SHNET_MSG_PING       = 0x03, /* C->S */
+    SHNET_MSG_PING       = 0x03, /* C->S  u32 client ms [, u32 last round trip ms] */
     SHNET_MSG_PONG       = 0x04, /* S->C */
     SHNET_MSG_BYE        = 0x05, /* C->S  clean disconnect */
     SHNET_MSG_REJECT     = 0x06, /* S->C  refused, with a reason */
