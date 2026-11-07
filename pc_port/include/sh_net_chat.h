@@ -52,6 +52,9 @@ int  ShNetChat_Hidden(void);
 
 /* A locally-generated line (a system notice), shown like any chat line. */
 void ShNetChat_AddSystem(const char* text);
+/* A private message line ("From X: ..." / "To X: ..."), shown on every channel. */
+#define SHNETCHAT_PM 4
+void ShNetChat_AddWhisper(const char* text);
 
 /* A SHNET_CTRL_CHAT from a co-op partner (p[0] is the kind byte). */
 void ShNetChat_CoopIn(unsigned long long from, const unsigned char* p, int len);
@@ -71,6 +74,8 @@ int         ShNetChat_LineCount(void);
 const char* ShNetChat_LineText(int i);
 int         ShNetChat_LineScope(int i);   /* SHNET_CHAT_*, or -1 for a line of the game's own */
 float       ShNetChat_LineAlpha(int i);
+/* Bytes of the line's text that are the speaker's name, and its colour; 0 none. */
+int         ShNetChat_LineName(int i, float* r, float* g, float* b);
 
 /* The compose prompt, e.g. "[All]" / "[Game]", and the text being typed. */
 int         ShNetChat_Composing(void);

@@ -77,8 +77,10 @@ the commands:
 
 The console only listens on the machine itself (127.0.0.1:27891), so it needs
 the ssh login. When the connection drops, press a key in the window to log in
-again. Markers live in `memos.db` and bans in `bans.txt` in the service's
-working directory (`/root` by default).
+again. Markers live in `memos.db`, bans in `bans.txt` and the key behind the
+address tokens players' block lists hold in `addrkey.bin`, all in the service's
+working directory (`/root` by default). Keep `addrkey.bin`: a new one makes
+every player's saved blocks point at nobody.
 
 ### Log
 
@@ -108,6 +110,10 @@ What goes in:
   reconnect; a steady stream from one address is a probe or a flood), banned
   addresses trying to connect, a full server, browser connections that break
   the WebSocket protocol
+- `[USER REPORT]` entries from players' `/report`: who reported whom, both
+  names with their tags and addresses, the reason, and the private messages
+  between the two that the server still had in memory. Private messages are
+  never logged otherwise, and live in memory only
 - every admin command that changes something (kick, ban, say, prune...; looking at
   players, bans or markers is not logged), and a `stats:` line every 15 minutes with who is on and
   what the network did

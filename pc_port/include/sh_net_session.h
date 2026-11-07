@@ -112,6 +112,8 @@ typedef struct
 {
     unsigned long long steamId;
     char               name[SHSESSION_NAME_MAX];
+    int                tag;        /* the server's #tag for a server-room member; 0 over Steam */
+    unsigned int       token;      /* their address token (a /block list's key); 0 over Steam */
     int                pingMs;     /* -1 until a pong comes back */
     int                linked;     /* 1 once they have answered us */
     int                mapIdx;     /* -1 unknown */
@@ -189,6 +191,8 @@ void ShSession_RequestListServer(const char* host, int port, int useWorld);
 int  ShSession_RoomCount(void);
 int  ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, char* host, int hostCap);
 unsigned long long ShSession_RoomLobby(int i); /* a Steam lobby's id, 0 for a server room */
+/* A server room's host tag and ping (-1 unknown) and seats held for invited players. */
+int  ShSession_RoomGetEx(int i, int* hostTag, int* hostPing, int* held);
 void ShSession_RequestLeave(void);
 void ShSession_RequestInvite(void);
 
@@ -243,6 +247,8 @@ void ShSession_PublishWorldSave(const void* save, int len);
  * and refuses their address; on Steam they are told to leave and are
  * ignored from then on either way. */
 void ShSession_RequestKick(unsigned long long id);
+/* Our /block list's address tokens: the server turns them away from rooms we host. */
+void ShSession_RequestBlocks(const unsigned int* toks, int n);
 
 /* Game messages (SHNET_S_IS_GAME types) carried for game-thread code such as
  * sh_net_npc.c. SendGame queues a payload for `to` (0 = every member);

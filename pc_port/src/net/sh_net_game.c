@@ -1089,6 +1089,13 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_VOICE:
             ShNetVoice_CtrlIn(from, p, len);
             break;
+        case SHNET_CTRL_FOLLOW:
+            if (fromHost && len >= 4)
+            {
+                extern void ShNetInvite_OnFollow(int code, int lobby);
+                ShNetInvite_OnFollow(p[1] | (p[2] << 8), p[3]);
+            }
+            break;
         case SHNET_CTRL_CHAT:
             ShNetChat_CoopIn(from, p, len);
             break;

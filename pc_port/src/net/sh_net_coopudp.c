@@ -20,6 +20,7 @@
 #include "sh_master_embed.h"
 #include "sh_net.h" /* ShNet_World*: ride the living-world link when unified */
 #include "sh_build_hash.h"
+#include "pc_split_screen.h" /* Player 2's window: its own name, never invitable */
 
 #include <SDL.h> /* SDL_CreateThread for the embedded relay */
 
@@ -31,9 +32,14 @@
 #define COOPUDP_PING_MS     2000u
 #define COOPUDP_TIMEOUT_MS  10000u
 
-typedef struct { shn_u32 id; char name[SHNET_NAME_MAX]; } CoopMember;
+typedef struct { shn_u32 id; char name[SHNET_NAME_MAX]; shn_u16 tag; shn_u32 token; } CoopMember;
 typedef struct { shn_u32 from; int len; shn_u8 buf[SHNET_MAX_PAYLOAD]; } CoopRx;
-typedef struct { shn_u16 code; shn_u8 players, max, map; char host[SHNET_NAME_MAX]; } CoopRoom;
+typedef struct { shn_u16 code; shn_u8 players, max, map, held; shn_u16 hostTag, hostPing; char host[SHNET_NAME_MAX]; } CoopRoom;
+
+/* Room list entry sizes: code, players, max, host name, map; a social reply
+ * adds host tag, host ping, held seats and a pad byte. */
+#define COOPUDP_ROOM_ENTRY        (2 + 1 + 1 + SHNET_NAME_MAX + 1)
+#define COOPUDP_ROOM_ENTRY_SOCIAL (COOPUDP_ROOM_ENTRY + 6)
 
 static int          s_inited;
 static ShNetSock*   s_sock;
@@ -69,6 +75,12 @@ static int          s_rxHead, s_rxTail;
 
 static CoopRoom     s_rooms[COOPUDP_MAX_ROOMS];
 static int          s_roomCount;
+
+/* Our /block list (address tokens), sent to the server whenever we host a
+ * room, so the people on it are turned away at the door. */
+static shn_u32      s_blocks[64];
+static int          s_blockN;
+static int          s_blocksSentFor; /* the room code they were last sent for */
 
 static char         s_status[128];
 
@@ -107,8 +119,39 @@ static void CoopUdp_SendHello(void)
      * must not be handed something to guess the password from. */
     ShnPutU32(buf, &off, s_sendPassword ? ShnPasswordProof(g_PcConfig.onlinePassword, s_cookie) : 0);
     ShnPutU32(buf, &off, s_cookie);
+    ShnPutU32(buf, &off, 0); /* uid: memos are the living world's, never left from here */
+    ShnPutU32(buf, &off, SHNET_CAP_SOCIAL | (Pc_Split_Role() == 2 ? SHNET_CAP_SPLIT_P2 : 0));
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), s_session);
     CoopUdp_SendRaw(buf, off);
+}
+
+/* Player 2's window goes by Player 1's name with " (1)" after it. */
+static void CoopUdp_SetName(void)
+{
+    const char* nm = g_PcConfig.onlineName;
+    if (!nm || !nm[0]) nm = "Player";
+    if (Pc_Split_Role() == 2)
+    {
+        char base[SHNET_NAME_MAX];
+        SDL_strlcpy(base, nm, sizeof(base));
+        base[SHNET_NAME_MAX - 5] = '\0';
+        SDL_snprintf(s_name, sizeof(s_name), "%s (1)", base);
+    }
+    else
+    {
+        SDL_strlcpy(s_name, nm, sizeof(s_name));
+    }
+}
+
+static void CoopUdp_SendBlocks(void)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 1 + 64 * 4];
+    int    off = SHNET_HDR_SIZE, i;
+    ShnPutU8(buf, &off, (shn_u8)s_blockN);
+    for (i = 0; i < s_blockN; i++) ShnPutU32(buf, &off, s_blocks[i]);
+    ShnPutHeader(buf, SHNET_MSG_ROOM_BLOCKS, (shn_u16)(off - SHNET_HDR_SIZE), s_session);
+    CoopUdp_SendRaw(buf, off);
+    s_blocksSentFor = s_room;
 }
 
 static void CoopUdp_SendSimple(int type)
@@ -155,6 +198,7 @@ static void CoopUdp_OnWelcome(const shn_u8* p, int len)
     s_session = ShnGetU32(p, &off);
     s_selfId  = ShnGetU32(p, &off);
     s_connected = 1;
+    s_blocksSentFor = 0;
     CoopUdp_SetStatus("Connected");
     SH_DBG("[COOPUDP] connected (id %u)", s_selfId);
     CoopUdp_FlushPending();
@@ -170,19 +214,36 @@ static void CoopUdp_ReadRoster(const shn_u8* p, int len, int joined)
     n        = (int)ShnGetU8(p, &off);
     if (n > COOPUDP_MAX_MEMBERS) n = COOPUDP_MAX_MEMBERS;
     s_memberCount = 0;
-    for (i = 0; i < n; i++)
     {
-        shn_u32 id;
-        char    name[SHNET_NAME_MAX];
-        if (off + 4 + SHNET_NAME_MAX + 1 > len) break;
-        id = ShnGetU32(p, &off);
-        ShnGetStr(p, &off, SHNET_NAME_MAX, name, SHNET_NAME_MAX);
-        ShnSanitizeText(name);
-        ShNetChat_Censor(name);
-        (void)ShnGetU8(p, &off); /* isHost flag (derivable from s_hostId) */
-        s_members[s_memberCount].id = id;
-        SDL_strlcpy(s_members[s_memberCount].name, name, SHNET_NAME_MAX);
-        s_memberCount++;
+        /* A server that read our caps adds each member's tag. */
+        const int tagged = (n > 0 && (len - off) == n * (4 + SHNET_NAME_MAX + 1 + 8));
+        for (i = 0; i < n; i++)
+        {
+            shn_u32 id;
+            char    name[SHNET_NAME_MAX];
+            if (off + 4 + SHNET_NAME_MAX + 1 + (tagged ? 8 : 0) > len) break;
+            id = ShnGetU32(p, &off);
+            ShnGetStr(p, &off, SHNET_NAME_MAX, name, SHNET_NAME_MAX);
+            ShnSanitizeText(name);
+            ShNetChat_Censor(name);
+            (void)ShnGetU8(p, &off); /* isHost flag (derivable from s_hostId) */
+            s_members[s_memberCount].id  = id;
+            s_members[s_memberCount].tag   = 0;
+            s_members[s_memberCount].token = 0;
+            if (tagged)
+            {
+                s_members[s_memberCount].tag = ShnGetU16(p, &off);
+                (void)ShnGetU16(p, &off);
+                s_members[s_memberCount].token = ShnGetU32(p, &off);
+            }
+            SDL_strlcpy(s_members[s_memberCount].name, name, SHNET_NAME_MAX);
+            s_memberCount++;
+        }
+    }
+    /* Hosting: the door list goes to the server once per room. */
+    if (s_room && s_hostId == s_selfId && s_hostId != 0 && s_blocksSentFor != s_room)
+    {
+        CoopUdp_SendBlocks();
     }
     if (s_hostId == 0)
     {
@@ -226,33 +287,42 @@ static void CoopUdp_OnRoomList(const shn_u8* p, int len)
     n = (int)ShnGetU8(p, &off);
     /* Entries first; a server that pages appends (u8 page, u8 more) after them.
      * Page 0 starts the list over, a later page extends it, and a page that
-     * says more follow is asked for the next one. */
+     * says more follow is asked for the next one. A social reply's entries
+     * are longer (host tag, ping, held seats); the length tells which. */
     {
-        int o2 = off, k, entry = 2 + 1 + 1 + SHNET_NAME_MAX;
-        for (k = 0; k < n && o2 + entry <= len; k++)
+        const int rest   = len - off;
+        const int social = (n > 0 && rest == n * COOPUDP_ROOM_ENTRY_SOCIAL + 2);
+        const int entry  = social ? COOPUDP_ROOM_ENTRY_SOCIAL : COOPUDP_ROOM_ENTRY;
+        const int paged  = social || rest == n * COOPUDP_ROOM_ENTRY + 2 || (n == 0 && rest == 2);
+        if (paged)
         {
-            o2 += entry;
-            if (o2 < len) o2++; /* the map byte */
+            page = (int)p[off + n * entry];
+            more = (int)p[off + n * entry + 1];
         }
-        if (k == n && o2 + 2 <= len)
+        if (page == 0 || s_roomCount > COOPUDP_MAX_ROOMS) s_roomCount = 0;
+        for (i = 0; i < n && s_roomCount < COOPUDP_MAX_ROOMS; i++)
         {
-            page = (int)p[o2];
-            more = (int)p[o2 + 1];
+            CoopRoom* r = &s_rooms[s_roomCount];
+            if (off + 2 + 1 + 1 + SHNET_NAME_MAX > len) break;
+            memset(r, 0, sizeof(*r));
+            r->code    = ShnGetU16(p, &off);
+            r->players = ShnGetU8(p, &off);
+            r->max     = ShnGetU8(p, &off);
+            ShnGetStr(p, &off, SHNET_NAME_MAX, r->host, SHNET_NAME_MAX);
+            ShnSanitizeText(r->host);
+            ShNetChat_Censor(r->host);
+            /* The host's map, from a server that sends it. */
+            r->map = (off < len) ? ShnGetU8(p, &off) : 0xFF;
+            r->hostPing = 0xFFFF;
+            if (social && off + 6 <= len)
+            {
+                r->hostTag  = ShnGetU16(p, &off);
+                r->hostPing = ShnGetU16(p, &off);
+                r->held     = ShnGetU8(p, &off);
+                (void)ShnGetU8(p, &off);
+            }
+            s_roomCount++;
         }
-    }
-    if (page == 0 || s_roomCount > COOPUDP_MAX_ROOMS) s_roomCount = 0;
-    for (i = 0; i < n && s_roomCount < COOPUDP_MAX_ROOMS; i++)
-    {
-        if (off + 2 + 1 + 1 + SHNET_NAME_MAX > len) break;
-        s_rooms[s_roomCount].code    = ShnGetU16(p, &off);
-        s_rooms[s_roomCount].players = ShnGetU8(p, &off);
-        s_rooms[s_roomCount].max     = ShnGetU8(p, &off);
-        ShnGetStr(p, &off, SHNET_NAME_MAX, s_rooms[s_roomCount].host, SHNET_NAME_MAX);
-        ShnSanitizeText(s_rooms[s_roomCount].host);
-        ShNetChat_Censor(s_rooms[s_roomCount].host);
-        /* The host's map, from a server that sends it. */
-        s_rooms[s_roomCount].map = (off < len) ? ShnGetU8(p, &off) : 0xFF;
-        s_roomCount++;
     }
     if (more && page < 255 && s_roomCount < COOPUDP_MAX_ROOMS && s_connected)
     {
@@ -291,7 +361,8 @@ void CoopUdp_UseWorldLink(void)
     s_connected  = 1;
     s_session    = ShNet_WorldSession();
     s_selfId     = ShNet_WorldSelfId();
-    SDL_strlcpy(s_name, g_PcConfig.onlineName[0] ? g_PcConfig.onlineName : "Player", sizeof(s_name));
+    s_blocksSentFor = 0;
+    CoopUdp_SetName();
     CoopUdp_SetStatus("On the community server");
 }
 
@@ -437,8 +508,7 @@ int CoopUdp_SetServer(const char* host, unsigned short port)
     s_rxHead = s_rxTail = 0;
     s_lastHelloMs = 0;
     {
-        const char* nm = g_PcConfig.onlineName;
-        SDL_strlcpy(s_name, (nm && nm[0]) ? nm : "Player", sizeof(s_name));
+        CoopUdp_SetName();
     }
     CoopUdp_SetStatus("Connecting...");
     return 1;
@@ -463,6 +533,43 @@ void CoopUdp_RequestRoomList(void)
     if (!s_haveServer) return;
     if (s_connected) CoopUdp_SendSimple(SHNET_MSG_ROOM_LIST_REQ);
     else             s_pendList = 1;
+}
+
+void CoopUdp_SetBlocks(const unsigned int* toks, int n)
+{
+    int i, same = (n == s_blockN);
+    if (n < 0) n = 0;
+    if (n > 64) n = 64;
+    for (i = 0; same && i < n; i++) same = (s_blocks[i] == toks[i]);
+    if (same) return;
+    for (i = 0; i < n; i++) s_blocks[i] = toks[i];
+    s_blockN = n;
+    if (s_connected && s_room && s_hostId == s_selfId) CoopUdp_SendBlocks();
+}
+
+unsigned int CoopUdp_TokenOf(unsigned long long id)
+{
+    int i;
+    for (i = 0; i < s_memberCount; i++)
+        if (s_members[i].id == (shn_u32)id) return s_members[i].token;
+    return 0;
+}
+
+unsigned int CoopUdp_TagOf(unsigned long long id)
+{
+    int i;
+    for (i = 0; i < s_memberCount; i++)
+        if (s_members[i].id == (shn_u32)id) return s_members[i].tag;
+    return 0;
+}
+
+int CoopUdp_RoomListGetEx(int i, int* hostTag, int* hostPing, int* held)
+{
+    if (i < 0 || i >= s_roomCount) return 0;
+    if (hostTag)  *hostTag  = s_rooms[i].hostTag;
+    if (hostPing) *hostPing = (s_rooms[i].hostPing == 0xFFFF) ? -1 : (int)s_rooms[i].hostPing;
+    if (held)     *held     = s_rooms[i].held;
+    return 1;
 }
 
 void CoopUdp_Kick(unsigned long long id)

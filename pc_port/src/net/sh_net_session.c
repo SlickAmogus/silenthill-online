@@ -134,7 +134,8 @@ static struct
     int                guestDebug;  /* host granted joined players debug controls */
 
     /* Open server rooms from the last list request, for the Join browser. */
-    struct { unsigned short code; unsigned char players, max, map; unsigned long long lobby; char host[SHSESSION_NAME_MAX]; } rooms[16];
+    struct { unsigned short code; unsigned char players, max, map, held; unsigned short hostTag; short hostPing;
+             unsigned long long lobby; char host[SHSESSION_NAME_MAX]; } rooms[256];
     int                roomCount;
 } s_pub;
 
@@ -371,6 +372,23 @@ void ShSession_RequestKick(unsigned long long id)
     if (!s_lock) return;
     SDL_LockMutex(s_lock);
     s_req.wantKick = id;
+    SDL_UnlockMutex(s_lock);
+}
+
+/* The /block list's address tokens, handed to the room link on the worker. */
+static unsigned int s_blockReq[64];
+static int          s_blockReqN, s_blockReqDirty;
+
+void ShSession_RequestBlocks(const unsigned int* toks, int n)
+{
+    int i;
+    if (!s_lock) return;
+    if (n < 0) n = 0;
+    if (n > 64) n = 64;
+    SDL_LockMutex(s_lock);
+    for (i = 0; i < n; i++) s_blockReq[i] = toks[i];
+    s_blockReqN     = n;
+    s_blockReqDirty = 1;
     SDL_UnlockMutex(s_lock);
 }
 
@@ -830,6 +848,8 @@ static void ShSession_SyncMembers(void)
             fresh[count].mapIdx  = -1;
             fresh[count].linked  = 0;
         }
+        fresh[count].tag   = (s_backend == COOP_BACKEND_UDP) ? (int)CoopUdp_TagOf(id) : 0;
+        fresh[count].token = (s_backend == COOP_BACKEND_UDP) ? CoopUdp_TokenOf(id) : 0;
         nm = Tp_NameOf(id);
         if (nm && nm[0])
         {
@@ -1395,7 +1415,12 @@ static void ShSession_Publish(void)
         {
             unsigned short code = 0;
             int            players = 0, max = 0, map = -1;
+            int            tag = 0, ping = -1, held = 0;
             CoopUdp_RoomListGet(k, &code, &players, &max, &map, s_pub.rooms[k].host, SHSESSION_NAME_MAX);
+            CoopUdp_RoomListGetEx(k, &tag, &ping, &held);
+            s_pub.rooms[k].hostTag  = (unsigned short)tag;
+            s_pub.rooms[k].hostPing = (short)ping;
+            s_pub.rooms[k].held     = (unsigned char)held;
             s_pub.rooms[k].code    = code;
             s_pub.rooms[k].players = (unsigned char)players;
             s_pub.rooms[k].max     = (unsigned char)max;
@@ -1411,6 +1436,9 @@ static void ShSession_Publish(void)
                 int players = 0, max = 0, map = -1;
                 ShSteam_LobbyListGet(j, &id, s_pub.rooms[rc].host, SHSESSION_NAME_MAX, &players, &max, &map);
                 ShNetChat_Censor(s_pub.rooms[rc].host);
+                s_pub.rooms[rc].hostTag  = 0;
+                s_pub.rooms[rc].hostPing = -1;
+                s_pub.rooms[rc].held     = 0;
                 s_pub.rooms[rc].code    = 0;
                 s_pub.rooms[rc].players = (unsigned char)players;
                 s_pub.rooms[rc].max     = (unsigned char)max;
@@ -1445,12 +1473,23 @@ int ShSession_RoomGet(int i, int* code, int* players, int* max, int* mapIdx, cha
     return 1;
 }
 
+int ShSession_RoomGetEx(int i, int* hostTag, int* hostPing, int* held)
+{
+    if (i < 0 || i >= s_pub.roomCount) return 0;
+    if (hostTag)  *hostTag  = s_pub.rooms[i].hostTag;
+    if (hostPing) *hostPing = s_pub.rooms[i].hostPing;
+    if (held)     *held     = s_pub.rooms[i].held;
+    return 1;
+}
+
 void ShSession_Tick(unsigned int nowMs)
 {
     int                wantHost, wantLeave, wantInvite, presenceDirty;
     unsigned long long wantKick;
     unsigned long long wantJoin;
     char               area[64];
+    unsigned int       blocks[64];
+    int                blocksN = 0, blocksDirty;
     int                i;
 
     int                poseValid, poseMap, poseChara, poseFlags, wantWorldMap;
@@ -1481,6 +1520,13 @@ void ShSession_Tick(unsigned int nowMs)
     wantLeave     = s_req.wantLeave;
     wantKick      = s_req.wantKick;
     s_req.wantKick = 0;
+    blocksDirty = s_blockReqDirty;
+    if (blocksDirty)
+    {
+        s_blockReqDirty = 0;
+        blocksN = s_blockReqN;
+        memcpy(blocks, s_blockReq, sizeof(blocks));
+    }
     wantInvite    = s_req.wantInvite;
     wantJoin      = s_req.wantJoin;
     presenceDirty = s_req.presenceDirty;
@@ -1525,6 +1571,7 @@ void ShSession_Tick(unsigned int nowMs)
     s_req.coopHidden     = 0;
     s_req.coopUseWorld   = 0;
     SDL_UnlockMutex(s_lock);
+    if (blocksDirty) CoopUdp_SetBlocks(blocks, blocksN);
 
     /* A Steam invite accepted in the overlay outranks an in-game Steam host,
      * but not an explicit server host/join the player just chose. */

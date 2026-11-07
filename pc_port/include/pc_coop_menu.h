@@ -104,6 +104,16 @@ void        Pc_CoopMenu_RequestReboot(const void* savegame);
 int         Pc_CoopMenu_InviteHost(void);
 void        Pc_CoopMenu_InviteJoin(int code);
 void        Pc_CoopMenu_RequestHostReboot(void);
+/* Invites (sh_net_invite.c): the in-game "host from here or from the lobby"
+ * question, the host setup at the title, the page that answers an invite,
+ * joining a room by code from the menus (or once a game has gone back to the
+ * title), and showing the lobby of the room we are in after that reset. */
+void        Pc_CoopMenu_OpenInviteHostChoice(void);
+void        Pc_CoopMenu_OpenHostForInvite(void);
+void        Pc_CoopMenu_OpenInviteAnswer(void);
+void        Pc_CoopMenu_JoinAtTitle(int code);
+void        Pc_CoopMenu_LobbyAtTitle(void);
+void        Pc_CoopMenu_InviteTick(void);
 
 #ifdef __cplusplus
 }

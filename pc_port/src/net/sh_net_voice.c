@@ -275,6 +275,8 @@ float ShNetVoice_MouthLevel(int local, unsigned long long id)
     return ref < 0.0f ? 0.0f : (ref > 1.0f ? 1.0f : ref);
 }
 
+extern int g_PcCoopGame;
+
 static void Voice_Say(int slot)
 {
     const unsigned int now = ShNetPlat_Millis();
@@ -288,7 +290,8 @@ static void Voice_Say(int slot)
     }
     s_lastSentMs = now;
     Voice_Play(set, slot, 1.0f, 1, 0);
-    if (ShSession_Active())
+    /* Heard by others only in a co-op game; never in the living world. */
+    if (ShSession_Active() && g_PcCoopGame)
     {
         b[o++] = SHNET_CTRL_VOICE;
         b[o++] = (unsigned char)s_sets[set].charaId;
@@ -298,10 +301,11 @@ static void Voice_Say(int slot)
     }
 }
 
+/* The wheel works in any game, single player too; only what is heard by
+ * others depends on co-op (Voice_Say). */
 static int Voice_InGame(void)
 {
-    extern int g_PcCoopGame;
-    return g_PcCoopGame && g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
+    return g_GameWork.gameState == GameState_InGame && g_SysWork.sysState == SysState_Gameplay &&
            !(g_SysWork.sysFlags & SysFlag_DemoActive);
 }
 

@@ -68,6 +68,8 @@ typedef struct
     shn_u32            playerId;
     char               name[SHNET_NAME_MAX];
     const char*        build; /* NULL = "selftest" */
+    shn_u32            caps;  /* SHNET_CAP_*: 0 = the older HELLO without uid or caps */
+    shn_u16            tag;   /* from WELCOME, when the server sends one */
 } Peer;
 
 static void PeerSetNonBlocking(TSock s)
@@ -261,6 +263,11 @@ static void PeerSendHello(Peer* p, shn_u32 reconnect, int withCookie, shn_u32 co
     if (withCookie)
     {
         ShnPutU32(buf, &off, cookie);
+        if (p->caps)
+        {
+            ShnPutU32(buf, &off, 0); /* uid */
+            ShnPutU32(buf, &off, p->caps);
+        }
     }
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), 0);
     PeerSend(p, buf, off);
@@ -291,6 +298,11 @@ static int PeerHelloAs(Peer* p, shn_u32 reconnect)
     o = 0;
     p->session  = ShnGetU32(pay, &o);
     p->playerId = ShnGetU32(pay, &o);
+    if (n >= 16 + SHNET_SERVER_MAX + SHNET_MOTD_MAX + 4)
+    {
+        o = 16 + SHNET_SERVER_MAX + SHNET_MOTD_MAX;
+        p->tag = ShnGetU16(pay, &o);
+    }
     return 1;
 }
 
@@ -931,6 +943,233 @@ int main(int argc, char** argv)
             PeerSimple(&crowd[k], SHNET_MSG_BYE);
         }
         PeerSimple(&o, SHNET_MSG_BYE);
+    }
+
+    printf("\nsocial\n");
+    {
+        Peer    s1, s2, s3, s4;
+        shn_u32 tok2 = 0;
+        int     dup1 = -1, dup3 = -1, esz = -1;
+        PeerOpen(&s1, host, port, "SocHarry");
+        PeerOpen(&s2, host, port, "SocHarry");
+        PeerOpen(&s3, host, port, "SocCybil");
+        PeerOpen(&s4, host, port, "SocDahlia");
+        s1.caps = s2.caps = s3.caps = s4.caps = SHNET_CAP_SOCIAL;
+        CHECK(PeerHello(&s1) && PeerHello(&s2) && PeerHello(&s3) && PeerHello(&s4), "four social players connected");
+        CHECK(s1.tag >= SHNET_TAG_MIN && s1.tag <= SHNET_TAG_MAX && s2.tag >= SHNET_TAG_MIN && s3.tag >= SHNET_TAG_MIN,
+              "WELCOME carries a 4-digit tag (%u, %u, %u)", (unsigned)s1.tag, (unsigned)s2.tag, (unsigned)s3.tag);
+        CHECK(s1.tag != s2.tag && s1.tag != s3.tag && s2.tag != s3.tag && s4.tag != s1.tag, "the tags are all different");
+
+        {
+            static const char* const qs[4] = { "socharry", "", "SocCybil", "Nobody Here" };
+            char                     q2[SHNET_QUERY_MAX];
+            int                      k;
+            snprintf(q2, sizeof(q2), "SocHarry#%04u", (unsigned)s2.tag);
+            for (k = 0; k < 4; k++)
+            {
+                shn_u8 buf[SHNET_HDR_SIZE + 4 + SHNET_QUERY_MAX];
+                int    off = SHNET_HDR_SIZE, o = 0, st, matches, req;
+                shn_u32 id;
+                ShnPutU16(buf, &off, (shn_u16)(100 + k));
+                ShnPutU16(buf, &off, 0);
+                ShnPutStr(buf, &off, k == 1 ? q2 : qs[k], SHNET_QUERY_MAX);
+                ShnPutHeader(buf, SHNET_MSG_LOOKUP, (shn_u16)(off - SHNET_HDR_SIZE), s3.session);
+                PeerSend(&s3, buf, off);
+                n = PeerWait(&s3, SHNET_MSG_LOOKUP, 1500, pay, sizeof(pay));
+                if (n < 4 + SHNET_LOOKUP_ENTRY) { CHECK(0, "lookup %d answered", k); continue; }
+                req = ShnGetU16(pay, &o);
+                st = ShnGetU8(pay, &o);
+                matches = ShnGetU8(pay, &o);
+                id = ShnGetU32(pay, &o);
+                if (k == 0) CHECK(req == 100 && st == SHNET_LOOK_AMBIGUOUS && matches == 2,
+                                  "a shared name alone is ambiguous (status %d, %d matches)", st, matches);
+                if (k == 1) CHECK(st == SHNET_LOOK_OK && id == s2.playerId, "name#tag finds exactly that player");
+                if (k == 2) CHECK(st == SHNET_LOOK_SELF, "looking yourself up says so");
+                if (k == 3) CHECK(st == SHNET_LOOK_NOTFOUND, "an unknown name is not found");
+            }
+        }
+
+        PeerSimple(&s3, SHNET_MSG_ROSTER_REQ);
+        n = PeerWait(&s3, SHNET_MSG_ROSTER, 1500, pay, sizeof(pay));
+        if (n >= 8)
+        {
+            int o = 2, cnt, k;
+            cnt = ShnGetU16(pay, &o);
+            (void)ShnGetU16(pay, &o);
+            esz = ShnGetU16(pay, &o);
+            for (k = 0; k < cnt && esz == SHNET_ROSTER_ENTRY_SOCIAL && 8 + (k + 1) * esz <= n; k++)
+            {
+                int     e = 8 + k * esz, eo = e;
+                shn_u32 id = ShnGetU32(pay, &eo);
+                int     rf;
+                eo = e + 36 + 2;
+                rf = ShnGetU8(pay, &eo);
+                (void)ShnGetU8(pay, &eo);
+                if (id == s1.playerId) dup1 = rf & SHNET_RF_DUPNAME;
+                if (id == s3.playerId) dup3 = rf & SHNET_RF_DUPNAME;
+                if (id == s2.playerId) tok2 = ShnGetU32(pay, &eo);
+            }
+        }
+        CHECK(esz == SHNET_ROSTER_ENTRY_SOCIAL, "a social roster says its entry size (%d)", esz);
+        CHECK(dup1 > 0 && dup3 == 0, "a shared name is flagged, a unique one is not");
+        CHECK(tok2 != 0, "every entry carries an address token");
+
+        {
+            shn_u8 buf[SHNET_HDR_SIZE + 4 + SHNET_CHAT_MAX];
+            int    off = SHNET_HDR_SIZE;
+            ShnPutU32(buf, &off, s1.playerId);
+            ShnPutStr(buf, &off, "psst", SHNET_CHAT_MAX);
+            ShnPutHeader(buf, SHNET_MSG_WHISPER, (shn_u16)(off - SHNET_HDR_SIZE), s3.session);
+            PeerSend(&s3, buf, off);
+            n = PeerWait(&s1, SHNET_MSG_WHISPER, 1500, pay, sizeof(pay));
+            if (n >= 12 + SHNET_NAME_MAX + SHNET_CHAT_MAX)
+            {
+                int     o = 0, dir;
+                shn_u32 from = ShnGetU32(pay, &o);
+                char    nm[SHNET_NAME_MAX], tx[SHNET_CHAT_MAX];
+                (void)ShnGetU16(pay, &o);
+                dir = ShnGetU8(pay, &o);
+                o = 12;
+                ShnGetStr(pay, &o, SHNET_NAME_MAX, nm, sizeof(nm));
+                ShnGetStr(pay, &o, SHNET_CHAT_MAX, tx, sizeof(tx));
+                CHECK(from == s3.playerId && dir == SHNET_PM_IN && !strcmp(nm, "SocCybil") && !strcmp(tx, "psst"),
+                      "a whisper reaches only its player, with the sender on it");
+            }
+            else
+            {
+                CHECK(0, "a whisper reaches its player");
+            }
+            n = PeerWait(&s3, SHNET_MSG_WHISPER, 1500, pay, sizeof(pay));
+            CHECK(n > 4 && pay[6] == SHNET_PM_OUT, "the sender is told it was delivered");
+            n = PeerWait(&s2, SHNET_MSG_WHISPER, 300, pay, sizeof(pay));
+            CHECK(n < 0, "nobody else hears it");
+            off = SHNET_HDR_SIZE;
+            ShnPutU32(buf, &off, 0x7FFFFFF0u);
+            ShnPutStr(buf, &off, "anyone?", SHNET_CHAT_MAX);
+            ShnPutHeader(buf, SHNET_MSG_WHISPER, (shn_u16)(off - SHNET_HDR_SIZE), s3.session);
+            PeerSend(&s3, buf, off);
+            n = PeerWait(&s3, SHNET_MSG_WHISPER, 1500, pay, sizeof(pay));
+            CHECK(n > 6 && pay[6] == SHNET_PM_GONE, "a whisper to nobody comes back undelivered");
+        }
+
+        {
+            shn_u8 buf[SHNET_HDR_SIZE + 4 + SHNET_REPORT_MAX];
+            int    off = SHNET_HDR_SIZE, k;
+            for (k = 0; k < 2; k++)
+            {
+                char tx[SHNET_EVENT_MAX];
+                int  o = 8;
+                off = SHNET_HDR_SIZE;
+                ShnPutU32(buf, &off, s3.playerId);
+                ShnPutStr(buf, &off, "selftest report", SHNET_REPORT_MAX);
+                ShnPutHeader(buf, SHNET_MSG_REPORT, (shn_u16)(off - SHNET_HDR_SIZE), s1.session);
+                PeerSend(&s1, buf, off);
+                n = PeerWait(&s1, SHNET_MSG_EVENT, 1500, pay, sizeof(pay));
+                tx[0] = '\0';
+                if (n >= 8 + SHNET_EVENT_MAX) ShnGetStr(pay, &o, SHNET_EVENT_MAX, tx, sizeof(tx));
+                if (k == 0) CHECK(strstr(tx, "Report sent") != NULL, "a report is acknowledged (%s)", tx);
+                else        CHECK(strstr(tx, "wait") != NULL, "a second report at once is refused (%s)", tx);
+            }
+        }
+
+        PeerChat(&s3, SHNET_CHAT_GLOBAL, "first");
+        n = PeerWait(&s4, SHNET_MSG_CHAT_MSG, 1500, pay, sizeof(pay));
+        CHECK(n >= 8 + SHNET_NAME_MAX + SHNET_CHAT_MAX + 8, "global chat carries the sender's tag and token (%d bytes)", n);
+        PeerChat(&s3, SHNET_CHAT_GLOBAL, "first, part two");
+        n = PeerWait(&s4, SHNET_MSG_CHAT_MSG, 1500, pay, sizeof(pay));
+        CHECK(n > 0, "the next piece of the same message gets through");
+        T_SLEEP(1700);
+        PeerChat(&s3, SHNET_CHAT_GLOBAL, "second, too soon");
+        n = PeerWait(&s4, SHNET_MSG_CHAT_MSG, 600, pay, sizeof(pay));
+        CHECK(n < 0, "a new global message inside 10 s is dropped");
+
+        printf("\nroom seats and blocks\n");
+        {
+            shn_u16 code = 0;
+            shn_u8  buf[SHNET_HDR_SIZE + 16];
+            int     off = SHNET_HDR_SIZE;
+            ShnPutU8(buf, &off, 2);
+            ShnPutU8(buf, &off, 0);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_CREATE, (shn_u16)(off - SHNET_HDR_SIZE), s1.session);
+            PeerSend(&s1, buf, off);
+            n = PeerWait(&s1, SHNET_MSG_ROOM_JOINED, 1500, pay, sizeof(pay));
+            if (n >= 6) { int o = 4; code = ShnGetU16(pay, &o); }
+            CHECK(code != 0, "s1 hosts a two-seat room (%u)", (unsigned)code);
+
+            off = SHNET_HDR_SIZE;
+            ShnPutU8(buf, &off, 1);
+            ShnPutU32(buf, &off, tok2);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_BLOCKS, (shn_u16)(off - SHNET_HDR_SIZE), s1.session);
+            PeerSend(&s1, buf, off);
+            T_SLEEP(100);
+            off = SHNET_HDR_SIZE;
+            ShnPutU16(buf, &off, code);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_JOIN, (shn_u16)(off - SHNET_HDR_SIZE), s2.session);
+            PeerSend(&s2, buf, off);
+            n = PeerWait(&s2, SHNET_MSG_ROOM_REJECT, 1500, pay, sizeof(pay));
+            if (n >= 1 + SHNET_REJECT_MAX)
+            {
+                char tx[SHNET_REJECT_MAX];
+                int  o = 1;
+                ShnGetStr(pay, &o, SHNET_REJECT_MAX, tx, sizeof(tx));
+                CHECK(!strcmp(tx, "Unable to join this room."), "a blocked address is refused (%s)", tx);
+            }
+            else
+            {
+                CHECK(0, "a blocked address is refused");
+            }
+
+            /* Every test player shares 127.0.0.1, so that block covered them
+             * all (the way one covers a household): lift it. */
+            off = SHNET_HDR_SIZE;
+            ShnPutU8(buf, &off, 0);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_BLOCKS, (shn_u16)(off - SHNET_HDR_SIZE), s1.session);
+            PeerSend(&s1, buf, off);
+            T_SLEEP(100);
+
+            /* s3 says yes to s1: one seat held; s4 says yes too: full. */
+            off = SHNET_HDR_SIZE;
+            ShnPutU32(buf, &off, s1.playerId);
+            ShnPutU8(buf, &off, SHNET_INV_ACCEPT);
+            ShnPutU8(buf, &off, 1);
+            ShnPutU16(buf, &off, 0);
+            ShnPutHeader(buf, SHNET_MSG_INVITE, (shn_u16)(off - SHNET_HDR_SIZE), s3.session);
+            PeerSend(&s3, buf, off);
+            n = PeerWait(&s1, SHNET_MSG_INVITE, 1500, pay, sizeof(pay));
+            CHECK(n >= 8 && pay[4] == SHNET_INV_ACCEPT, "the first yes reaches the host");
+            off = SHNET_HDR_SIZE;
+            ShnPutU32(buf, &off, s1.playerId);
+            ShnPutU8(buf, &off, SHNET_INV_ACCEPT);
+            ShnPutU8(buf, &off, 1);
+            ShnPutU16(buf, &off, 0);
+            ShnPutHeader(buf, SHNET_MSG_INVITE, (shn_u16)(off - SHNET_HDR_SIZE), s4.session);
+            PeerSend(&s4, buf, off);
+            n = PeerWait(&s4, SHNET_MSG_INVITE, 1500, pay, sizeof(pay));
+            CHECK(n >= 8 && pay[4] == SHNET_INV_FULL, "a second yes for the last seat is told the game is full");
+            n = PeerWait(&s1, SHNET_MSG_INVITE, 1500, pay, sizeof(pay));
+            CHECK(n >= 8 && pay[4] == SHNET_INV_FULL, "and the host hears it too");
+
+            off = SHNET_HDR_SIZE;
+            ShnPutU16(buf, &off, code);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_JOIN, (shn_u16)(off - SHNET_HDR_SIZE), s4.session);
+            PeerSend(&s4, buf, off);
+            n = PeerWait(&s4, SHNET_MSG_ROOM_REJECT, 1500, pay, sizeof(pay));
+            CHECK(n > 0 && pay[0] == 3, "a stranger cannot take the held seat (n %d, reason %d)", n, n > 0 ? pay[0] : -1);
+            off = SHNET_HDR_SIZE;
+            ShnPutU16(buf, &off, code);
+            ShnPutHeader(buf, SHNET_MSG_ROOM_JOIN, (shn_u16)(off - SHNET_HDR_SIZE), s3.session);
+            PeerSend(&s3, buf, off);
+            n = PeerWait(&s3, SHNET_MSG_ROOM_JOINED, 1500, pay, sizeof(pay));
+            CHECK(n > 0, "the player it was held for gets in");
+
+            PeerSimple(&s4, SHNET_MSG_ROOM_LIST_REQ);
+            n = PeerWait(&s4, SHNET_MSG_ROOM_LIST, 1500, pay, sizeof(pay));
+            CHECK(n == 1 + 35 + 2 || (n > 3 && (n - 3) % 35 == 0), "a social room list carries host tag and ping (%d bytes)", n);
+        }
+        PeerSimple(&s1, SHNET_MSG_BYE);
+        PeerSimple(&s2, SHNET_MSG_BYE);
+        PeerSimple(&s3, SHNET_MSG_BYE);
+        PeerSimple(&s4, SHNET_MSG_BYE);
     }
 
     printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "PASSED", g_fail, g_fail == 1 ? "" : "s");

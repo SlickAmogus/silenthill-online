@@ -23,6 +23,9 @@
 #define MINIMAP_SCALE_MIN 60.0f
 #define MINIMAP_SCALE_MAX 120.0f
 
+/* Players one /block list holds (online_block_N). */
+#define PC_ONLINE_BLOCK_MAX 64
+
 /* One full control scheme: keyboard primary + alternate, controller primary +
  * alternate. Keyboard values are SDL scancode names ("C","Up","Left Shift","[")
  * or "MouseN"; controller values are SDL game-controller names ("a",
@@ -568,6 +571,10 @@ typedef struct {
     int  onlinePort;          /* UDP port; 0 = SHNET_DEFAULT_PORT (online_port) */
     char onlineName[24];      /* how other players see you (online_name) */
     char onlinePassword[64];  /* shared word for a private server, "" = none (online_password) */
+    /* Players this one has /blocked: the server's address token for them and
+     * the name they had (online_block_0 .. online_block_63, "<hex> <name>"). */
+    struct { unsigned int token; char name[24]; } onlineBlocks[PC_ONLINE_BLOCK_MAX];
+    char onlineColor[16];     /* your own name colour as you see it (online_color), "" = the random one */
     unsigned int onlineUid;   /* persistent per-install id for the living world (online_uid); 0 until first run */
     int  onlineGhosts;        /* 1 = draw other players in the world (online_ghosts) */
     int  onlineMemos;         /* 1 = draw and place messages (online_memos) */
