@@ -211,7 +211,7 @@ static int cs_file_exists(const char* path)
 
 static void cs_scan_files(void)
 {
-    static const char* const dirs[2] = { "gamedata/load/CHARA", CD_DL_DIR };
+    static const char* const dirs[2] = { CD_DL_DIR, "gamedata/load/CHARA" };
     DIR*           d;
     struct dirent* e;
     int            di;
@@ -558,6 +558,8 @@ void Pc_CharaSelect_Close(void)
 {
     if (!s_open)
         return;
+    if (Cdm_IsOpen())
+        Cdm_Close();
     s_open = 0;
     g_PsxWideMenu = 0;
     cs_music_stop();
