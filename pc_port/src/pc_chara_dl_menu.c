@@ -17,6 +17,7 @@
 #include "pc_chara_dl.h"
 #include "pc_chara_dl_menu.h"
 #include "pc_chara_text.h"
+#include "pc_confirm_dialog.h"
 #include "lang_quick.h"
 #include "pc_chara_preview.h"
 #include "pc_mouse_cursor.h"
@@ -105,10 +106,9 @@ static int  s_pickStockChosen;
 static int s_restartShown;
 static int s_wasBusy;
 static int s_jojoAsked;   /* the update offer is made once per visit */
-static int s_jojoSel;     /* D_JOJO / D_QOL: 0 Yes, 1 No, 2 Don't ask again */
+
 static int s_qolAsked;    /* the QoL pack offer: once per visit too */
-static const char* const s_jojoBtn[3] = { "Yes", "No", "Don't ask again" };
-static const int s_jojoX[3] = { 70, 140, 236 }; /* button centres */
+
 
 /* ------------------------------------------------------------------------ */
 /* drawing helpers                                                           */
@@ -284,7 +284,7 @@ static void m_build(void)
         {
             char cat[64];
 
-            if (!Cd_LocalGet(i)->enabled)
+            if (!Cd_LocalGet(i)->enabled || Cd_LocalGet(i)->shadowed)
                 continue;
             m_pick_cat(Cd_LocalGet(i), cat, sizeof(cat));
             m_cat_find_or_add(cat, -1);
@@ -352,7 +352,7 @@ static void m_build(void)
                     continue;
                 if (s_page == P_PICK)
                 {
-                    if (!l->enabled)
+                    if (!l->enabled || l->shadowed)
                         continue;
                     m_pick_cat(l, cat, sizeof(cat));
                     if (strcmp(cat, s_cats[c].name) != 0)
@@ -409,12 +409,57 @@ static int m_cat_state(int c)
 /* ------------------------------------------------------------------------ */
 /* actions                                                                   */
 
+/* Placeholders {a}..{d} filled in order (the translations may move them). */
+static void m_fill4(char* out, int outSz, const char* tmpl, const char* a, const char* b, const char* c,
+                    const char* d)
+{
+    const char* v[4] = { a, b, c, d };
+    int         o = 0;
+
+    while (*tmpl && o < outSz - 1)
+    {
+        if (tmpl[0] == '{' && tmpl[1] >= 'a' && tmpl[1] <= 'd' && tmpl[2] == '}')
+        {
+            o += snprintf(out + o, (size_t)(outSz - o), "%s", v[tmpl[1] - 'a'] ? v[tmpl[1] - 'a'] : "");
+            if (o > outSz - 1)
+                o = outSz - 1;
+            tmpl += 3;
+        }
+        else
+            out[o++] = *tmpl++;
+    }
+    out[o] = '\0';
+}
+
+static void m_version(char* out, int outSz, const char* v)
+{
+    if (v != NULL && v[0])
+        snprintf(out, (size_t)outSz, "v%s", v);
+    else
+        snprintf(out, (size_t)outSz, "%s", Ct_Tr("no version"));
+}
+
 static void m_install(int idx, int confirmed)
 {
     const CdEntry* e = Cd_CatalogGet(idx);
+    int            k = Cd_PackCopy(e);
 
-    (void)e;
-    (void)confirmed;
+    if (!confirmed && k >= 0 && !Cd_IsDownloaded(e))
+    {
+        const CdLocal* l = Cd_LocalGet(k);
+        const CdGroup* g = Cd_GroupGet(l->group);
+        char           have[32], next[32], tmpl[512];
+
+        m_version(have, (int)sizeof(have), l->version);
+        m_version(next, (int)sizeof(next), e->version);
+        snprintf(tmpl, sizeof(tmpl), "%s",
+                 Ct_Tr("{a} is already installed from {b} ({c}). The download ({d}) will be used instead. Download it?"));
+        m_fill4(s_dialogText, (int)sizeof(s_dialogText), tmpl, e->name, g ? Ct_Tr(g->name) : "", have, next);
+        s_pendingIdx = idx;
+        s_dialog     = D_REPLACE;
+        Pc_ConfirmDialog_Open3("Additional Characters", s_dialogText, NULL);
+        return;
+    }
     Cd_QueueInstall(idx);
     s_changed = 1;
 }
@@ -433,12 +478,28 @@ static void m_toggle_item(int idx)
 
 static void m_toggle_category(int c, int confirmed)
 {
-    int i, all = 1;
+    int i, all = 1, packed = 0;
 
-    (void)confirmed;
     for (i = 0; i < Cd_CatalogCount(); i++)
         if (strcmp(Cd_CatalogGet(i)->category, s_cats[c].name) == 0 && !Cd_IsDownloaded(Cd_CatalogGet(i)))
+        {
             all = 0;
+            if (Cd_PackCopy(Cd_CatalogGet(i)) >= 0)
+                packed++;
+        }
+    if (!all && packed > 0 && !confirmed)
+    {
+        char n[16], tmpl[512];
+
+        snprintf(n, sizeof(n), "%d", packed);
+        snprintf(tmpl, sizeof(tmpl), "%s",
+                 Ct_Tr("{a} of these characters are already installed from packs. The downloads will be used instead. Download them?"));
+        m_fill4(s_dialogText, (int)sizeof(s_dialogText), tmpl, n, NULL, NULL, NULL);
+        s_pendingIdx = -(c + 1);
+        s_dialog     = D_REPLACE;
+        Pc_ConfirmDialog_Open3("Additional Characters", s_dialogText, NULL);
+        return;
+    }
     SD_Call(Sfx_MenuConfirm);
     for (i = 0; i < Cd_CatalogCount(); i++)
         if (strcmp(Cd_CatalogGet(i)->category, s_cats[c].name) == 0)
@@ -688,35 +749,33 @@ static int m_dialog_update(const NmInput* in)
         }
         return 1;
     }
+    if (s_dialog == D_REPLACE)
+    {
+        int r = Pc_ConfirmDialog_Update(in->left, in->right, in->confirm, in->cancel || in->mouseRight);
+
+        if (r == PC_CONFIRM_NONE)
+            return 1;
+        SD_Call(r == PC_CONFIRM_YES ? Sfx_MenuConfirm : Sfx_MenuCancel);
+        s_dialog = D_NONE;
+        if (r == PC_CONFIRM_YES)
+        {
+            if (s_pendingIdx >= 0)
+                m_install(s_pendingIdx, 1);
+            else
+                m_toggle_category(-s_pendingIdx - 1, 1);
+        }
+        return 1;
+    }
     if (s_dialog == D_JOJO || s_dialog == D_QOL)
     {
-        int i, pick = -1, old = s_jojoSel;
+        int r, pick;
 
-        if (in->left)
-            s_jojoSel = (s_jojoSel + 2) % 3;
-        if (in->right)
-            s_jojoSel = (s_jojoSel + 1) % 3;
-        for (i = 0; i < 3; i++)
-        {
-            int w = Ct_Width(s_jojoBtn[i], 1);
-
-            if (in->mouseY >= 120 && in->mouseY < 140 && in->mouseX >= s_jojoX[i] - w / 2 - 4 &&
-                in->mouseX < s_jojoX[i] + w / 2 + 4)
-            {
-                if (in->mouseMoved)
-                    s_jojoSel = i;
-                if (in->mouseLeft)
-                    pick = i;
-            }
-        }
-        if (s_jojoSel != old)
-            SD_Call(Sfx_MenuMove);
-        if (in->confirm)
-            pick = s_jojoSel;
-        if (in->cancel || in->mouseRight)
-            pick = 1;
-        if (pick < 0)
+        /* The shared message box (the one Reset settings uses) reads the
+         * mouse itself and draws above everything from the GL hook. */
+        r = Pc_ConfirmDialog_Update(in->left, in->right, in->confirm, in->cancel || in->mouseRight);
+        if (r == PC_CONFIRM_NONE)
             return 1;
+        pick = r == PC_CONFIRM_YES ? 0 : r == PC_CONFIRM_THIRD ? 2 : 1;
         SD_Call(pick == 0 ? Sfx_MenuConfirm : Sfx_MenuCancel);
         if (pick == 0)
         {
@@ -774,20 +833,19 @@ int Cdm_Update(const NmInput* in)
     if (s_page == P_HUB && s_dialog == D_NONE && !s_jojoAsked && Cd_OldJojoPending() && !Cd_OldJojoNoAsk())
     {
         s_jojoAsked = 1;
-        s_jojoSel   = 0;
-        snprintf(s_dialogText, sizeof(s_dialogText), "%s",
-                 Ct_Tr("Newer versions of jojo670's characters are available. Update them?"));
         s_dialog = D_JOJO;
-        NmConfirm_Open(&s_confirm);
+        Pc_ConfirmDialog_Open3("Additional Characters",
+                               "Newer versions of jojo670's characters are available. Update them?",
+                               "Don't ask again");
     }
     if (s_page == P_HUB && s_dialog == D_NONE && !s_qolAsked && !Cd_Busy() && Cd_LegacyPending() &&
         !Cd_LegacyNoAsk())
     {
         s_qolAsked = 1;
-        s_jojoSel  = 0;
-        snprintf(s_dialogText, sizeof(s_dialogText), "%s",
-                 Ct_Tr("Your QoL character packs are now part of Additional Characters. Download the new versions?"));
         s_dialog = D_QOL;
+        Pc_ConfirmDialog_Open3("Additional Characters",
+                               "Your QoL character packs are now part of Additional Characters. Download the new versions?",
+                               "Don't ask again");
     }
     if (s_dialog != D_NONE)
         return m_dialog_update(in);
@@ -1054,7 +1112,7 @@ static void m_rows_draw(void)
             int            st = Cd_IsDownloaded(e) ? 1 : 0;
 
             m_checkbox(x, y, st, sel);
-            const char* tag = Cd_NeedsUpdate(e) ? Ct_Tr("(update)") : Cd_CustomCopyWins(e) ? Ct_Tr("(custom copy in use)") : "";
+            const char* tag = Cd_NeedsUpdate(e) ? Ct_Tr("(update)") : "";
 
             snprintf(label, sizeof(label), "%s%s%s", e->name, tag[0] ? " " : "", tag);
         }
@@ -1063,7 +1121,12 @@ static void m_rows_draw(void)
             const CdLocal* l = Cd_LocalGet(r->idx);
 
             m_checkbox(x, y, l->enabled ? 1 : 0, sel);
-            snprintf(label, sizeof(label), "%s", l->name);
+            /* A pack's copy that the download of the same file overrides. */
+            if (l->shadowed && l->source != CD_SRC_DOWNLOAD && Cd_LocalFind(l->hero) >= 0 &&
+                Cd_LocalGet(Cd_LocalFind(l->hero))->source == CD_SRC_DOWNLOAD)
+                snprintf(label, sizeof(label), "%s %s", l->name, Ct_Tr("(download in use)"));
+            else
+                snprintf(label, sizeof(label), "%s", l->name);
         }
         else
         {
@@ -1172,7 +1235,8 @@ static void m_dialog_draw(void)
 {
     int cx = (s_fl + s_fr) / 2;
 
-    if (s_dialog == D_NONE)
+    /* The two offers are the shared message box, drawn by its own hook. */
+    if (s_dialog == D_NONE || s_dialog == D_JOJO || s_dialog == D_QOL || s_dialog == D_REPLACE)
         return;
     m_small(s_fl + 16, 104, StringColorId_White, s_dialogText, M_W - 32);
     if (s_dialog == D_RESTART || s_dialog == D_INFO)
@@ -1180,21 +1244,7 @@ static void m_dialog_draw(void)
         Ct_DrawCentered(cx, 124, 1, StringColorId_Gold, "OK");
         return;
     }
-    if (s_dialog == D_JOJO || s_dialog == D_QOL)
-    {
-        int i;
 
-        for (i = 0; i < 3; i++)
-        {
-            int w = Ct_Width(s_jojoBtn[i], 1);
-            int x = s_jojoX[i] - w / 2;
-
-            Ct_Draw(x, 124, 1, s_jojoSel == i ? StringColorId_Gold : StringColorId_White, s_jojoBtn[i], 0, 0);
-            if (s_jojoSel == i)
-                Nm_HighlightDraw(x - 4, x + w + 4, 138);
-        }
-        return;
-    }
     {
         static const char* const yn[2] = { "Yes", "No" };
         int                      i;
@@ -1210,6 +1260,14 @@ static void m_dialog_draw(void)
                 Nm_HighlightDraw(x - 4, x + w + 4, 138);
         }
     }
+}
+
+void Cdm_Close(void)
+{
+    if (s_dialog == D_JOJO || s_dialog == D_QOL || s_dialog == D_REPLACE)
+        Pc_ConfirmDialog_Cancel();
+    s_dialog = D_NONE;
+    s_open   = 0;
 }
 
 void Cdm_Draw(int fieldL, int fieldR)
