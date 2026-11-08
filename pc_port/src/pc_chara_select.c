@@ -11,6 +11,7 @@
 #include "bodyprog/bodyprog.h"
 #include "bodyprog/chara/chara.h"
 #include "bodyprog/events/bgm.h"
+#include "bodyprog/game_boot/background_sound_init.h"
 #include "bodyprog/sound/sfx_id_enum.h"
 #include "bodyprog/sound/sound_system.h"
 #include "bodyprog/item_screens.h"
@@ -18,7 +19,11 @@
 #include "main/fileinfo.h"
 #include "main/fsqueue.h"
 #include "lang_text.h"
+#include "pc_chara_dl.h"
+#include "pc_chara_dl_menu.h"
+#include "pc_chara_preview.h"
 #include "pc_chara_select.h"
+#include "pc_chara_text.h"
 #include "pc_config.h"
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu_draw.h"
@@ -72,8 +77,8 @@ static void cs_field_update(void)
 #define CS_HIT_PREV   (-3)
 #define CS_HIT_NEXT   (-4)
 
-#define CS_MAX_MODELS  48
-#define CS_TOKEN_MAX   48
+#define CS_MAX_MODELS  1024
+#define CS_TOKEN_MAX   96
 
 typedef struct
 {
@@ -86,19 +91,18 @@ typedef struct
  * fits them. Monster and ending Cybil share Cybil's row through the loader's
  * alt rule, so the rows stay the characters a player names. */
 static const CsChara s_charas[] = {
-    { "HERO",  "HARRY",            Chara_Harry },
-    { "SIBYL", "CYBIL",            Chara_Cybil },
-    { "MSB",   "MONSTER CYBIL",    Chara_MonsterCybil },
-    { "LISA",  "LISA",             Chara_Lisa },
-    { "BLISA", "BLOODY LISA",      Chara_BloodyLisa },
-    { "DARIA", "DAHLIA",           Chara_Dahlia },
-    { "KAU",   "KAUFMANN",         Chara_Kaufmann },
-    { "SRL",   "CHERYL",           Chara_Cheryl },
-    { "AR",    "ALESSA",           Chara_Alessa },
-    { "TAR",   "GHOST ALESSA",     Chara_GhostChildAlessa },
-    { "MAR",   "INCUBATOR",        Chara_Incubator },
-    { "BAR",   "BLOODY INCUBATOR", Chara_BloodyIncubator },
-    { "DOC",   "GHOST DOCTOR",     Chara_GhostDoctor },
+    { "HERO",  "Harry",            Chara_Harry },
+    { "SIBYL", "Cybil",            Chara_Cybil },
+    { "MSB",   "Monster Cybil",    Chara_MonsterCybil },
+    { "LISA",  "Lisa",             Chara_Lisa },
+    { "BLISA", "Bloody Lisa",      Chara_BloodyLisa },
+    { "DARIA", "Dahlia",           Chara_Dahlia },
+    { "KAU",   "Kaufmann",         Chara_Kaufmann },
+    { "SRL",   "Cheryl",           Chara_Cheryl },
+    { "AR",    "Alessa",           Chara_Alessa },
+    { "TAR",   "Ghost Alessa",     Chara_GhostChildAlessa },
+    { "MAR",   "Incubator",        Chara_Incubator },
+    { "DOC",   "Ghost Doctor",     Chara_GhostDoctor },
 };
 #define CS_CHARA_COUNT ((int)(sizeof(s_charas) / sizeof(s_charas[0])))
 #define CS_ROW_COUNT   (1 + CS_CHARA_COUNT)
@@ -109,7 +113,7 @@ typedef struct
 {
     CsModelKind kind;
     char        token[CS_TOKEN_MAX]; /* config value: "-" stock, play-as name, or file base */
-    char        display[64];         /* the file name shown */
+    char        display[96];         /* the file name shown */
     int         playasIdx;
 } CsModel;
 
@@ -167,6 +171,26 @@ static void cs_apply(int chara)
     Pc_SkinChara_SetCharaFile(s_charas[chara].ilm, s_choice[chara]);
 }
 
+/* Reset all settings: every character back to its own model (a NAME.glb
+ * still wins, as with no choice made) and Harry back to Harry. */
+void Pc_CharaSelect_ResetAll(void)
+{
+    char key[32];
+    int  i;
+
+    for (i = 1; i < CS_CHARA_COUNT; i++)
+    {
+        if (s_choice[i][0] == '\0')
+            continue;
+        s_choice[i][0] = '\0';
+        cs_apply(i);
+        snprintf(key, sizeof(key), "chara_model_%s", s_charas[i].ilm);
+        PcConfig_SaveKeyValue(key, "");
+    }
+    Pc_PlayAs_SetByName("harry", 1);
+    s_modelsRow = -1;
+}
+
 void Pc_CharaSelect_Init(void)
 {
     int i;
@@ -187,14 +211,22 @@ static int cs_file_exists(const char* path)
 
 static void cs_scan_files(void)
 {
+    static const char* const dirs[2] = { "gamedata/load/CHARA", CD_DL_DIR };
     DIR*           d;
     struct dirent* e;
+    int            di;
 
     s_fileCount = 0;
-    if (!g_PcConfig.allowLooseFiles || (d = opendir("gamedata/load/CHARA")) == NULL)
+    if (!g_PcConfig.allowLooseFiles)
         return;
+    for (di = 0; di < 2; di++)
+    {
+    if ((d = opendir(dirs[di])) == NULL)
+        continue;
     while ((e = readdir(d)) != NULL && s_fileCount < CS_MAX_MODELS)
     {
+        int dup = 0, k;
+
         const char* dot = strrchr(e->d_name, '.');
         size_t      n;
 
@@ -208,28 +240,32 @@ static void cs_scan_files(void)
             continue;
         memcpy(s_files[s_fileCount], e->d_name, n);
         s_files[s_fileCount][n] = '\0';
-        s_fileCount++;
+        for (k = 0; k < s_fileCount && !dup; k++)
+            dup = SDL_strcasecmp(s_files[k], s_files[s_fileCount]) == 0;
+        if (!dup)
+            s_fileCount++;
     }
     closedir(d);
+    }
 }
 
-static void cs_ilm_name(int charaId, char* out, size_t outSize)
-{
-    char file[32];
-    char* dot;
-
-    Fs_GetFileName(file, CHARA_FILE_INFOS[charaId].modelFileIdx);
-    dot = strrchr(file, '.');
-    if (dot != NULL)
-        *dot = '\0';
-    snprintf(out, outSize, "%s", file);
-}
-
+/* HERO_ swaps show their ini name (or the file name after HERO_); other
+ * files, such as a SIBYL.glb replacement, show as the file. */
 static void cs_file_display(const char* base, char* out, size_t outSize)
 {
     char path[160];
 
-    snprintf(path, sizeof(path), "gamedata/load/CHARA/%s.glb", base);
+    if (SDL_strncasecmp(base, "HERO", 4) == 0 && base[4] != '\0')
+    {
+        Cd_DisplayName(base, out, (int)outSize);
+        return;
+    }
+    {
+        char rb[160];
+
+        snprintf(path, sizeof(path), "gamedata/load/CHARA/%s", base);
+        snprintf(path, sizeof(path), "%s.glb", Cd_ResolveBase(path, rb, (int)sizeof(rb)));
+    }
     snprintf(out, outSize, "%s.%s", base, cs_file_exists(path) ? "GLB" : "GLTF");
 }
 
@@ -262,11 +298,7 @@ static void cs_build_models(int chara)
                 if (file != NULL)
                     cs_file_display(file, m->display, sizeof(m->display));
                 else
-                {
-                    char ilm[32];
-                    cs_ilm_name(Pc_PlayAs_CharaId(i), ilm, sizeof(ilm));
-                    snprintf(m->display, sizeof(m->display), "%s.ILM", ilm);
-                }
+                    snprintf(m->display, sizeof(m->display), "%s", Ct_Name(Pc_PlayAs_Label(i)));
                 if (i == cur)
                     s_modelCur = s_modelCount;
                 s_modelCount++;
@@ -282,7 +314,7 @@ static void cs_build_models(int chara)
 
         m->kind = CS_M_STOCK;
         snprintf(m->token, sizeof(m->token), "-");
-        snprintf(m->display, sizeof(m->display), "%s.ILM", s_charas[chara].ilm);
+        snprintf(m->display, sizeof(m->display), "%s", Ct_Tr(s_charas[chara].label));
 
         snprintf(own, sizeof(own), "gamedata/load/CHARA/%s.glb", s_charas[chara].ilm);
         ownGlb = cs_file_exists(own);
@@ -338,7 +370,7 @@ static void cs_pick(int chara, int idx)
     if (m->kind == CS_M_PLAYAS)
     {
         if (!Pc_PlayAs_SetByIndex(m->playasIdx, 1))
-            cs_set_status("COULD NOT LOAD THAT MODEL");
+            cs_set_status(Ct_Tr("Could not load that model"));
         return;
     }
     snprintf(s_choice[chara], sizeof(s_choice[chara]), "%s", m->token);
@@ -358,12 +390,90 @@ static void cs_cycle(int dir)
     cs_pick(chara, (s_modelCur + (dir < 0 ? -1 : 1) + s_modelCount) % s_modelCount);
 }
 
+/* ---- model picker --------------------------------------------------- */
+
+/* What the picker should mark as current: NULL for the stock model, a file
+ * base, or "*name" for one of Harry's Play As cast. */
+static const char* cs_current_token(int chara, char* buf, size_t sz)
+{
+    if (chara == 0)
+    {
+        int         cur  = Pc_PlayAs_Current();
+        const char* file = Pc_PlayAs_File(cur);
+
+        if (file != NULL)
+            return file;
+        if (Pc_PlayAs_CharaId(cur) == Chara_Harry)
+            return NULL;
+        snprintf(buf, sz, "*%s", Pc_PlayAs_Name(cur));
+        return buf;
+    }
+    if (s_choice[chara][0] == '\0' || strcmp(s_choice[chara], "-") == 0)
+        return NULL;
+    return s_choice[chara];
+}
+
+static void cs_open_picker(void)
+{
+    int  chara = cs_chara_row();
+    char buf[CS_TOKEN_MAX + 2];
+
+    if (chara < 0)
+        return;
+    SD_Call(Sfx_MenuConfirm);
+    Cdm_Open(CDM_PICKER, s_charas[chara].ilm, cs_current_token(chara, buf, sizeof(buf)), s_charas[chara].charaId);
+}
+
+/* Applies what the picker chose to the selected row's model list. */
+static void cs_picker_apply(const char* file)
+{
+    int chara = cs_chara_row();
+    int i;
+
+    if (chara < 0)
+        return;
+    for (i = 0; i < s_modelCount; i++)
+    {
+        const CsModel* m = &s_models[i];
+        int            hit;
+
+        if (file == NULL)
+            hit = (chara == 0) ? (m->kind == CS_M_PLAYAS && Pc_PlayAs_File(m->playasIdx) == NULL &&
+                                  Pc_PlayAs_CharaId(m->playasIdx) == Chara_Harry)
+                               : m->kind == CS_M_STOCK;
+        else if (file[0] == '*')
+            hit = m->kind == CS_M_PLAYAS && strcmp(Pc_PlayAs_Name(m->playasIdx), file + 1) == 0;
+        else if (m->kind == CS_M_PLAYAS)
+            hit = Pc_PlayAs_File(m->playasIdx) != NULL && SDL_strcasecmp(Pc_PlayAs_File(m->playasIdx), file) == 0;
+        else
+            hit = m->kind == CS_M_FILE && SDL_strcasecmp(m->token, file) == 0;
+        if (hit)
+        {
+            cs_pick(chara, i);
+            return;
+        }
+    }
+}
+
+/* After the Additional Characters screens changed the folder. */
+static void cs_rescan(void)
+{
+    cs_scan_files();
+    Pc_PlayAs_Rescan();
+    s_modelsRow = -1;
+    cs_models_for_row();
+}
+
 /* ---- music ---------------------------------------------------------- */
+
+extern int g_PcMenuMusicOwner;
+extern int g_PcMenuMusicCall;
 
 static void cs_music_start(void)
 {
     s_prevBgm   = g_GameWork.bgmIdx;
     s_musicStep = 0;
+    g_PcMenuMusicOwner = 1;
     if (s_prevBgm == BgmTrackIdx_5)
     {
         s_musicStep = 2;
@@ -383,20 +493,27 @@ static void cs_music_tick(void)
         Bgm_TrackSet(BgmTrackIdx_5);
         s_musicStep = 2;
     }
-    if (s_musicStep == 2 && g_GameWork.gameState == GameState_MainMenu)
+    /* Pumped here in every state: nothing else runs the BGM state machine
+     * under the title menu or the options screen, and in game the map's own
+     * call is held off (g_PcMenuMusicOwner) so its layers do not fight these. */
+    if (s_musicStep == 2)
     {
-        /* Nothing else runs the BGM state machine under the title menu. The
-         * layer ramps read the player's health, which is zero here. */
-        if (g_SysWork.playerWork.player.health <= Q12(0.0f))
+        /* Bgm_Update fades everything out for a dead player, and the health
+         * is zero everywhere outside a game: the title and the options screen
+         * opened from it. A New Game sets the real value when it boots. */
+        if (g_GameWork.gameState != GameState_InGame && g_SysWork.playerWork.player.health <= Q12(0.0f))
             g_SysWork.playerWork.player.health = Q12(100.0f);
+        g_PcMenuMusicCall = 1;
         Bgm_Update(BgmFlag_Layer1 | BgmFlag_Layer2 | BgmFlag_Layer3 | BgmFlag_Layer4 |
                    BgmFlag_Layer5 | BgmFlag_Layer6 | BgmFlag_Layer7 | BgmFlag_KeepAlive,
                    Q12(240.0f), NULL);
+        g_PcMenuMusicCall = 0;
     }
 }
 
 static void cs_music_stop(void)
 {
+    g_PcMenuMusicOwner = 0;
     if (s_prevBgm < 0)
         return;
     if (s_prevBgm == BgmTrackIdx_5)
@@ -511,7 +628,7 @@ static void cs_select_row(int row)
 static void cs_download(void)
 {
     SD_Call(Sfx_MenuConfirm);
-    cs_set_status("DOWNLOADS COME WITH THE NEXT UPDATE");
+    Cdm_Open(CDM_HUB, NULL, NULL, Chara_Harry);
 }
 
 /* 0 when the activation closes the screen. */
@@ -527,7 +644,7 @@ static int cs_activate(void)
         cs_download();
         return 1;
     }
-    cs_cycle(+1);
+    cs_open_picker();
     return 1;
 }
 
@@ -547,6 +664,22 @@ int Pc_CharaSelect_Update(const NmInput* inRaw)
     if (loc.mouseOk)
         loc.mouseX = s_fieldL + (loc.mouseX * CS_FIELD_W) / 320;
     cs_music_tick();
+
+    if (Cdm_IsOpen())
+    {
+        const char* file;
+
+        if (cs_escape_pressed())
+            loc.cancel = 1;
+        if (Cdm_Update(in))
+            return 1;
+        if (Cdm_TakeChanged())
+            cs_rescan();
+        if (Cdm_PickerResult(&file))
+            cs_picker_apply(file);
+        s_escPrev = 1;
+        return 1;
+    }
     back    = cs_escape_pressed();
     oldSel  = s_scroll.sel;
     oldBack = s_onBack;
@@ -558,29 +691,17 @@ int Pc_CharaSelect_Update(const NmInput* inRaw)
     }
 
     hit = cs_hit(in);
+    /* The wheel only scrolls. It used to cycle the model of the row under the
+     * pointer, so scrolling the list with the pointer over the model column
+     * quietly changed characters. */
     if (in->wheel != 0)
     {
-        if (s_hoverCol2 && hit != CS_HIT_NONE && hit != CS_HIT_BACK)
-        {
-            /* Scrolling over the model column cycles the row under the mouse. */
-            if (hit == CS_HIT_PREV || hit == CS_HIT_NEXT || hit == s_scroll.sel)
-                cs_cycle(in->wheel > 0 ? -1 : +1);
-            else
-            {
-                Nm_HighlightSnap();
-                cs_select_row(hit);
-                cs_cycle(in->wheel > 0 ? -1 : +1);
-            }
-        }
-        else
-        {
-            int oldTop = s_scroll.top;
+        int oldTop = s_scroll.top;
 
-            NmScroll_Wheel(&s_scroll, in->wheel);
-            if (s_scroll.top != oldTop)
-                s_onBack = 0;
-            cs_models_for_row();
-        }
+        NmScroll_Wheel(&s_scroll, in->wheel);
+        if (s_scroll.top != oldTop)
+            s_onBack = 0;
+        cs_models_for_row();
     }
 
     if (in->mouseLeft && hit != CS_HIT_NONE)
@@ -598,6 +719,8 @@ int Pc_CharaSelect_Update(const NmInput* inRaw)
         }
         if (hit != s_scroll.sel || s_onBack)
             cs_select_row(hit);
+        else if (s_hoverCol2)
+            cs_open_picker();
         else
             return cs_activate();
     }
@@ -703,7 +826,6 @@ static void cs_back_draw(int selected)
 
 static void cs_rows_draw(void)
 {
-    char clean[128];
     int  i;
 
     for (i = 0; i < CS_VISIBLE && s_scroll.top + i < CS_ROW_COUNT; i++)
@@ -716,8 +838,7 @@ static void cs_rows_draw(void)
 
         if (row == CS_ROW_DOWNLOAD)
         {
-            Nm_SanitizeGlyphs("Download more...", clean, sizeof(clean), 1);
-            w = Nm_TextDrawMarquee(CS_COL1_X0, y, NM_TEXT_TALL, color, clean, CS_COL1_X1 - CS_COL1_X0, sel);
+            w = Ct_Draw(CS_COL1_X0, y, 1, color, "Additional Characters...", CS_COL1_X1 - CS_COL1_X0, sel);
             if (sel)
                 Nm_HighlightDraw(CS_COL1_X0 - 1, CS_COL1_X0 + w + 4, y + 14);
             continue;
@@ -727,8 +848,7 @@ static void cs_rows_draw(void)
             const CsChara* c = &s_charas[row - 1];
             const char*    value = "";
 
-            Nm_SanitizeGlyphs(c->label, clean, sizeof(clean), 1);
-            w = Nm_TextDrawMarquee(CS_COL1_X0, y, NM_TEXT_TALL, color, clean, CS_COL1_X1 - CS_COL1_X0, sel);
+            w = Ct_Draw(CS_COL1_X0, y, 1, color, c->label, CS_COL1_X1 - CS_COL1_X0, sel);
             if (sel)
                 Nm_HighlightDraw(CS_COL1_X0 - 1, CS_COL1_X0 + w + 4, y + 14);
 
@@ -737,16 +857,12 @@ static void cs_rows_draw(void)
             else if (row - 1 == 0)
             {
                 const char* f = Pc_PlayAs_File(Pc_PlayAs_Current());
-                char        ilm[32];
                 static char cur[64];
 
                 if (f != NULL)
                     cs_file_display(f, cur, sizeof(cur));
                 else
-                {
-                    cs_ilm_name(Pc_PlayAs_SkinCharaId(), ilm, sizeof(ilm));
-                    snprintf(cur, sizeof(cur), "%s.ILM", ilm);
-                }
+                    snprintf(cur, sizeof(cur), "%s", Ct_Name(Pc_PlayAs_Label(Pc_PlayAs_Current())));
                 value = cur;
             }
             else
@@ -762,27 +878,25 @@ static void cs_rows_draw(void)
                     if (choice[0] == '\0' && cs_file_exists(own))
                         snprintf(cur, sizeof(cur), "%s.GLB", c->ilm);
                     else
-                        snprintf(cur, sizeof(cur), "%s.ILM", c->ilm);
+                        snprintf(cur, sizeof(cur), "%s", Ct_Tr(c->label));
                 }
                 else
                     cs_file_display(choice, cur, sizeof(cur));
                 value = cur;
             }
 
-            Nm_SanitizeGlyphs(value, clean, sizeof(clean), 1);
             if (sel)
             {
                 int maxW = CS_COL2_X1 - CS_COL2_X0 - 20;
-                int tw   = Pc_LangMenuTextWidth(clean);
+                int tw   = Ct_TextWidth(value, 1);
                 int x    = CS_COL2_X0 + 10 + ((maxW - (tw < maxW ? tw : maxW)) / 2);
 
-                w = Nm_TextDrawMarquee(x, y, NM_TEXT_TALL, StringColorId_Gold, clean, maxW, 1);
+                w = Ct_DrawText(x, y, 1, StringColorId_Gold, value, maxW, 1);
                 if (s_modelCount > 1)
                     Nm_ValueArrowsDraw(x, x + w, y);
             }
             else
-                Nm_TextDrawMarquee(CS_COL2_X0, y, NM_TEXT_TALL, StringColorId_LightGrey, clean,
-                                   CS_COL2_X1 - CS_COL2_X0, 0);
+                Ct_DrawText(CS_COL2_X0, y, 1, StringColorId_LightGrey, value, CS_COL2_X1 - CS_COL2_X0, 0);
         }
     }
 
@@ -795,8 +909,6 @@ static void cs_rows_draw(void)
 
 void Pc_CharaSelect_Draw(void)
 {
-    char clean[128];
-
     if (!s_open)
         return;
     cs_field_update();
@@ -806,7 +918,13 @@ void Pc_CharaSelect_Draw(void)
     else
         Nm_BlackBackgroundDraw();
 
-    Nm_TextDrawCentered(160, CS_HEADING_Y, NM_TEXT_TALL, StringColorId_White, "CHARACTER_SELECT");
+    if (Cdm_IsOpen())
+    {
+        Cdm_Draw(s_fieldL, s_fieldR);
+        return;
+    }
+
+    Ct_DrawCentered(160, CS_HEADING_Y, 1, StringColorId_White, "Character Select");
     Nm_RuleDraw(CS_COL1_X0, CS_PREV_X1, CS_RULE_Y, 0);
     cs_line(CS_DIV1_X, CS_RULE_Y, CS_DIV1_X, CS_ARROW_DN_Y + 6, 1);
     cs_frame(CS_PREV_X0, CS_PREV_Y0, CS_PREV_X1, CS_PREV_Y1);
@@ -817,22 +935,45 @@ void Pc_CharaSelect_Draw(void)
     {
         const char* file;
 
-        if (Pc_CharaSelect_PreviewTarget(&file) != NULL && file == NULL)
-            Nm_TextDrawCentered((CS_PREV_X0 + CS_PREV_X1) / 2, (CS_PREV_Y0 + CS_PREV_Y1) / 2 - 8, NM_TEXT_TALL,
-                                StringColorId_DarkGrey, "NO_PREVIEW");
+        if (Pc_CharaSelect_PreviewTarget(&file) != NULL && !Pc_CharaPreview_Showing())
+            Ct_DrawCentered((CS_PREV_X0 + CS_PREV_X1) / 2, (CS_PREV_Y0 + CS_PREV_Y1) / 2 - 8, 1,
+                            StringColorId_DarkGrey, "No preview");
     }
 
     if (s_status[0] != '\0' && SDL_GetTicks() < s_statusUntil)
-    {
-        Nm_SanitizeGlyphs(s_status, clean, sizeof(clean), 1);
-        Nm_TextDrawMarquee(cs_back_right() + 12, CS_FOOTER_Y, NM_TEXT_TALL, StringColorId_LightGrey, clean,
-                           CS_PREV_X1 - cs_back_right() - 12, 1);
-    }
+        Ct_Small(cs_back_right() + 12, CS_FOOTER_Y + 4, StringColorId_LightGrey, s_status,
+                 CS_PREV_X1 - cs_back_right() - 12);
     Pc_MouseCursor_Show();
+}
+
+int Pc_CharaSelect_PreviewStockId(void)
+{
+    int chara = cs_chara_row();
+
+    if (!s_open)
+        return -1;
+    if (Cdm_IsOpen())
+        return Cdm_PreviewStockId();
+    if (chara < 0 || s_modelCount == 0)
+        return -1;
+    {
+        const CsModel* m = &s_models[s_modelCur];
+
+        if (m->kind == CS_M_STOCK)
+            return s_charas[chara].charaId;
+        if (m->kind == CS_M_PLAYAS && Pc_PlayAs_File(m->playasIdx) == NULL)
+            return Pc_PlayAs_CharaId(m->playasIdx);
+    }
+    return -1;
 }
 
 void Pc_CharaSelect_PreviewRect(int* x0, int* y0, int* x1, int* y1)
 {
+    if (Cdm_IsOpen())
+    {
+        Cdm_PreviewRect(x0, y0, x1, y1);
+        return;
+    }
     *x0 = CS_PREV_X0 + 3;
     *y0 = CS_PREV_Y0 + 3;
     *x1 = CS_PREV_X1 - 3;
@@ -844,6 +985,8 @@ const char* Pc_CharaSelect_PreviewTarget(const char** file)
     int chara = cs_chara_row();
 
     *file = NULL;
+    if (s_open && Cdm_IsOpen())
+        return Cdm_PreviewTarget(file);
     if (!s_open || chara < 0 || s_modelCount == 0)
         return NULL;
     {

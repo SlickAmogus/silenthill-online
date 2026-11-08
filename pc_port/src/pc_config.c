@@ -102,6 +102,7 @@ s_PcConfig g_PcConfig = {
     .keyChatCycle     = "U",
     .gamepadIcons = GLYPH_SET_AUTO,
     .globalCharaPool = 1, /* 1=all chara assets resident PC-side + chara_global.dll AI backfill (SPAWN anything anywhere) */
+    .worldVisibility = 1,
     .wholeMapExteriors = 2, /* auto: whole town drawn while fog_strength < 1.0, the only time it can be seen */
     .usePgxp        = 0, /* 0=affine textures (PSX look), 1=PGXP perspective correct (WIP) */
     .itemDepthProbe = 0, /* 1=one-shot [ITEMDEPTH] depth dump per item-screen entry (diagnostic) */
@@ -119,7 +120,8 @@ s_PcConfig g_PcConfig = {
     .flashlightSize       = 3.00f, /* per-pixel flashlight cone coverage multiplier */
     .flashlightIntensityFps = 2.10f, /* FPS-mode brightness (head-mounted) */
     .flashlightSizeFps      = 1.30f, /* FPS-mode coverage (tighter than third-person) */
-    .flashlightFollowAim    = 1,
+    .flashlightFollowAim    = 0,
+    .flashlightFollowAimFps = 1,
     .postProcessIntensity = 1.0f, /* post-process effect mix, 0..1 */
     .tonemapIntensity     = 1.0f, /* tone-map mix, 0..1 */
     .brightness           = 1.0f, /* output image brightness; 1.0 = neutral */
@@ -145,7 +147,7 @@ s_PcConfig g_PcConfig = {
     .crosshairSize       = 100.0f,
     .crosshairFpsAimOnly = 0, /* FPS crosshair: 0 = always shown, 1 = only while aiming */
     .crosshairHideMelee  = 0, /* 1 = no crosshair unless a gun is equipped */
-    .autoReload          = 1, /* 0 = reload button only, 1 = after a dry fire, 2 = original (also on aim) */
+    .autoReload          = 2, /* 0 = reload button only, 1 = after a dry fire, 2 = original (also on aim) */
     .ragdoll             = 0,
     .textSize            = 100.0f,
     .aimAssist           = 1, /* OTS/TPS free-aim aim assist (mouse body-coverage + controller auto-aim) */
@@ -620,6 +622,10 @@ void PcConfig_Load(const char* path)
             if (f < 0.0f) f = 0.0f;
             if (f > 2.0f) f = 2.0f;
             g_PcConfig.fogStrength = f;
+        }
+        else if (strcmp(key, "world_visibility") == 0)
+        {
+            g_PcConfig.worldVisibility = (atoi(value) != 0);
         }
         else if (strcmp(key, "draw_distance_pct") == 0)
         {
@@ -1108,6 +1114,10 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "flashlight_follow_aim") == 0)
         {
             g_PcConfig.flashlightFollowAim = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "flashlight_follow_aim_fps") == 0)
+        {
+            g_PcConfig.flashlightFollowAimFps = (atoi(value) != 0);
         }
         else if (strcmp(key, "flashlight_size_fps") == 0)
         {

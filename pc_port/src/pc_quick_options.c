@@ -75,7 +75,7 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_OTSRESTX, QO_X_OTSRESTY, QO_X_OTSAIMX, QO_X_OTSAIMY,
        QO_X_DREAMSTR, QO_X_DREAMBLUR, QO_X_DPADMOVE, QO_X_CROSSHAIRSTYLE,
        QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM,
-       QO_X_CROSSHAIRMELEE, QO_X_AUTORELOAD };
+       QO_X_CROSSHAIRMELEE, QO_X_AUTORELOAD, QO_X_WORLDVIS, QO_X_FLASHAIM };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -125,6 +125,7 @@ static const QoRowDef s_pageGfx1[] = {
     { ROW_OPT,   "post_process",         0, NULL },
     { ROW_OPT,   "tonemap",              0, NULL },
     { ROW_OPT,   "fog_strength",         0, NULL },
+    { ROW_EXTRA, NULL, QO_X_WORLDVIS,       "World Visibility" },  /* fog below 1.0 only: qo_gfx1_page */
     { ROW_OPT,   "bullet_decals",        0, NULL },
     { ROW_EXTRA, NULL, QO_X_FACEANIM,       "Character Face Animation (WIP)" },
     { ROW_OPT,   "use_pgxp",             0, NULL },  /* PGXP */
@@ -139,7 +140,8 @@ static const QoRowDef s_pageGfx2[] = {
     { ROW_OPT,   "flashlight_mode",      0, NULL },
     { ROW_OPT,   "flashlight_intensity", 0, NULL },
     { ROW_OPT,   "flashlight_size",      0, NULL },
-    { ROW_EXTRA, NULL, QO_X_SHADOW,         "Shadow Resolution" },
+    { ROW_EXTRA, NULL, QO_X_FLASHAIM,       "Flashlight Follows Aim" },
+    { ROW_EXTRA, NULL, QO_X_SHADOW,        "Shadow Resolution" },
     { ROW_EXTRA, NULL, QO_X_DREAMBLUR,      "Dream Blur" },  /* not in the PC Options table: that page is full */
     { ROW_EXTRA, NULL, QO_X_DREAMSTR,       "Dream Blur Strength" },
     { ROW_EXTRA, NULL, QO_X_CHARALIGHT,     "Addon Character Lighting" },
@@ -162,7 +164,6 @@ static const QoRowDef s_pageHud[] = {
      * does not get one, that page keeps its slack for the next HUD setting. */
     { ROW_EXTRA, NULL, QO_X_CROSSHAIRSTYLE,  "Crosshair Style" },
     { ROW_EXTRA, NULL, QO_X_CROSSHAIRMELEE,  "Hide Crosshair for Melee" },
-    { ROW_OPT,   "text_size",            0, NULL },
     { ROW_OPT,   "low_health_glow",      0, NULL },
     QO_NAV_ROW,
     QO_CLOSE_ROW,
@@ -374,6 +375,35 @@ static const QoRowDef* qo_cheat_page(int cpage, int actions, int* count)
     return s_cheatRows[cpage][actions];
 }
 
+/* World Visibility only exists below fog 1.0, where the fog plane no longer
+ * ends the view, so the page drops the row otherwise. */
+static const QoRowDef* qo_gfx1_page(int* count)
+{
+    static QoRowDef s_noWv[sizeof(s_pageGfx1) / sizeof(s_pageGfx1[0])];
+    static int      s_noWvCount = 0, s_lastShow = -1;
+    int             show = g_PcConfig.fogStrength < 1.0f;
+    int             i;
+
+    if (show != s_lastShow)
+    {
+        s_lastShow      = show;
+        s_viewRowsDirty = 1;
+    }
+    if (show)
+    {
+        *count = (int)(sizeof(s_pageGfx1) / sizeof(s_pageGfx1[0]));
+        return s_pageGfx1;
+    }
+    if (s_noWvCount == 0)
+    {
+        for (i = 0; i < (int)(sizeof(s_pageGfx1) / sizeof(s_pageGfx1[0])); i++)
+            if (!(s_pageGfx1[i].kind == ROW_EXTRA && s_pageGfx1[i].extra == QO_X_WORLDVIS))
+                s_noWv[s_noWvCount++] = s_pageGfx1[i];
+    }
+    *count = s_noWvCount;
+    return s_noWv;
+}
+
 enum { QO_PG_GFX1 = 0, QO_PG_GFX2, QO_PG_HUD, QO_PG_AUDIO, QO_PG_VIEW,
        QO_PG_CHEATS1, QO_PG_CHEATS2, QO_PG_DEBUG1, QO_PG_DEBUG2, QO_PG_CONTROLS };
 
@@ -392,7 +422,7 @@ static const QoRowDef* qo_page_rows(int page, int* count)
         case QO_PG_DEBUG1:   return qo_cheat_page(PC_CHEATS_PAGE_DEBUG,  0, count);
         case QO_PG_DEBUG2:   return qo_cheat_page(PC_CHEATS_PAGE_DEBUG,  1, count);
         case QO_PG_CONTROLS: return QO_TABLE(s_pageControls);
-        default:             return QO_TABLE(s_pageGfx1);
+        default:             return qo_gfx1_page(count);
     }
 }
 
@@ -981,9 +1011,11 @@ static GLuint qo_bake_once(const char* text, float px, int* outW, int* outH, int
     int   asc, desc, gap, W, H, i, pad = 1, prev = 0, stride;
     unsigned char *cov, *rgba, *scratch;
     GLuint tex;
+    char   visual[1024];
 
     if (!s_fontOk || !text || !text[0] || px < 4.0f)
         return 0;
+    text = Pc_LangVisual(text, visual, (int)sizeof(visual));
 
     scale = stbtt_ScaleForPixelHeight(&s_font, px);
     stbtt_GetFontVMetrics(&s_font, &asc, &desc, &gap);
@@ -1903,10 +1935,13 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
             if (mMoved) s_sel = row;
             if (mClick)
             {
+                float mid = (s_geoPanelL + s_geoPanelR) * 0.5f;
+
                 s_sel = row;
-                if (qo_row_is_list(&rows[row]) && mpx > (s_geoPanelL + s_geoPanelR) * 0.5f)
+                if (qo_row_is_list(&rows[row]) &&
+                    (Pc_LangQuickScript() == LANG_QUICK_SCRIPT_ARABIC ? mpx < mid : mpx > mid))
                 {
-                    /* Right half of a list row: open the dropdown on the value. */
+                    /* The value half of a list row (left in RTL): open the dropdown on the value. */
                     s_ddRow    = row;
                     s_ddSel    = Pc_Cheats_ListGet(rows[row].cpage, rows[row].extra);
                     s_ddScroll = s_ddSel - QO_DD_VISIBLE / 2;
@@ -2000,6 +2035,7 @@ void Pc_QuickOptions_Draw(void)
     int   nRows;
     const QoRowDef* rows = qo_page_rows(s_page, &nRows);
     int   px, i;
+    const int rtl = (Pc_LangQuickScript() == LANG_QUICK_SCRIPT_ARABIC);
 
     GLint  prevProg = 0, prevVao = 0, prevBuf = 0, prevTex = 0, prevUnit = GL_TEXTURE0, prevAlign = 4;
     GLint  prevSrcRgb = GL_ONE, prevDstRgb = GL_ZERO, prevSrcA = GL_ONE, prevDstA = GL_ZERO;
@@ -2286,7 +2322,7 @@ void Pc_QuickOptions_Draw(void)
         float rowTop = listT - (float)i * rowPitch;
         float rowMid = rowTop - rowH * 0.5f;
         float tH, tY;
-        char  txt[64];
+        char  txt[160]; /* Arabic labels run past 64 bytes; a cut there splits a UTF-8 letter */
 
         if (i == s_sel)
             qo_quad(s_texWhite, NX(panelL + 4.0f), NY(rowTop), NX(panelR - 4.0f), NY(rowTop - rowH),
@@ -2309,14 +2345,15 @@ void Pc_QuickOptions_Draw(void)
             }
             if (s_texLabel[i])
             {
+                float lx = rtl ? panelR - pad - (float)s_labelW[i] : panelL + pad;
                 tH = (float)s_labelH[i]; tY = rowMid + tH * 0.5f;
-                qo_quad(s_texLabel[i], NX(panelL + pad), NY(tY), NX(panelL + pad + s_labelW[i]), NY(tY - tH),
+                qo_quad(s_texLabel[i], NX(lx), NY(tY), NX(lx + s_labelW[i]), NY(tY - tH),
                         0.92f, 0.92f, 0.95f, dim);
             }
             if (s_texValue[i])
             {
                 float vg = (i == s_sel) ? 1.0f : 0.85f;
-                float vr = panelR - pad - (float)s_valueW[i];
+                float vr = rtl ? panelL + pad : panelR - pad - (float)s_valueW[i];
                 tH = (float)s_valueH[i]; tY = rowMid + tH * 0.5f;
                 qo_quad(s_texValue[i], NX(vr), NY(tY), NX(vr + s_valueW[i]), NY(tY - tH),
                         vg, vg * 0.85f, vg * 0.45f, dim);
@@ -2326,12 +2363,21 @@ void Pc_QuickOptions_Draw(void)
         {
             /* [R] Previous  /  Next [L]    (previous page  /  next page),
              * centred as one line, each piece on the row's middle. */
-            const int order[] = { s_navPadIcons ? QO_NAV_PAD_L : QO_NAV_ICON_R, QO_NAV_PREV, QO_NAV_SLASH,
-                                  QO_NAV_NEXT, s_navPadIcons ? QO_NAV_PAD_R : QO_NAV_ICON_L, QO_NAV_DEST };
-            const float gap[] = { 0.30f, 0.45f, 0.45f, 0.30f, 0.90f, 0.0f };
+            const int ltrOrder[] = { s_navPadIcons ? QO_NAV_PAD_L : QO_NAV_ICON_R, QO_NAV_PREV, QO_NAV_SLASH,
+                                     QO_NAV_NEXT, s_navPadIcons ? QO_NAV_PAD_R : QO_NAV_ICON_L, QO_NAV_DEST };
+            const float ltrGap[] = { 0.30f, 0.45f, 0.45f, 0.30f, 0.90f, 0.0f };
+            int   order[6];
+            float gap[6];
             float total = 0.0f, x;
             int   k;
 
+            /* RTL reads the same row from the right edge, so the pieces go in
+             * reverse with each gap still between the same two pieces. */
+            for (k = 0; k < 6; k++)
+            {
+                order[k] = rtl ? ltrOrder[5 - k] : ltrOrder[k];
+                gap[k]   = rtl ? (k < 5 ? ltrGap[4 - k] : 0.0f) : ltrGap[k];
+            }
             for (k = 0; k < 6; k++)
                 total += (float)s_navW[order[k]] + gap[k] * (float)s_navPx;
             x = panelL + (panelW - total) * 0.5f;
@@ -2436,8 +2482,8 @@ void Pc_QuickOptions_Draw(void)
             }
             s_ddTexKey = key;
         }
-        float ddL = panelL + panelW * 0.5f;
-        float ddR = panelR - 4.0f;
+        float ddL = rtl ? panelL + 4.0f : panelL + panelW * 0.5f;
+        float ddR = rtl ? panelL + panelW * 0.5f : panelR - 4.0f;
         float ddTop = listT - (float)(s_ddRow + 1) * rowPitch + rowPitch * 0.08f;
         float ddH = rowH;
         int   k;
@@ -2462,7 +2508,8 @@ void Pc_QuickOptions_Draw(void)
             if (s_ddTex[e])
             {
                 float ty = et - (ddH - (float)s_ddH[e]) * 0.5f;
-                qo_quad(s_ddTex[e], NX(ddL + 10.0f), NY(ty), NX(ddL + 10.0f + s_ddW[e]), NY(ty - s_ddH[e]),
+                float tx = rtl ? ddR - 10.0f - (float)s_ddW[e] : ddL + 10.0f;
+                qo_quad(s_ddTex[e], NX(tx), NY(ty), NX(tx + s_ddW[e]), NY(ty - s_ddH[e]),
                         e == s_ddSel ? 1.0f : 0.85f, 0.9f, 0.9f, dim);
             }
         }
