@@ -152,8 +152,6 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
      * the channel button beside it is the only other live control. */
     [TB_CHAT] = { 0.410f, 0.068f, 0.055f, 0 },
     [TB_CHANNEL] = { 0.320f, 0.068f, 0.055f, 0 },
-    /* The main menu and the lobby only: everyone on the server (P), beside
-     * chat. Both sit nearer the middle there (Tc_PlaceSocialButtons). */
 };
 
 typedef struct
@@ -1410,7 +1408,6 @@ void Pc_Touch_Update(void)
     s_AdvanceFrames = 0;
     s_FireHeld    = 0;
     Tc_PlaceCamButton(aspect);
-    Tc_PlaceSocialButtons(Tc_Mode());
 
     if (Tc_GamepadStyle())
     {
