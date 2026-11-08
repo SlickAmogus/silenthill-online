@@ -19,6 +19,7 @@ extern "C" {
 
 void Pc_CharaSelect_Init(void);                                        /* after Pc_PlayAs_Init */
 void Pc_CharaSelect_ConfigKey(const char* name, const char* value);    /* config: chara_model_NAME */
+void Pc_CharaSelect_ResetAll(void);                                    /* reset all settings */
 
 void Pc_CharaSelect_Open(void);
 int  Pc_CharaSelect_IsOpen(void);
@@ -32,6 +33,8 @@ void Pc_CharaSelect_PreviewRect(int* x0, int* y0, int* x1, int* y1);
 /* What the preview shows: the stock model name (HERO, SIBYL...) the fit is
  * for, and the swap file base, or NULL when the stock model is chosen. */
 const char* Pc_CharaSelect_PreviewTarget(const char** file);
+/* With no file: the stock character to draw from the disc (Chara_*), or -1. */
+int Pc_CharaSelect_PreviewStockId(void);
 
 #ifdef __cplusplus
 }

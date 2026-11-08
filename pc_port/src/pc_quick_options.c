@@ -79,7 +79,7 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
        QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM,
        QO_X_CROSSHAIRMELEE, QO_X_AUTORELOAD,
-       QO_X_GYROAIM, QO_X_GYROSENS, QO_X_GYROMOVE };
+       QO_X_GYROAIM, QO_X_GYROSENS, QO_X_GYROMOVE, QO_X_FLASHAIM, QO_X_WORLDVIS };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -178,9 +178,11 @@ static const QoRowDef s_page0[] = {
     { ROW_OPT,   "post_process",         0, NULL },
     { ROW_OPT,   "tonemap",              0, NULL },
     { ROW_OPT,   "fog_strength",         0, NULL },
+    { ROW_EXTRA, NULL, QO_X_WORLDVIS,       "World Visibility" },  /* fog below 1.0 only: qo_page0_rows */
     { ROW_OPT,   "flashlight_mode",      0, NULL },
     { ROW_OPT,   "flashlight_intensity", 0, NULL },
     { ROW_OPT,   "flashlight_size",      0, NULL },
+    { ROW_EXTRA, NULL, QO_X_FLASHAIM,       "Flashlight Follows Aim" },
     { ROW_EXTRA, NULL, QO_X_SHADOW,         "Shadow Resolution" },
     /* The Alessa/Lisa soft focus. Quick menu only: the PC Options graphics
      * page is at its row limit, and this is a look you judge by watching it. */
@@ -218,7 +220,6 @@ static const QoRowDef s_page1[] = {
      * does not get one, that page keeps its slack for the next HUD setting. */
     { ROW_EXTRA, NULL, QO_X_CROSSHAIRSTYLE,  "Crosshair Style" },
     { ROW_EXTRA, NULL, QO_X_CROSSHAIRMELEE,  "Hide Crosshair for Melee" },
-    { ROW_OPT,   "text_size",            0, NULL },
     { ROW_OPT,   "low_health_glow",      0, NULL },
 /* Not on mobile: it would not do anything. PsyX_SPUAL_SetOutputMode is an
  * empty stub on the software backend and GetOutputMode always answers
@@ -544,6 +545,36 @@ static const QoRowDef* qo_controls_page(int* count)
 }
 #endif
 
+/* World Visibility only exists below fog 1.0, where the fog plane no longer
+ * ends the view, so the page drops the row otherwise. Filtered here, before
+ * the mobile chunker, so the phone pages are cut from the same list. */
+static const QoRowDef* qo_page0_rows(int* count)
+{
+    static QoRowDef s_noWv[sizeof(s_page0) / sizeof(s_page0[0])];
+    static int      s_noWvCount = 0, s_lastShow = -1;
+    int             show = g_PcConfig.fogStrength < 1.0f;
+    int             i;
+
+    if (show != s_lastShow)
+    {
+        s_lastShow      = show;
+        s_viewRowsDirty = 1;
+    }
+    if (show)
+    {
+        *count = (int)(sizeof(s_page0) / sizeof(s_page0[0]));
+        return s_page0;
+    }
+    if (s_noWvCount == 0)
+    {
+        for (i = 0; i < (int)(sizeof(s_page0) / sizeof(s_page0[0])); i++)
+            if (!(s_page0[i].kind == ROW_EXTRA && s_page0[i].extra == QO_X_WORLDVIS))
+                s_noWv[s_noWvCount++] = s_page0[i];
+    }
+    *count = s_noWvCount;
+    return s_noWv;
+}
+
 static const QoRowDef* qo_section_rows(int page, int* count)
 {
 #if defined(QO_MOBILE)
@@ -555,8 +586,7 @@ static const QoRowDef* qo_section_rows(int page, int* count)
     if (page == 2) return qo_view_page(count);
     if (page == 3) return qo_cheat_page(PC_CHEATS_PAGE_CHEATS, "Next page  (Debug)",    count);
     if (page == 4) return qo_cheat_page(PC_CHEATS_PAGE_DEBUG,  "Next page  (Controls)", count);
-    *count = (int)(sizeof(s_page0) / sizeof(s_page0[0]));
-    return s_page0;
+    return qo_page0_rows(count);
 }
 
 static const char* const s_pageTitles[QO_PAGES] = {
@@ -1291,6 +1321,25 @@ static void qo_fonts_init(void)
 
 /* Rasterize one line of ASCII to a white-coverage RGBA texture, trimmed to
  * the ink so right-alignment and centring use the real text width. */
+/* Arabic mirrors the panel (labels right, values and dropdown left) -- but not
+ * while touch drives it: the stepper column, its tap halves and the list rows'
+ * fire/cycle halves are laid out for the right-hand side, and moving them is a
+ * different control, not a mirror. Touch keeps that layout with Arabic text. */
+static int qo_rtl(void)
+{
+    if (Pc_LangQuickScript() != LANG_QUICK_SCRIPT_ARABIC)
+        return 0;
+#if defined(QO_MOBILE)
+    return 0;
+#else
+#if defined(QO_TOUCH_UI)
+    if (qo_touch_ui())
+        return 0;
+#endif
+    return 1;
+#endif
+}
+
 static GLuint qo_bake_once(const char* text, float px, int* outW, int* outH, int* outInk)
 {
     const char* p;
@@ -1298,9 +1347,11 @@ static GLuint qo_bake_once(const char* text, float px, int* outW, int* outH, int
     int   asc, desc, gap, W, H, i, pad = 1, prev = 0, stride;
     unsigned char *cov, *rgba, *scratch;
     GLuint tex;
+    char   visual[1024];
 
     if (!s_fontOk || !text || !text[0] || px < 4.0f)
         return 0;
+    text = Pc_LangVisual(text, visual, (int)sizeof(visual));
 
     scale = stbtt_ScaleForPixelHeight(&s_font, px);
     stbtt_GetFontVMetrics(&s_font, &asc, &desc, &gap);
@@ -2232,7 +2283,9 @@ void Pc_QuickOptions_Update(int up, int down, int left, int right,
                 }
                 else
 #endif
-                if (qo_row_is_list(&rows[row]) && mpx > (s_geoPanelL + s_geoPanelR) * 0.5f)
+                if (qo_row_is_list(&rows[row]) &&
+                    (qo_rtl() ? mpx < (s_geoPanelL + s_geoPanelR) * 0.5f
+                              : mpx > (s_geoPanelL + s_geoPanelR) * 0.5f))
                 {
                     /* Right half of a list row: open the dropdown on the value. */
                     s_ddRow    = row;
@@ -2620,18 +2673,13 @@ void Pc_QuickOptions_Draw(void)
 #if !defined(QO_MOBILE)
     if (!s_texHint)
     {
-        char  hint[384], hint2[384], key[64];
+        char  hint[384];
         float avail = panelW - 2.0f * pad;
         int   hpx   = (int)(hintH * 0.42f);
 
         if (hpx < 7) hpx = 7;
-        BindInput_KeyLabel(g_PcConfig.keyQuickOptions[0] ? g_PcConfig.keyQuickOptions : "F10", key, sizeof(key));
         snprintf(hint, sizeof(hint), "%s    %s    %s", Pc_LangQuick("Up/Down select"),
                  Pc_LangQuick("Left/Right adjust"), Pc_LangQuick("Q/E or PgUp/PgDn page"));
-        s_hintResetMode = Pc_ResetSettings_InputMode();
-        snprintf(hint2, sizeof(hint2), "%s    %s    %s    %s", Pc_LangQuick("Drag the title to move"),
-                 Pc_LangQuickFill("{key} or Esc close", "{key}", key),
-                 Pc_LangQuick("* needs restart"));
         s_hintResetMode = Pc_ResetSettings_InputMode();
         snprintf(hint + strlen(hint), sizeof(hint) - strlen(hint), "    %s",
                  Pc_LangQuick(Pc_ResetSettings_Hint()));
@@ -2724,7 +2772,7 @@ void Pc_QuickOptions_Draw(void)
         float rowTop = listT - (float)i * rowPitch;
         float rowMid = rowTop - rowH * 0.5f;
         float tH, tY;
-        char  txt[64];
+        char  txt[160]; /* Arabic labels run past 64 bytes; a cut there splits a UTF-8 letter */
 
         if (i == s_sel)
             qo_quad(s_texWhite, NX(panelL + 4.0f), NY(rowTop), NX(panelR - 4.0f), NY(rowTop - rowH),
@@ -2770,7 +2818,8 @@ void Pc_QuickOptions_Draw(void)
                 tH = (float)s_labelH[i]; tY = rowMid + tH * 0.5f;
                 if (qo_row_is_list(r))
                 {
-                    float bl = panelL + pad - 6.0f, br = panelL + pad + (float)s_labelW[i] + 6.0f;
+                    float bx = qo_rtl() ? panelR - pad - (float)s_labelW[i] : panelL + pad;
+                    float bl = bx - 6.0f, br = bx + (float)s_labelW[i] + 6.0f;
                     float bt = rowTop - rowH * 0.08f, bb = rowTop - rowH * 0.92f;
                     float sel = (i == s_sel) ? 1.0f : 0.6f;
                     qo_quad(s_texWhite, NX(bl), NY(bt), NX(br), NY(bb), 0.47f, 0.11f, 0.08f, 0.55f * sel * dim);
@@ -2779,13 +2828,17 @@ void Pc_QuickOptions_Draw(void)
                     qo_quad(s_texWhite, NX(bl), NY(bt), NX(bl + 1.0f), NY(bb), 1.0f, 0.93f, 0.86f, 0.35f * dim);
                     qo_quad(s_texWhite, NX(br - 1.0f), NY(bt), NX(br), NY(bb), 1.0f, 0.93f, 0.86f, 0.35f * dim);
                 }
-                qo_quad(s_texLabel[i], NX(panelL + pad), NY(tY), NX(panelL + pad + s_labelW[i]), NY(tY - tH),
-                        0.92f, 0.92f, 0.95f, dim);
+                {
+                    float lx = qo_rtl() ? panelR - pad - (float)s_labelW[i] : panelL + pad;
+
+                    qo_quad(s_texLabel[i], NX(lx), NY(tY), NX(lx + s_labelW[i]), NY(tY - tH),
+                            0.92f, 0.92f, 0.95f, dim);
+                }
             }
             if (s_texValue[i])
             {
                 float vg = (i == s_sel) ? 1.0f : 0.85f;
-                float vr = panelR - pad - (float)s_valueW[i];
+                float vr = qo_rtl() ? panelL + pad : panelR - pad - (float)s_valueW[i];
 #if defined(QO_MOBILE)
                 /* Right-aligned against the + rather than the panel edge, so
                  * the mark sits beside the number instead of on top of it. */
@@ -2891,14 +2944,6 @@ void Pc_QuickOptions_Draw(void)
         s_resetBtn[0] = cx;
         s_resetBtn[1] = cy;
         s_resetBtn[2] = r;
-        if (!s_texResetHint || s_hintResetMode != PC_INPUT_TOUCH)
-        {
-            qo_retire(s_texResetHint);
-            s_texResetHint  = qo_bake(Pc_LangQuick(Pc_ResetSettings_Hint()), r * 0.8f, &s_resetHintW, &s_resetHintH);
-            s_hintResetMode = PC_INPUT_TOUCH;
-        }
-        qo_quad(s_texResetHint, NX(cx - r * 1.4f - s_resetHintW), NY(cy + s_resetHintH * 0.5f),
-                NX(cx - r * 1.4f), NY(cy - s_resetHintH * 0.5f), 0.8f, 0.8f, 0.85f, dim);
     }
 
     /* Dropdown list over the value column of its row, on top of the rows. */
@@ -2919,8 +2964,8 @@ void Pc_QuickOptions_Draw(void)
             }
             s_ddTexKey = key;
         }
-        float ddL = panelL + panelW * 0.5f;
-        float ddR = panelR - 4.0f;
+        float ddL = qo_rtl() ? panelL + 4.0f : panelL + panelW * 0.5f;
+        float ddR = qo_rtl() ? panelL + panelW * 0.5f : panelR - 4.0f;
         float ddTop = listT - (float)(s_ddRow + 1) * rowPitch + rowPitch * 0.08f;
         float ddH = rowH;
         int   k;
@@ -2945,7 +2990,9 @@ void Pc_QuickOptions_Draw(void)
             if (s_ddTex[e])
             {
                 float ty = et - (ddH - (float)s_ddH[e]) * 0.5f;
-                qo_quad(s_ddTex[e], NX(ddL + 10.0f), NY(ty), NX(ddL + 10.0f + s_ddW[e]), NY(ty - s_ddH[e]),
+                float tx = qo_rtl() ? ddR - 10.0f - (float)s_ddW[e] : ddL + 10.0f;
+
+                qo_quad(s_ddTex[e], NX(tx), NY(ty), NX(tx + s_ddW[e]), NY(ty - s_ddH[e]),
                         e == s_ddSel ? 1.0f : 0.85f, 0.9f, 0.9f, dim);
             }
         }
