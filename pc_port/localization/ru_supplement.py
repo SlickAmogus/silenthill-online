@@ -425,3 +425,17 @@ QUICK = dict(globals().get('QUICK', {}))
 QUICK.update({
     '(custom copy in use)': '(используется своя копия)',
 })
+
+
+# Character Select / Additional Characters.
+QUICK = dict(globals().get('QUICK', {}))
+QUICK.update({
+    "Don't ask again": 'Больше не спрашивать',
+})
+
+
+# Character Select / Additional Characters.
+QUICK = dict(globals().get('QUICK', {}))
+QUICK.update({
+    'Your QoL character packs are now part of Additional Characters. Download the new versions?': 'Ваши наборы персонажей QoL теперь входят в дополнительных персонажей. Скачать новые версии?',
+})

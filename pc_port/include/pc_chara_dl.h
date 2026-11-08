@@ -31,6 +31,8 @@ typedef struct
     char      hero[CD_FILE_MAX];  /* HERO_<File>, no extension */
     long long size;
     char      sha256[65];
+    long long glbSize;            /* the model inside, to recognise a copy of it */
+    unsigned  glbCrc;
 } CdEntry;
 
 /* Where a local character came from. */
@@ -65,6 +67,15 @@ void           Cd_CatalogFetch(void);         /* once per session unless forced 
 /* Once per visit to the menu: fetches the list again. The list already shown
  * stays until the new one lands, and stays if the fetch fails. */
 void           Cd_CatalogRefresh(void);
+/* "Don't ask again" on the old jojo670 pack offer. */
+int            Cd_OldJojoNoAsk(void);
+void           Cd_SetOldJojoNoAsk(void);
+/* A QoL character pack (the old QoL list's, any launcher or port) is installed
+ * whose characters the catalog now has: offer to replace it. */
+int            Cd_LegacyPending(void);
+void           Cd_UpdateLegacy(void);
+int            Cd_LegacyNoAsk(void);
+void           Cd_SetLegacyNoAsk(void);
 int            Cd_CatalogState(void);
 int            Cd_CatalogCount(void);
 const CdEntry* Cd_CatalogGet(int i);
