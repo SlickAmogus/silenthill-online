@@ -7,6 +7,7 @@
 #include "pc_config.h"
 #include "map_registry.h"
 #include "lang_text.h" /* menu translations + width for recentred entries */
+#include "lang_ar.h"
 #include "pc_title_style.h"
 #include "pc_ach_screen.h"
 #include "pc_coop_menu.h" /* co-op front end (Multiplayer row) */
@@ -1268,7 +1269,20 @@ static void MainMenu_MainTextDraw(void) // 0x8003B568
                                    ? STR_OFFSETS_X[id]
                                    : ((Pc_LangMenuTextWidth(tr) +
                                        Pc_LangMenuTextWidth(Pc_LangMenuText("["))) >> 1);
-            Gfx_StringSetPosition(COLUMN_POS_X - offX, rowY + (slot * MAINMENU_ROW_PITCH));
+            s32         posX = COLUMN_POS_X - offX;
+
+            /* Both Arabic patches' offset tables pair with their own column
+             * origins (the PAL one drew its rows left of centre, the USA one a
+             * few pixels right of the port's own rows), so every row is centred
+             * from its measured width. The USA drawer walks leftward from the
+             * start through the leading marker, then the label. */
+            if (Pc_ArRtl())
+            {
+                posX = COLUMN_POS_X + (Pc_LangMenuTextWidth(tr) >> 1) +
+                       ((id == g_MainMenu_SelectedEntry) ? Pc_LangMenuTextWidth(Pc_LangMenuText("["))
+                                                          : FONT_12X16_SPACE_SIZE);
+            }
+            Gfx_StringSetPosition(posX, rowY + (slot * MAINMENU_ROW_PITCH));
         }
         Gfx_StringSetColor(StringColorId_White);
 
@@ -1343,6 +1357,8 @@ static void MainMenu_DifficultyTextDraw(s32 idx) // 0x8003B678
         "HARD"
     };
     static const u8 STR_OFFSETS_X[] = { 28, 43, 30 };
+#ifdef SH_PC_PORT
+#endif
 
     s32 i;
 
@@ -1356,7 +1372,15 @@ static void MainMenu_DifficultyTextDraw(s32 idx) // 0x8003B678
                                    ? STR_OFFSETS_X[i]
                                    : ((Pc_LangMenuTextWidth(tr) +
                                        Pc_LangMenuTextWidth(Pc_LangMenuText("["))) >> 1);
-            Gfx_StringSetPosition(COLUMN_POS_X - offX, COLUMN_POS_Y + (i * STR_OFFSET_Y));
+            s32         posX = COLUMN_POS_X - offX;
+
+            /* As MainMenu_MainTextDraw: measured, from the right on the USA disc. */
+            if (Pc_ArRtl())
+            {
+                posX = COLUMN_POS_X + (Pc_LangMenuTextWidth(tr) >> 1) +
+                       ((i == idx) ? Pc_LangMenuTextWidth(Pc_LangMenuText("[")) : FONT_12X16_SPACE_SIZE);
+            }
+            Gfx_StringSetPosition(posX, COLUMN_POS_Y + (i * STR_OFFSET_Y));
         }
 #else
         Gfx_StringSetPosition(COLUMN_POS_X - STR_OFFSETS_X[i], COLUMN_POS_Y + (i * STR_OFFSET_Y));
