@@ -617,7 +617,7 @@ static void ShNetG_DrawHeldItem(GsCOORDINATE2* hand, int itemId)
 }
 
 /* The Harry swap each room member says they wear (SHNET_CTRL_SKIN), by id. */
-static struct { unsigned long long id; char token[24]; } s_memberSkin[SHSESSION_MAX_MEMBERS];
+static struct { unsigned long long id; char token[96]; } s_memberSkin[SHSESSION_MAX_MEMBERS];
 
 void ShNetG_SetMemberSkin(unsigned long long id, const char* token)
 {
