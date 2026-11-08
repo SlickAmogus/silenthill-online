@@ -43,7 +43,7 @@ enum { TB_AIM = 0, TB_ITEM, TB_MAP, TB_START, TB_RUN, TB_BACK, TB_FIRE, TB_MENU,
        TB_SKIP,
        TB_LIGHT, TB_VIEW, TB_CAM, TB_QSAVE, TB_QLOAD, TB_BONUS, TB_CLICK,
        TB_NO, TB_MAPUP, TB_MAPDN, TB_COOP, TB_VOICE,
-       TB_CHAT, TB_CHANNEL, TB_RESET, TB_PLIST,
+       TB_CHAT, TB_CHANNEL, TB_RESET,
        TB_COUNT };
 
 typedef struct
@@ -154,7 +154,6 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
     [TB_VOICE] = { 0.590f, 0.068f, 0.055f, 0 },
     /* The main menu and the lobby only: everyone on the server (P), beside
      * chat. Both sit nearer the middle there (Tc_PlaceSocialButtons). */
-    [TB_PLIST] = { 0.540f, 0.068f, 0.055f, 0 },
 };
 
 typedef struct
@@ -1155,8 +1154,6 @@ static int Tc_ExtraButton(int b, int mode)
         return mode == TC_MODE_MAP || mode == TC_MODE_PAPERMAP;
     if (b == TB_CHANNEL)
         return mode == TC_MODE_CHAT;
-    if (b == TB_PLIST)
-        return mode == TC_MODE_LOBBY;
     if (b == TB_RESET)
         return mode == TC_MODE_BACK_CURSOR && g_GameWork.gameState == GameState_OptionScreen &&
                g_GameWork.gameStateSteps[0] == OptionsMenuState_PcOptions;
@@ -1294,14 +1291,6 @@ static void Tc_PlaceCamButton(float aspect)
 {
     s_Buttons[TB_CAM].cx = s_Buttons[TB_MENU].cx + (0.135f / aspect);
     s_Buttons[TB_CAM].cy = s_Buttons[TB_MENU].cy;
-}
-
-/* On the main menu and in the lobby, chat and the player list sit as a pair
- * either side of the middle; in play, chat keeps its place beside M. */
-static void Tc_PlaceSocialButtons(int mode)
-{
-    s_Buttons[TB_CHAT].cx  = (mode == TC_MODE_LOBBY) ? 0.455f : 0.410f;
-    s_Buttons[TB_PLIST].cx = 0.545f;
 }
 
 /* Aim is up by any route: the left double tap, the context Aim button, or
@@ -2212,20 +2201,6 @@ void Pc_Touch_Update(void)
             s_chanWas = chanNow;
         }
 
-        /* The player list (the main menu and the lobby): opens the online
-         * page of the multiplayer menu, which closes from its own Back. */
-        {
-            static int s_plistWas;
-            const int  plistNow = (s_Buttons[TB_PLIST].holdFrames > 0);
-
-            if (plistNow && !s_plistWas && Tc_ChatButtonOn())
-            {
-                extern void Pc_CoopMenu_OpenOnline(int invite);
-                Pc_CoopMenu_OpenOnline(0);
-            }
-            s_plistWas = plistNow;
-        }
-
         /* Quick Save / Quick Load, edge-triggered on the latch for the same
          * reason as Menu. Gamepad style handles its own pair above. */
         {
@@ -2893,7 +2868,6 @@ void Pc_Touch_Draw(void)
     }
 
     Tc_PlaceCamButton(Tc_Aspect());
-    Tc_PlaceSocialButtons(mode);
     /* The menus' 4:3 picture fills a wide screen, so a ring drawn in its units
      * comes out wide. The letter buttons there are drawn narrower by the same
      * amount, which is where their (screen-shaped) touch area already is. */
@@ -2990,12 +2964,12 @@ void Pc_Touch_Draw(void)
             Tc_LetterButton(&batch, "R", cx, cy, r, lum);
             continue;
         }
-        /* Chat, the multiplayer menu and the player list wear their keys'
-         * letters: C, M and P. */
-        if (i == TB_CHAT || i == TB_COOP || i == TB_PLIST)
+        /* Chat and the multiplayer menu wear their keys'
+         * letters: C and M. */
+        if (i == TB_CHAT || i == TB_COOP)
         {
             s_TcSqX = s_TcLetterSqX;
-            Tc_LetterButton(&batch, i == TB_CHAT ? "C" : i == TB_COOP ? "M" : "P", cx, cy, r, lum);
+            Tc_LetterButton(&batch, i == TB_CHAT ? "C" : "M", cx, cy, r, lum);
             s_TcSqX = 100;
             continue;
         }
