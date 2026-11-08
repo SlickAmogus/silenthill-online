@@ -202,16 +202,48 @@ const char* Pc_PlayAs_SkinToken(void)
     return p->skinFile != NULL ? p->name : "";
 }
 
+const char* Pc_PlayAs_SkinFile(void)
+{
+    const PcPlayAsChara* p;
+    if (s_current < 0 || s_current >= PLAYAS_COUNT)
+        return "";
+    p = &s_playable[s_current];
+    return p->skinFile != NULL ? p->skinFile : "";
+}
+
 const char* Pc_PlayAs_SkinFileForToken(const char* token)
 {
-    int i, n;
-    if (token == NULL || token[0] == '\0')
+    static char s_found[96];
+    char        base[160], rb[200];
+    const char* path;
+    FILE*       f;
+    int         i, n;
+
+    if (token == NULL || token[0] == '\0' || strchr(token, '/') || strchr(token, '\\') ||
+        strchr(token, ':') || strstr(token, ".."))
         return NULL;
     n = PLAYAS_COUNT;
+    /* The file name first, in any case: Windows matches names that way and a
+     * partner on a phone may have the same file under other capitals. */
+    for (i = 0; i < n; i++)
+        if (s_playable[i].skinFile != NULL && strcasecmp(s_playable[i].skinFile, token) == 0)
+            return s_playable[i].skinFile;
+    /* Games before file names were sent announced the roster token ("cj"). */
     for (i = 0; i < n; i++)
         if (s_playable[i].skinFile != NULL && strcmp(s_playable[i].name, token) == 0)
             return s_playable[i].skinFile;
-    return NULL;
+    /* A file the roster skipped (its token taken by another file) is still
+     * that file, so a partner wearing it is drawn in it. */
+    if (strncasecmp(token, "HERO", 4) != 0)
+        return NULL;
+    snprintf(base, sizeof(base), "gamedata/load/CHARA/%s", token);
+    path = Cd_ResolveBase(base, rb, (int)sizeof(rb));
+    snprintf(base, sizeof(base), "%s.glb", path);
+    if ((f = fopen(base, "rb")) == NULL)
+        return NULL;
+    fclose(f);
+    snprintf(s_found, sizeof(s_found), "%s", token);
+    return s_found;
 }
 
 /* PC-owned destination for any non-HERO player ILM. One buffer, sized for the

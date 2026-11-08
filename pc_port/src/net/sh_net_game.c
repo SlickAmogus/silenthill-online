@@ -68,13 +68,13 @@ static unsigned int s_lastNameReqMs = 0;
  * sent unreliably. An empty token clears a swap we took off. */
 static void ShNetG_SkinAnnounce(void)
 {
-    static char         s_sent[24];
+    static char         s_sent[96];
     static int          s_sentCount = -1;
     static unsigned int s_sentMs;
-    const char*         tok = Pc_PlayAs_SkinToken();
+    const char*         tok = Pc_PlayAs_SkinFile();
     const unsigned int  now = ShNetPlat_Millis();
     int                 n;
-    unsigned char       b[1 + 24];
+    unsigned char       b[1 + 96];
     size_t              len;
 
     if (!ShSession_Active())
@@ -1102,14 +1102,18 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_SKIN:
         {
             extern void ShNetG_SetMemberSkin(unsigned long long id, const char* token);
-            char tok[24];
+            char tok[96];
             int  i, n = len - 1;
             if (n > (int)sizeof(tok) - 1) n = (int)sizeof(tok) - 1;
+            /* A file name, matched against this machine's own files; one that
+             * could reach outside the CHARA folders is cut short and so
+             * matches nothing (Pc_PlayAs_SkinFileForToken checks again). */
             for (i = 0; i < n && p[1 + i]; i++)
             {
                 char c = (char)p[1 + i];
-                if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-                tok[i] = ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-') ? c : '_';
+                if ((unsigned char)c < 32 || c == '/' || c == '\\' || c == ':')
+                    break;
+                tok[i] = c;
             }
             tok[i] = '\0';
             ShNetG_SetMemberSkin(from, tok);
