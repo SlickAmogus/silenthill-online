@@ -120,12 +120,19 @@ void Ct_DrawCentered(int cx, int y, int tall, int color, const char* en)
 
 const char* Ct_Name(const char* label)
 {
-    char key[64];
-    int  i, start = 1;
+    /* Static, and a small ring: an untranslated name comes back from Ct_Tr as
+     * this very buffer, so it must outlive the call, and a caller may hold a
+     * few names at once. */
+    static char ring[4][64];
+    static int  next;
+    char*       key = ring[next];
+    int         i, start = 1;
+
+    next = (next + 1) % 4;
 
     if (label == NULL)
         return "";
-    for (i = 0; label[i] != '\0' && i < (int)sizeof(key) - 1; i++)
+    for (i = 0; label[i] != '\0' && i < (int)sizeof(ring[0]) - 1; i++)
     {
         char c = label[i];
 
@@ -138,6 +145,16 @@ const char* Ct_Name(const char* label)
     }
     key[i] = '\0';
     return Ct_Tr(key);
+}
+
+int Ct_SmallWidth(const char* utf8)
+{
+    char line[CT_LINE * 2];
+
+    if (utf8 == NULL || utf8[0] == '\0')
+        return 0;
+    ct_ttf_line(utf8, line, (int)sizeof(line), 0);
+    return Pc_TtfText_Width(line, 0);
 }
 
 void Ct_Small(int x, int y, int color, const char* utf8, int maxW)
