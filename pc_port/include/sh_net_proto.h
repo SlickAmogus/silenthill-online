@@ -550,9 +550,11 @@ enum
     SHNET_CTRL_PICKUP    = 16, /* member -> all: u8 item, u8 taken; I answered the pickup prompt (a sound and a note for the room) */
     SHNET_CTRL_GAMEOVER  = 13, /* host -> all: u16 gen; nobody is left alive, the game over plays for everyone */
     SHNET_CTRL_FOLLOW    = 17, /* split-screen Player 1 -> Player 2: u16 room code, u8 lobby; join it with me */
-    SHNET_CTRL_SKIN      = 12  /* member -> all: the Harry swap worn (its lowercase play-as token, NUL-terminated,
-                                * at most 24; empty = none). A partner with the same file draws it; anyone
-                                * else draws Harry. Repeated every few seconds and on change. */
+    SHNET_CTRL_SKIN      = 12  /* member -> all: the Harry swap worn, as its file name without extension
+                                * ("HERO_CJ", NUL-terminated, at most 95; empty = none; games before
+                                * 2026-11-08 sent a lowercase play-as token, still accepted). A partner with
+                                * a file of that name draws theirs; anyone else draws Harry. Repeated every
+                                * few seconds and on change. */
 };
 #define SHNET_PERM_CHEATS 1    /* this guest may use the console, quick-menu cheats, binds */
 
