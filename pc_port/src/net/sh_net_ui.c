@@ -2405,10 +2405,13 @@ void ShNetUi_Draw(void)
 
     /* A co-op game always draws: the door and scene waits, the respawn text,
      * the voice wheel and the health bar below have no flag up here, and a
-     * host who saw none of them at a story door looked frozen. */
+     * host who saw none of them at a story door looked frozen. The wheel also
+     * opens outside co-op, where it showed only when something else on this
+     * list happened to be up (picks still worked, unseen). */
     if (!drawList && !drawComposer && !drawStatus && s_eventCount == 0 &&
         ShNetMemo_NearestReadable() < 0 && !ShNetMemo_JustPlaced() &&
-        !ShNetChat_DisplayActive() && !Pc_CoopMenu_IsOpen() && !g_PcCoopGame)
+        !ShNetChat_DisplayActive() && !Pc_CoopMenu_IsOpen() && !g_PcCoopGame &&
+        !ShNetVoice_MenuOpen())
     {
         return;
     }

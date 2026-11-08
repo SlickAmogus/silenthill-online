@@ -146,8 +146,8 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #define COOP_DEFAULT_SERVER "server.sh1pc.com"
 
 enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_MUSIC, COOP_ROOT_BACK,
-       COOP_ROOT_ACCEPT, COOP_ROOT_DECLINE };
-#define COOP_ROOT_MAX 8
+       COOP_ROOT_ACCEPT, COOP_ROOT_DECLINE, COOP_ROOT_PLAYERLIST };
+#define COOP_ROOT_MAX 10
 
 /* The title-menu rows this platform shows, in order. */
 static int Coop_RootRows(int* rows)
@@ -160,6 +160,7 @@ static int Coop_RootRows(int* rows)
     }
     rows[n++] = COOP_ROOT_HOST;
     rows[n++] = COOP_ROOT_JOIN;
+    if (ShNet_WorldConnected()) rows[n++] = COOP_ROOT_PLAYERLIST;
     if (!COOP_MOBILE && !COOP_WEB) rows[n++] = COOP_ROOT_SPLIT;
     if (COOP_HAS_SETTINGS) rows[n++] = COOP_ROOT_SETTINGS;
     rows[n++] = COOP_ROOT_MUSIC;
@@ -1377,6 +1378,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_ROOT_JOIN:     snprintf(out, cap, "Join Game"); break;
         case COOP_ROOT_SPLIT:    snprintf(out, cap, "Split Screen"); break;
         case COOP_ROOT_SETTINGS: snprintf(out, cap, "Multiplayer Settings"); break;
+        case COOP_ROOT_PLAYERLIST: snprintf(out, cap, "Player List"); break;
         case COOP_ROOT_MUSIC:    Pc_CoopMusic_RowText(out, cap); break;
         case COOP_ROOT_ACCEPT:
         {
@@ -1839,6 +1841,7 @@ static void Coop_Confirm(void)
         case COOP_ROOT_JOIN:     s_page = COOP_PAGE_JOIN; s_sel = 0; Coop_RefreshServerList(); break;
         case COOP_ROOT_SPLIT:    Coop_EnterSplit(); break;
         case COOP_ROOT_SETTINGS: s_page = COOP_PAGE_SETTINGS; s_sel = 0; s_msg[0] = '\0'; break;
+        case COOP_ROOT_PLAYERLIST: Coop_OpenOnline(0, COOP_PAGE_ROOT, s_sel); break;
         case COOP_ROOT_MUSIC:    Pc_CoopMusic_Step(1); break; /* a tap or Enter: the next track */
         case COOP_ROOT_ACCEPT:   s_page = COOP_PAGE_INVITE; s_sel = 0; s_msg[0] = '\0'; break;
         case COOP_ROOT_DECLINE:  ShNetInvite_Decline(); s_sel = 0; break;
