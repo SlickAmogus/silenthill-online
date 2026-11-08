@@ -152,8 +152,6 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
     [TB_CHANNEL] = { 0.320f, 0.068f, 0.055f, 0 },
     /* The voice wheel (what holding B opens on a keyboard), beside it. */
     [TB_VOICE] = { 0.590f, 0.068f, 0.055f, 0 },
-    /* The main menu and the lobby only: everyone on the server (P), beside
-     * chat. Both sit nearer the middle there (Tc_PlaceSocialButtons). */
 };
 
 typedef struct
@@ -1421,7 +1419,6 @@ void Pc_Touch_Update(void)
     s_AdvanceFrames = 0;
     s_FireHeld    = 0;
     Tc_PlaceCamButton(aspect);
-    Tc_PlaceSocialButtons(Tc_Mode());
 
     if (Tc_GamepadStyle())
     {
