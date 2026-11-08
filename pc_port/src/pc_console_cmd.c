@@ -525,6 +525,7 @@ static const char* const HELP_LINES[] = {
     " kf [n]         keyframe viewer: toggle, or view frame n",
     " playas [name]  play as another character (bare = list)",
     " playas next / previous  cycle characters (bindable)",
+    " charmenu (cmenu)  open or close Character Select (bindable)",
     " gpubench       GPU cost of each graphics setting here (stand still ~20 s)",
     " skinini        re-read the character models' .ini files",
     " minimapnomap [0|1]  minimap before the map is found: 0 hide, 1 empty panel",
@@ -2219,13 +2220,19 @@ void Pc_ConsoleExec(const char* line)
         if (arg[0]) g_pgxpWeldWRatio = (float)atof(arg);
         cprintf("PGXP weld depth ratio: %.3f", g_pgxpWeldWRatio);
     } else if (strcmp(cmd, "FLASHLIGHTAIM") == 0) {
-        /* Thirdperson / Over-the-Shoulder: the flashlight follows the camera's
-         * aim like the first-person one, or keeps Harry's torso direction. */
-        if (arg[0] == '1')      g_PcConfig.flashlightFollowAim = 1;
-        else if (arg[0] == '0') g_PcConfig.flashlightFollowAim = 0;
-        else                    g_PcConfig.flashlightFollowAim = !g_PcConfig.flashlightFollowAim;
-        PcConfig_SaveKeyValue("flashlight_follow_aim", g_PcConfig.flashlightFollowAim ? "1" : "0");
-        cprintf("flashlight follows the aim in thirdperson/OTS: %s", g_PcConfig.flashlightFollowAim ? "ON" : "OFF");
+        /* Acts on the camera in use: first person (flashlight_follow_aim_fps,
+         * the beam follows the view) or Thirdperson / Over-the-Shoulder
+         * (flashlight_follow_aim, the aim while a weapon is readied, otherwise
+         * only the camera's pitch). Off keeps Harry's torso direction. */
+        extern int  g_PcFpsCam;
+        int*        v   = g_PcFpsCam ? &g_PcConfig.flashlightFollowAimFps : &g_PcConfig.flashlightFollowAim;
+        const char* key = g_PcFpsCam ? "flashlight_follow_aim_fps" : "flashlight_follow_aim";
+
+        if (arg[0] == '1')      *v = 1;
+        else if (arg[0] == '0') *v = 0;
+        else                    *v = !*v;
+        PcConfig_SaveKeyValue(key, *v ? "1" : "0");
+        cprintf("flashlight follows the %s: %s", g_PcFpsCam ? "first-person view" : "third-person aim", *v ? "ON" : "OFF");
     } else if (strcmp(cmd, "WEATHERHZ") == 0) {
         if (arg[0]) g_PcConfig.weatherSimHz = (atoi(arg) == 30) ? 30 : 60;
         cprintf("Weather (rain/snow) simulation: %d Hz%s", g_PcConfig.weatherSimHz,
@@ -2741,6 +2748,24 @@ void Pc_ConsoleExec(const char* line)
     } else if (strcmp(cmd, "SKININI") == 0) {
         extern int Pc_SkinChara_ReloadSettings(void);
         cprintf("re-read %d character .ini file(s)", Pc_SkinChara_ReloadSettings());
+    } else if (strcmp(cmd, "CHARMENU") == 0 || strcmp(cmd, "CMENU") == 0) {
+        /* Hosted by the quick menu, which runs its input and freezes the
+         * world under it, so open that first. Again from a key closes both. */
+        extern int  Pc_CharaSelect_IsOpen(void);
+        extern void Pc_CharaSelect_Open(void);
+        extern int  Pc_QuickOptions_IsOpen(void);
+        extern void Pc_QuickOptions_Toggle(void);
+        extern void Pc_QuickOptions_Close(void);
+        if (Pc_CharaSelect_IsOpen()) {
+            Pc_QuickOptions_Close();
+        } else {
+            if (!Pc_QuickOptions_IsOpen())
+                Pc_QuickOptions_Toggle();
+            if (Pc_QuickOptions_IsOpen())
+                Pc_CharaSelect_Open();
+            else
+                cprintf("Character Select is not available here");
+        }
     } else if (strcmp(cmd, "PLAYAS") == 0) {
         extern int         Pc_PlayAs_SetByName(const char* name, int save);
         extern int         Pc_PlayAs_Current(void);
