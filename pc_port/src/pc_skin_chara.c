@@ -2836,6 +2836,13 @@ void Pc_SkinChara_SetDrawSpeaker(unsigned long long id)
     s_drawSpeaker = id;
 }
 
+static int s_drawChara;
+
+void Pc_SkinChara_SetDrawChara(int charaId)
+{
+    s_drawChara = charaId;
+}
+
 void Pc_SkinChara_SetDrawSkin(int mode, const char* file)
 {
     s_drawMode = mode;
@@ -2897,9 +2904,30 @@ void* Pc_SkinChara_Begin(s_Skeleton* skel, const void* boneCoords)
     {
         if (s_drawMode == 2 || s_drawFile[0] == '\0')
             return NULL;
-        for (i = 0; i < (int)(sizeof(s_restDefs) / sizeof(s_restDefs[0])); i++)
-            if (strcmp("HERO", s_restDefs[i].name) == 0)
-                def = &s_restDefs[i];
+        {
+            /* The rest pose of the slot the partner plays in: their model's
+             * own file name (SRL for Cheryl), Harry's for his. */
+            char  slot[32] = "HERO";
+            char* dot;
+
+            if (s_drawChara > 0 && s_drawChara < Chara_Count && s_drawChara != Chara_Harry)
+            {
+                s32 idx = CHARA_FILE_INFOS[s_drawChara].modelFileIdx;
+
+                if (idx > 0 && idx < FS_FILE_COUNT)
+                {
+                    Fs_GetFileName(slot, idx);
+                    if ((dot = strrchr(slot, '.')) != NULL)
+                        *dot = '\0';
+                }
+            }
+            for (i = 0; i < (int)(sizeof(s_restDefs) / sizeof(s_restDefs[0])); i++)
+                if (strcmp(slot, s_restDefs[i].name) == 0)
+                    def = &s_restDefs[i];
+            for (i = 0; def == NULL && i < (int)(sizeof(s_restDefs) / sizeof(s_restDefs[0])); i++)
+                if (strcmp("HERO", s_restDefs[i].name) == 0)
+                    def = &s_restDefs[i];
+        }
         if (def == NULL)
             return NULL;
         snprintf(path, sizeof(path), "gamedata/load/CHARA/%s", s_drawFile);

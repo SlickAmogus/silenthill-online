@@ -745,7 +745,8 @@ static int ShNetG_TryDrawModel(int charaId, int gx, int gy, int gz, short grot, 
     ret = (s16)func_8003DD74((e_CharaId)charaId, 0);
     /* Swaps ride Harry's row: this body wears the partner's file if we have
      * it, otherwise the stock model, and never the local player's swap. */
-    Pc_SkinChara_SetDrawSkin((charaId == Chara_Harry && skinFile != NULL) ? 1 : 2, skinFile);
+    Pc_SkinChara_SetDrawChara(charaId);
+    Pc_SkinChara_SetDrawSkin(skinFile != NULL ? 1 : 2, skinFile);
     func_80045534(&cm->skeleton, &g_OrderingTable0[g_ActiveBufferIdx], 1,
                   s_coords, Q8_TO_Q12(CHARA_FILE_INFOS[charaId].field_6),
                   (u16)ret, CHARA_FILE_INFOS[charaId].field_8);
