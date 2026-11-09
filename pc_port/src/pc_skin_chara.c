@@ -549,7 +549,9 @@ static int         s_drawMode;     /* Pc_SkinChara_SetDrawSkin */
 static unsigned long long s_drawSpeaker; /* Pc_SkinChara_SetDrawSpeaker */
 static char        s_drawFile[96];
 static int         s_charaCount;
-static char        s_missing[PC_SKIN_MAX_MISSING][32];
+/* As wide as a file token: cut at 32, a longer name that failed never matched
+ * its own entry, so the model was read and refused again on every frame. */
+static char        s_missing[PC_SKIN_MAX_MISSING][96];
 static int         s_missingCount;
 
 /* ---------------------------------------------------------------- math */
@@ -2796,6 +2798,15 @@ static PcSkinChara* Skin_Entry(const char* name, const char* file, const char* b
     }
     ch->lastUse = SDL_GetTicks();
     return ch;
+}
+
+/* The files on disk changed (a download landed, one was removed, a pack was
+ * turned on): a model that was not there may be now. Without this a character
+ * chosen before its file was installed stayed on the stock model until a
+ * restart. */
+void Pc_SkinChara_FilesChanged(void)
+{
+    s_missingCount = 0;
 }
 
 /* Character Face Animation's models, read up front: parsing a glTF and its
