@@ -60,6 +60,9 @@ void  Pc_SkinChara_SetHeroFile(const char* file);
  * nothing (the stock model, whatever the local player wears), mode 0 is the
  * normal rule again. */
 void  Pc_SkinChara_SetDrawSkin(int mode, const char* file);
+/* The character whose slot that body plays in (its rest pose fits the file):
+ * Harry unless the partner's swap is based on another (base=). */
+void  Pc_SkinChara_SetDrawChara(int charaId);
 /* The partner whose body the next draws are (their member id), 0 for none:
  * their voice-wheel lines move its mouth. */
 void  Pc_SkinChara_SetDrawSpeaker(unsigned long long id);
