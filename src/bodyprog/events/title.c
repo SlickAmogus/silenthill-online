@@ -12,6 +12,7 @@
 #include "pc_ach_screen.h"
 #include "pc_coop_menu.h" /* co-op front end (Multiplayer row) */
 #include "pc_coop_screen.h"
+#include "pc_chara_select.h" /* Multiplayer > Character Select, run over the title */
 #include "pc_coop_save.h" /* co-op save load for the host "Start Game" boot */
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu_draw.h"
@@ -518,9 +519,33 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                 }
             }
 
+            /* Character Select, opened from the Multiplayer menu, runs over it:
+             * it takes the pad first and the menu under it waits. A game that
+             * starts meanwhile (the host pressed Start) closes it. */
+            {
+                static int s_coopWas;
+                const int  starting = skipToGameStep || (g_PcCoopGame && !s_coopWas);
+
+                s_coopWas = g_PcCoopGame;
+                if (Pc_CharaSelect_IsOpen() && starting)
+                    Pc_CharaSelect_Close();
+            }
+            if (Pc_CharaSelect_IsOpen())
+            {
+                NmInput in;
+
+                NmInput_FromGame(&in);
+                if (!Pc_CharaSelect_Update(&in))
+                    Pc_CharaSelect_Close();
+                g_Controller0->clickedBtnFlags   = 0;
+                g_Controller0->pulsedBtnFlags    = 0;
+                g_Controller0->releasedBtnFlags  = 0;
+                g_Controller0->pulsedGuiBtnFlags = 0;
+                coopMenuOpen = true;
+            }
             /* The co-op menu owns the pad while it is up; the title stays behind
              * it, and the row hit-test and keyboard scroll below are skipped. */
-            if (Pc_CoopMenu_IsOpen())
+            else if (Pc_CoopMenu_IsOpen())
             {
                 /* The overlay handles the mouse itself (hover + click), so drop
                  * mouse-bound pad bits here or a click confirms twice. */
@@ -1117,6 +1142,11 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
         }
         /* The co-op front end takes the screen the same way (black
          * background, the game's font, the inventory's blue frame). */
+        if (Pc_CharaSelect_IsOpen())
+        {
+            Pc_CharaSelect_Draw();
+            return;
+        }
         if (Pc_CoopMenu_IsOpen())
         {
             Pc_CoopScreen_Draw();
