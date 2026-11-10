@@ -2217,6 +2217,14 @@ void Options_PcOptionsMenu_Control(void)
                 g_GameWork.gameStateSteps[1] = 0;
                 g_GameWork.gameStateSteps[2] = 0;
                 return;
+            } else if (sel->kind == PCK_CHARA) {
+                Sd_PlaySfx(Sfx_MenuConfirm, 0, 64);
+                ScreenFade_Start(true, false, false);
+                g_GameWork.gameStateSteps[0] = OptionsMenuState_EnterCharaSelect;
+                g_SysWork.counters_1C[1]     = 0;
+                g_GameWork.gameStateSteps[1] = 0;
+                g_GameWork.gameStateSteps[2] = 0;
+                return;
             }
         }
     }
@@ -2230,6 +2238,53 @@ void Options_PcOptionsMenu_Control(void)
         g_SysWork.counters_1C[1]     = 0;
         g_GameWork.gameStateSteps[1] = 0;
         g_GameWork.gameStateSteps[2] = 0;
+    }
+}
+
+/* Character Select under PC Options: the page fades out, the screen runs
+ * until it asks to close, then the page fades back in where it was. */
+static void Options_CharaSelectMenu_Control(void)
+{
+    switch (g_GameWork.gameStateSteps[0])
+    {
+        case OptionsMenuState_EnterCharaSelect:
+            if (ScreenFade_IsFinished())
+            {
+                Pc_CharaSelect_Open();
+                ScreenFade_Start(false, true, false);
+                g_GameWork.gameStateSteps[0] = OptionsMenuState_CharaSelect;
+            }
+            break;
+
+        case OptionsMenuState_CharaSelect:
+            {
+                NmInput in;
+
+                NmInput_FromGame(&in);
+                Pc_CharaSelect_Draw();
+                if (!Pc_CharaSelect_Update(&in))
+                {
+                    ScreenFade_Start(true, false, false);
+                    g_GameWork.gameStateSteps[0] = OptionsMenuState_LeaveCharaSelect;
+                }
+                g_Controller0->clickedBtnFlags   = 0;
+                g_Controller0->pulsedBtnFlags    = 0;
+                g_Controller0->pulsedGuiBtnFlags = 0;
+            }
+            break;
+
+        default:
+            Pc_CharaSelect_Draw();
+            if (ScreenFade_IsFinished())
+            {
+                Pc_CharaSelect_Close();
+                ScreenFade_Start(false, true, false);
+                g_GameWork.gameStateSteps[0] = OptionsMenuState_PcOptions;
+                g_SysWork.counters_1C[1]     = 0;
+                g_GameWork.gameStateSteps[1] = 0;
+                g_GameWork.gameStateSteps[2] = 0;
+            }
+            break;
     }
 }
 
@@ -2685,6 +2740,12 @@ void GameState_Options_Update(void) // 0x801E2D44
         case OptionsMenuState_PcOptions:
         case OptionsMenuState_LeavePcOptions:
             Options_PcOptionsMenu_Control();
+            break;
+
+        case OptionsMenuState_EnterCharaSelect:
+        case OptionsMenuState_CharaSelect:
+        case OptionsMenuState_LeaveCharaSelect:
+            Options_CharaSelectMenu_Control();
             break;
 #endif
     }
