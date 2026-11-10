@@ -20,6 +20,8 @@ extern "C" {
 extern int g_PcCoopGame;
 
 void Pc_CoopMenu_Open(void);        /* main-menu popup (Host / Join) */
+/* A mouse button held as the menu takes the screen is not a click on it. */
+void Pc_CoopMenu_SwallowClick(void);
 void Pc_CoopMenu_OpenInGame(void);  /* in-game M menu (Resume / players / leave) */
 /* Host, at the end of a co-op game over: Yes (when canContinue) / Load Game /
  * Quit Without Saving. Decided once one is picked, until the title boots it. */
