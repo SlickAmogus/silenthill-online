@@ -629,12 +629,24 @@ static void Coop_HostReloadBoot(void)
     Pc_CoopMenu_Close();
 }
 
+/* The click that brought the menu up (or gave it back the screen) is still
+ * held as it first runs: seen as a fresh press it picked whatever row lay
+ * under the pointer on its release -- Back, once the root page grew two rows
+ * and that one came to sit where the title's Multiplayer row is. Taken as
+ * already held, its release picks nothing. */
+void Pc_CoopMenu_SwallowClick(void)
+{
+    s_clickPrevHeld = 1;
+    s_pressRow      = -1;
+}
+
 void Pc_CoopMenu_Open(void)
 {
     s_open   = 1;
     s_inGame = 0;
     s_page   = COOP_PAGE_ROOT;
     s_sel    = 0;
+    Pc_CoopMenu_SwallowClick();
     SH_DBG("[COOP] menu opened");
 }
 
