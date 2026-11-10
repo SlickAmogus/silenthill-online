@@ -131,6 +131,9 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
 
 #define SRV_TICK_MS       100  /* snapshot rate; matches the client's STATE rate */
 #define SRV_TIMEOUT_MS    15000
+/* A visit is announced to the others once it has lasted this long: longer
+ * than a hello followed by the full timeout. */
+#define SRV_ANNOUNCE_MS   25000
 #define SRV_SAVE_GAP_MS   30000
 /* A client that floods gets its extra datagrams dropped rather than getting
  * disconnected: a burst is far more likely to be a bad network than an
@@ -206,6 +209,7 @@ typedef struct
 
     unsigned int       lastRxMs;
     unsigned int       joinMs;
+    unsigned char      announced; /* "entered the fog" has gone out for this visit */
     unsigned int       lastSnapMs;
     int                pingMs;
 
@@ -1558,11 +1562,8 @@ static void SrvHandleHello(const struct sockaddr_in* from, const shn_u8* p, int 
 
         /* A split-screen Player 2 is part of Player 1's game, not a visitor
          * of its own. */
-        if (!(caps & SHNET_CAP_SPLIT_P2))
-        {
-            snprintf(text, sizeof(text), "%s entered the fog", name);
-            SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
-        }
+        /* The arrival is announced once the visitor has stayed a while
+         * (SrvAnnounceArrivals), not here. */
         SrvFeed("+ %s#%04u joined from %s (id %u, build %s%s)", name, (unsigned)c->tag, addr, c->playerId, build,
                 (caps & SHNET_CAP_SPLIT_P2) ? ", split-screen Player 2" : "");
     }
@@ -2265,6 +2266,20 @@ static void SrvExpire(unsigned int now)
         Client* c = &g_clients[i];
         char    text[SHNET_EVENT_MAX];
 
+        /* A machine asleep with the game open wakes for a few seconds now
+         * and then, says hello and goes quiet again: everyone was told that
+         * player entered and faded away, over and over. An arrival is told
+         * once it has outlasted that, and a visit never told of ends untold. */
+        if (c->used && !c->announced && (now - c->joinMs) >= SRV_ANNOUNCE_MS &&
+            (now - c->lastRxMs) < SRV_TIMEOUT_MS)
+        {
+            c->announced = 1;
+            if (!SrvIsSplitP2(c))
+            {
+                snprintf(text, sizeof(text), "%s entered the fog", c->name);
+                SrvBroadcastEvent(SHNET_EV_JOIN, c->playerId, text, c);
+            }
+        }
         if (!c->used || (now - c->lastRxMs) < SRV_TIMEOUT_MS)
         {
             continue;
@@ -2279,7 +2294,7 @@ static void SrvExpire(unsigned int now)
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
         g_namesDirty = 1;
-        if (!SrvIsSplitP2(c)) SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
+        if (!SrvIsSplitP2(c) && c->announced) SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
     }
     while (g_clientHigh > 0 && !g_clients[g_clientHigh - 1].used)
     {
@@ -3297,7 +3312,7 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
         SrvRoomLeave(c, 1); /* notify the room before the slot is freed */
         c->used = 0;
         g_namesDirty = 1;
-        if (!SrvIsSplitP2(c)) SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
+        if (!SrvIsSplitP2(c) && c->announced) SrvBroadcastEvent(SHNET_EV_LEAVE, c->playerId, text, NULL);
         break;
     }
     default: break;
