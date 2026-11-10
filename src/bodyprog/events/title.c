@@ -545,6 +545,8 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                 NmInput_FromGame(&in);
                 if (!Pc_CharaSelect_Update(&in))
                     Pc_CharaSelect_Close();
+                /* Its Back, clicked, must not land on the menu under it. */
+                Pc_CoopMenu_SwallowClick();
                 g_Controller0->clickedBtnFlags   = 0;
                 g_Controller0->pulsedBtnFlags    = 0;
                 g_Controller0->releasedBtnFlags  = 0;
