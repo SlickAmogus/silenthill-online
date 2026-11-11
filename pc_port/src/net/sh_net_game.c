@@ -330,6 +330,20 @@ static int            s_snapInit;
 /* Area maps are flags in the save, not inventory items, so the item share
  * above never saw them: whoever picked a map up was the only one with it. */
 static unsigned int   s_mapSnap;
+static unsigned int   s_mapSentMs;
+
+static void ShNetG_SendMaps(unsigned int flags)
+{
+    unsigned char b[5];
+
+    b[0] = SHNET_CTRL_MAPS;
+    b[1] = (unsigned char)flags;
+    b[2] = (unsigned char)(flags >> 8);
+    b[3] = (unsigned char)(flags >> 16);
+    b[4] = (unsigned char)(flags >> 24);
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 5, 0, 1);
+    s_mapSentMs = SDL_GetTicks();
+}
 
 static void ShNetG_MapsIn(unsigned int flags)
 {
@@ -454,16 +468,15 @@ static void ShNetG_SyncItems(void)
 
         if (s_snapInit && (maps & ~s_mapSnap) != 0)
         {
-            unsigned int  gained = maps & ~s_mapSnap;
-            unsigned char b[5];
-
-            b[0] = SHNET_CTRL_MAPS;
-            b[1] = (unsigned char)gained;
-            b[2] = (unsigned char)(gained >> 8);
-            b[3] = (unsigned char)(gained >> 16);
-            b[4] = (unsigned char)(gained >> 24);
-            ShSession_SendGame(SHNET_MSG_S_CTRL, b, 5, 0, 1);
-            SH_DBG("[COOP] picked up a map (flags 0x%08X); sharing it", gained);
+            SH_DBG("[COOP] picked up a map (flags 0x%08X); sharing it", maps & ~s_mapSnap);
+            ShNetG_SendMaps(maps);
+        }
+        /* Everything held, again every ten seconds: a player who joined after
+         * the pickup, or whose copy of the host's save never arrived, catches
+         * up without anyone picking a map up twice. */
+        else if (maps != 0 && SDL_GetTicks() - s_mapSentMs >= 10000u)
+        {
+            ShNetG_SendMaps(maps);
         }
         s_mapSnap = maps;
     }

@@ -507,6 +507,11 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                             extern void ShNet_CoopFilterHostSave(void* save);
                             ShNet_CoopFilterHostSave(&g_GameWork.autosave);
                         }
+                        /* The switch position in the host's save is the host's:
+                         * one who walks with the light off handed every joiner
+                         * a dark map with theirs off too. A joiner's own light
+                         * starts on. */
+                        g_GameWork.autosave.itemToggleFlags &= ~ItemToggleFlag_FlashlightOff;
                         g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
                         g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
                     }
