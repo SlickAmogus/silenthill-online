@@ -136,23 +136,30 @@ typedef struct
  * SteamAPI_Init returning a bool. Both are tried, newest first, because a
  * player's steam_api64.dll could be either. */
 typedef int  (__cdecl *PFN_InitFlat)(char* outErrMsg);
-typedef int  (__cdecl *PFN_Init)(void);
+/* These return a C++ bool: one byte, in AL. Declared as int they were read
+ * as all of EAX, whose upper three bytes are whatever the callee left there.
+ * When that was non-zero, GetNextCallback "returned true" with no callback,
+ * FreeLastCallback then had nothing to free, and the dispatch loop below never
+ * ended: the network thread spun inside it from the first Steam callback on,
+ * so the session code after it (members, the host's boot-into-map, pings)
+ * never ran. Lobbies formed and nothing else happened. */
+typedef u8_  (__cdecl *PFN_Init)(void);
 typedef void (__cdecl *PFN_Shutdown)(void);
 typedef s32_ (__cdecl *PFN_GetHSteamPipe)(void);
 typedef void (__cdecl *PFN_MD_Init)(void);
 typedef void (__cdecl *PFN_MD_RunFrame)(s32_ pipe);
-typedef int  (__cdecl *PFN_MD_GetNextCallback)(s32_ pipe, ShSteamCallbackMsg* out);
+typedef u8_  (__cdecl *PFN_MD_GetNextCallback)(s32_ pipe, ShSteamCallbackMsg* out);
 typedef void (__cdecl *PFN_MD_FreeLastCallback)(s32_ pipe);
-typedef int  (__cdecl *PFN_MD_GetAPICallResult)(s32_ pipe, u64_ call, void* cb,
+typedef u8_  (__cdecl *PFN_MD_GetAPICallResult)(s32_ pipe, u64_ call, void* cb,
                                                 int cubCallback, int expected, int* failed);
 typedef void* (__cdecl *PFN_Accessor)(void);
 
 typedef u64_        (__cdecl *PFN_User_GetSteamID)(void*);
 typedef const char* (__cdecl *PFN_Friends_GetPersonaName)(void*);
 typedef const char* (__cdecl *PFN_Friends_GetFriendPersonaName)(void*, u64_);
-typedef int         (__cdecl *PFN_Friends_RequestUserInformation)(void*, u64_, int);
+typedef u8_         (__cdecl *PFN_Friends_RequestUserInformation)(void*, u64_, int);
 typedef void        (__cdecl *PFN_Friends_ActivateInviteDialog)(void*, u64_);
-typedef int         (__cdecl *PFN_Friends_SetRichPresence)(void*, const char*, const char*);
+typedef u8_         (__cdecl *PFN_Friends_SetRichPresence)(void*, const char*, const char*);
 typedef void        (__cdecl *PFN_Friends_ClearRichPresence)(void*);
 
 typedef u64_        (__cdecl *PFN_MM_CreateLobby)(void*, int, int);
@@ -161,20 +168,20 @@ typedef void        (__cdecl *PFN_MM_LeaveLobby)(void*, u64_);
 typedef int         (__cdecl *PFN_MM_GetNumLobbyMembers)(void*, u64_);
 typedef u64_        (__cdecl *PFN_MM_GetLobbyMemberByIndex)(void*, u64_, int);
 typedef u64_        (__cdecl *PFN_MM_GetLobbyOwner)(void*, u64_);
-typedef int         (__cdecl *PFN_MM_SetLobbyData)(void*, u64_, const char*, const char*);
+typedef u8_         (__cdecl *PFN_MM_SetLobbyData)(void*, u64_, const char*, const char*);
 typedef const char* (__cdecl *PFN_MM_GetLobbyData)(void*, u64_, const char*);
 typedef u64_        (__cdecl *PFN_MM_RequestLobbyList)(void*);
 typedef void        (__cdecl *PFN_MM_AddStringFilter)(void*, const char*, const char*, int);
 typedef void        (__cdecl *PFN_MM_AddDistanceFilter)(void*, int);
 typedef u64_        (__cdecl *PFN_MM_GetLobbyByIndex)(void*, int);
 typedef int         (__cdecl *PFN_MM_GetLobbyMemberLimit)(void*, u64_);
-typedef int         (__cdecl *PFN_Utils_IsOverlayEnabled)(void*);
+typedef u8_         (__cdecl *PFN_Utils_IsOverlayEnabled)(void*);
 
 typedef int  (__cdecl *PFN_Msg_SendMessageToUser)(void*, const void* identity,
                                                   const void* data, u32_ cb,
                                                   int flags, int channel);
 typedef int  (__cdecl *PFN_Msg_ReceiveOnChannel)(void*, int channel, void** out, int maxMessages);
-typedef int  (__cdecl *PFN_Msg_AcceptSession)(void*, const void* identity);
+typedef u8_  (__cdecl *PFN_Msg_AcceptSession)(void*, const void* identity);
 typedef void (__cdecl *PFN_Msg_CloseSession)(void*, const void* identity);
 typedef void (__cdecl *PFN_NetMsg_Release)(void* msg);
 

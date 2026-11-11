@@ -94,6 +94,7 @@ s_PcConfig g_PcConfig = {
     .onlineSteamMaxPlayers = 4,
     .onlineSteamPublic     = 1,   /* rooms and lobbies listed (the host setup's Room List row) unless the host hid them last time */
     .onlineSteamAutoHost   = 0,
+    .onlineSteamInput      = 1,
     .keyOnlinePlayers = "F11",
     .keyOnlineMemo    = "M",
     .keyChatGame      = "Y",
@@ -1011,6 +1012,10 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_steam_public") == 0)
         {
             g_PcConfig.onlineSteamPublic = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_steam_input") == 0)
+        {
+            g_PcConfig.onlineSteamInput = (atoi(value) != 0);
         }
         else if (strcmp(key, "online_steam_autohost") == 0)
         {

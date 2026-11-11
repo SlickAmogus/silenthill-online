@@ -443,6 +443,24 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
             {
                 char coopSave[COOP_SAVE_KEY_MAX];
                 int  coopReq = Pc_CoopMenu_TakeStartRequest(coopSave, sizeof(coopSave));
+                /* -hoststeam: host a Steam lobby and start its game with no menu
+                 * input, so the host path can be exercised alone and unattended. */
+                {
+                    extern int  g_PcDebugHostSteam;
+                    extern void ShSession_RequestHost(void);
+                    extern int  ShSession_IsHost(void);
+
+                    if (g_PcDebugHostSteam == 1)
+                    {
+                        ShSession_RequestHost();
+                        g_PcDebugHostSteam = 2;
+                    }
+                    else if (g_PcDebugHostSteam == 2 && ShSession_Active() && ShSession_IsHost())
+                    {
+                        g_PcDebugHostSteam = 0;
+                        coopReq            = 1;
+                    }
+                }
                 extern int ShSession_TakeWorldRequest(void);
                 int  guestMap = ShSession_TakeWorldRequest();
                 if (coopReq == 1)

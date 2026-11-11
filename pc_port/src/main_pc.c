@@ -701,6 +701,8 @@ static void PrintBanner(void)
     printf("\n");
 }
 
+/* -hoststeam (see title.c): 1 asked, 2 lobby requested, 0 done. */
+int g_PcDebugHostSteam = 0;
 static int s_SkipToGameArg = 0;
 static const char* s_RendererArg = NULL;
 
@@ -775,6 +777,10 @@ static void ParseArgs(int argc, char* argv[])
             g_GameDataPath[sizeof(g_GameDataPath) - 1] = '\0';
             Pc_Split_NoteDataArg(argv[i + 1]);
             i++;
+        }
+        else if (strcmp(argv[i], "-hoststeam") == 0)
+        {
+            g_PcDebugHostSteam = 1;
         }
         else if (strcmp(argv[i], "-skiptogame") == 0)
         {

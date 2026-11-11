@@ -33,6 +33,7 @@
 #include <SDL.h>
 
 #include "sh_log.h"
+#include "pc_config.h"
 
 void ShSteamInput_Start(void);
 void ShSteamInput_Tick(void);
@@ -201,6 +202,11 @@ void ShSteamInput_Start(void)
 
     if (s_started)
         return;
+    if (!g_PcConfig.onlineSteamInput)
+    {
+        SH_DBG("[STEAMINPUT] off (online_steam_input = 0); controllers Steam hides stay on the XInput fallback");
+        return;
+    }
     for (i = 0; i < 4 && s_input == NULL; i++)
     {
         void* (*get)(void) = (void* (*)(void))ShSteam_Symbol(getters[i]);

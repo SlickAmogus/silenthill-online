@@ -1652,6 +1652,8 @@ void ShNet_OnMapChanged(int mapIdx)
      * boots (or re-boots) into the same area. Only the host dictates the world. */
     {
         extern int g_PcCoopGame;
+        SH_DBG("[COOP] now on map %d (co-op game %d, session %d, host %d)", mapIdx, g_PcCoopGame, ShSession_Active(),
+               ShSession_IsHost());
         if (g_PcCoopGame && ShSession_IsHost())
         {
             ShSession_RequestWorld(mapIdx);
