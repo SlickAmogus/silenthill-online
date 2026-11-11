@@ -1,0 +1,311 @@
+"controller_mappings"
+{
+	"version"		"3"
+	"revision"		"1"
+	"title"		"Silent Hill PC"
+	"description"		"Every button, stick and trigger as the game's own controller settings see it."
+	"creator"		"0"
+	"controller_type"		"controller_generic"
+	"actions"
+	{
+		"sh_pad"
+		{
+			"title"		"#Set_Pad"
+			"legacy_set"		"0"
+		}
+	}
+	"localization"
+	{
+		"english"
+		{
+			"Set_Pad"		"Controller"
+			"Action_pad_a"		"A / Cross"
+			"Action_pad_b"		"B / Circle"
+			"Action_pad_x"		"X / Square"
+			"Action_pad_y"		"Y / Triangle"
+			"Action_pad_lb"		"Left bumper"
+			"Action_pad_rb"		"Right bumper"
+			"Action_pad_back"		"Back / Select"
+			"Action_pad_start"		"Start"
+			"Action_pad_ls"		"Left stick click"
+			"Action_pad_rs"		"Right stick click"
+			"Action_pad_up"		"D-pad up"
+			"Action_pad_down"		"D-pad down"
+			"Action_pad_left"		"D-pad left"
+			"Action_pad_right"		"D-pad right"
+			"Action_left_stick"		"Left stick"
+			"Action_right_stick"		"Right stick"
+			"Action_left_trigger"		"Left trigger"
+			"Action_right_trigger"		"Right trigger"
+		}
+	}
+	"group"
+	{
+		"id"		"0"
+		"mode"		"four_buttons"
+		"inputs"
+		{
+			"button_a"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_a, #Action_pad_a"
+						}
+					}
+				}
+			}
+			"button_b"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_b, #Action_pad_b"
+						}
+					}
+				}
+			}
+			"button_x"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_x, #Action_pad_x"
+						}
+					}
+				}
+			}
+			"button_y"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_y, #Action_pad_y"
+						}
+					}
+				}
+			}
+		}
+	}
+	"group"
+	{
+		"id"		"1"
+		"mode"		"dpad"
+		"inputs"
+		{
+			"dpad_north"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_up, #Action_pad_up"
+						}
+					}
+				}
+			}
+			"dpad_south"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_down, #Action_pad_down"
+						}
+					}
+				}
+			}
+			"dpad_east"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_right, #Action_pad_right"
+						}
+					}
+				}
+			}
+			"dpad_west"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_left, #Action_pad_left"
+						}
+					}
+				}
+			}
+		}
+	}
+	"group"
+	{
+		"id"		"2"
+		"mode"		"joystick_move"
+		"inputs"
+		{
+			"click"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_ls, #Action_pad_ls"
+						}
+					}
+				}
+			}
+		}
+		"gameactions"
+		{
+			"sh_pad"		"left_stick"
+		}
+	}
+	"group"
+	{
+		"id"		"3"
+		"mode"		"joystick_move"
+		"inputs"
+		{
+			"click"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_rs, #Action_pad_rs"
+						}
+					}
+				}
+			}
+		}
+		"gameactions"
+		{
+			"sh_pad"		"right_stick"
+		}
+	}
+	"group"
+	{
+		"id"		"4"
+		"mode"		"trigger"
+		"inputs"
+		{
+		}
+		"gameactions"
+		{
+			"sh_pad"		"left_trigger"
+		}
+	}
+	"group"
+	{
+		"id"		"5"
+		"mode"		"trigger"
+		"inputs"
+		{
+		}
+		"gameactions"
+		{
+			"sh_pad"		"right_trigger"
+		}
+	}
+	"group"
+	{
+		"id"		"6"
+		"mode"		"switches"
+		"inputs"
+		{
+			"button_escape"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_start, #Action_pad_start"
+						}
+					}
+				}
+			}
+			"button_menu"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_back, #Action_pad_back"
+						}
+					}
+				}
+			}
+			"left_bumper"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_lb, #Action_pad_lb"
+						}
+					}
+				}
+			}
+			"right_bumper"
+			{
+				"activators"
+				{
+					"Full_Press"
+					{
+						"bindings"
+						{
+							"binding"		"game_action sh_pad pad_rb, #Action_pad_rb"
+						}
+					}
+				}
+			}
+		}
+	}
+	"preset"
+	{
+		"id"		"0"
+		"name"		"sh_pad"
+		"group_source_bindings"
+		{
+			"6"		"switch active"
+			"0"		"button_diamond active"
+			"1"		"dpad active"
+			"2"		"joystick active"
+			"3"		"right_joystick active"
+			"4"		"left_trigger active"
+			"5"		"right_trigger active"
+		}
+	}
+}

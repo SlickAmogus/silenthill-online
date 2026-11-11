@@ -282,6 +282,15 @@ static void* ShSteam_Sym(const char* name)
     return s_dll ? (void*)GetProcAddress(s_dll, name) : NULL;
 }
 
+void* ShSteam_Symbol(const char* name)
+{
+    return ShSteam_Sym(name);
+}
+
+extern void ShSteamInput_Start(void);
+extern void ShSteamInput_Tick(void);
+extern void ShSteamInput_Stop(void);
+
 /* Interface accessor names carry a version suffix that moves between SDK
  * releases, and a player's steam_api64.dll came from whichever game they
  * copied it out of. Try the versions in descending order and take the first
@@ -540,6 +549,7 @@ int ShSteam_Init(unsigned int appId)
     SH_DBG("[STEAM] ready: \"%s\" (%llu), app id %u, interfaces 0x%02X",
            s_personaName[0] ? s_personaName : "?",
            (unsigned long long)s_selfId, appId, s_interfaces);
+    ShSteamInput_Start();
     if (!(s_interfaces & SHSTEAM_IF_MESSAGES))
     {
         SH_DBG("[STEAM] ISteamNetworkingMessages missing - lobbies and invites will "
@@ -556,6 +566,7 @@ void ShSteam_Shutdown(void)
     {
         return;
     }
+    ShSteamInput_Stop();
     ShSteam_LeaveLobby();
     if (s_ClearRichPresence && s_iFriends)
     {
@@ -1233,6 +1244,7 @@ void ShSteam_RunCallbacks(void)
         return;
     }
 
+    ShSteamInput_Tick();
     s_MdRunFrame(s_pipe);
 
     while (s_MdNext(s_pipe, &msg))
