@@ -327,6 +327,23 @@ static int ShNetG_ShareableCount(int id, int cnt)
 
 static unsigned short s_snap[256]; /* per-id totals last frame */
 static int            s_snapInit;
+/* Area maps are flags in the save, not inventory items, so the item share
+ * above never saw them: whoever picked a map up was the only one with it. */
+static unsigned int   s_mapSnap;
+
+static void ShNetG_MapsIn(unsigned int flags)
+{
+    unsigned int gained = flags & ~(unsigned int)g_SavegamePtr->paperMapFlags;
+
+    if (gained == 0)
+    {
+        return;
+    }
+    g_SavegamePtr->paperMapFlags |= (s32)gained;
+    /* Kept in step so the gain is not read as our own pickup and sent back. */
+    s_mapSnap |= gained;
+    SH_DBG("[COOP] a partner picked up a map (flags 0x%08X); ours now too", gained);
+}
 
 /* Keys, puzzle pieces and the like: one playthrough's set, so using one up
  * uses up everyone's copy. Health, ammo and weapons stay each player's own. */
@@ -431,6 +448,24 @@ static void ShNetG_SyncItems(void)
                 SH_DBG("[COOP] used key item %d; telling the others", i);
             }
         }
+    }
+    {
+        unsigned int maps = (unsigned int)g_SavegamePtr->paperMapFlags;
+
+        if (s_snapInit && (maps & ~s_mapSnap) != 0)
+        {
+            unsigned int  gained = maps & ~s_mapSnap;
+            unsigned char b[5];
+
+            b[0] = SHNET_CTRL_MAPS;
+            b[1] = (unsigned char)gained;
+            b[2] = (unsigned char)(gained >> 8);
+            b[3] = (unsigned char)(gained >> 16);
+            b[4] = (unsigned char)(gained >> 24);
+            ShSession_SendGame(SHNET_MSG_S_CTRL, b, 5, 0, 1);
+            SH_DBG("[COOP] picked up a map (flags 0x%08X); sharing it", gained);
+        }
+        s_mapSnap = maps;
     }
     memcpy(s_snap, cur, sizeof(s_snap));
     s_snapInit = 1;
@@ -1144,6 +1179,10 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_ITEM_USED:
             if (len < 3) return;
             ShNetG_ItemUsedIn(p[1], p[2]);
+            break;
+        case SHNET_CTRL_MAPS:
+            if (len < 5) return;
+            ShNetG_MapsIn((unsigned int)p[1] | ((unsigned int)p[2] << 8) | ((unsigned int)p[3] << 16) | ((unsigned int)p[4] << 24));
             break;
         case SHNET_CTRL_RESTART:
             if (!fromHost || ShSession_IsHost() || len < 4 + (int)sizeof(s_Savegame)) return;
