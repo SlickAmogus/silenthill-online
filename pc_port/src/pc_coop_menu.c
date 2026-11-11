@@ -792,7 +792,7 @@ static int Coop_OnlineInOurGame(unsigned int id)
     for (i = 0; i < n; i++)
     {
         const ShSessionMember* m = ShSession_Member(i);
-        if (m && (unsigned int)m->steamId == id) return 1;
+        if (m && ShSession_WorldIdOf(m) == id) return 1;
     }
     return 0;
 }

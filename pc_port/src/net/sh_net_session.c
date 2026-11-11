@@ -894,9 +894,10 @@ static int ShSession_BudgetOk(int idx, unsigned int* winMs, int* used, int perSe
 
 static void ShSession_SendHello(unsigned long long to)
 {
-    shn_u8 buf[SHNET_HDR_SIZE + SHNET_NAME_MAX + 4];
+    shn_u8 buf[SHNET_HDR_SIZE + SHNET_NAME_MAX + 8];
     int    off = SHNET_HDR_SIZE;
     int    map;
+    extern unsigned int ShNet_WorldSelfId(void);
 
     SDL_LockMutex(s_lock);
     map = s_req.presenceMap;
@@ -906,6 +907,8 @@ static void ShSession_SendHello(unsigned long long to)
     ShnPutU8(buf, &off, (shn_u8)((map < 0 || map > 255) ? 0xFF : map));
     ShnPutU8(buf, &off, 0);
     ShnPutU16(buf, &off, 0);
+    /* Appended: builds from before it stop reading at the name and the map. */
+    ShnPutU32(buf, &off, ShNet_WorldSelfId());
     ShnPutHeader(buf, SHNET_MSG_S_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), 0);
     Tp_Send(to, buf, off, 1);
 }
@@ -970,6 +973,11 @@ static void ShSession_Receive(unsigned int now)
             {
                 int m = (int)ShnGetU8(buf + SHNET_HDR_SIZE, &off);
                 s_members[idx].mapIdx = (m == 0xFF || m > MAP_IDX_LAST) ? -1 : m;
+            }
+            if (payLen >= SHNET_NAME_MAX + 8)
+            {
+                off += 3;
+                s_members[idx].worldId = ShnGetU32(buf + SHNET_HDR_SIZE, &off);
             }
             if (ShSession_LogOk(idx))
             {

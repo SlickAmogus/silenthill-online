@@ -114,6 +114,7 @@ typedef struct
     char               name[SHSESSION_NAME_MAX];
     int                tag;        /* the server's #tag for a server-room member; 0 over Steam */
     unsigned int       token;      /* their address token (a /block list's key); 0 over Steam */
+    unsigned int       worldId;    /* their living-world player id as they announced it; 0 unknown */
     int                pingMs;     /* -1 until a pong comes back */
     int                linked;     /* 1 once they have answered us */
     int                mapIdx;     /* -1 unknown */
@@ -154,6 +155,21 @@ typedef struct
     int                sfxSeqOk;
     unsigned char      sfxLastSeq;
 } ShSessionMember;
+
+/* The living-world player this member also is, 0 if none. A server-room member
+ * id IS their world id; a Steam member is a SteamID, which says nothing about
+ * the world, so they announce theirs in S_HELLO. Everything that asks "is this
+ * world player one of my partners" goes through here: matched on the member id
+ * alone, a Steam partner was never recognised, and stood in the game twice --
+ * the co-op body with the translucent world ghost and its name over it. */
+static inline unsigned int ShSession_WorldIdOf(const ShSessionMember* m)
+{
+    if (m == NULL)
+        return 0;
+    if (m->worldId != 0)
+        return m->worldId;
+    return (m->steamId < 0x100000000ull) ? (unsigned int)m->steamId : 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Worker thread                                                       */

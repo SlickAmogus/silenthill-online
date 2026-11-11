@@ -972,7 +972,7 @@ static void Nu_DrawPlayerList(int px)
             for (k = 0; k < sess; k++)
             {
                 const ShSessionMember* m = ShSession_Member(k);
-                if (m && (unsigned int)m->steamId == p->playerId) inOurs = 1;
+                if (m && ShSession_WorldIdOf(m) == p->playerId) inOurs = 1;
             }
             snprintf(buf, sizeof(buf), "%s%s", p->mapIdx >= 0 && p->mapIdx < 64 ? Pc_MapAreaName(p->mapIdx) : "-",
                      inOurs ? "   (in your game)" : "");
