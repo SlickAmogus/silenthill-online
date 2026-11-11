@@ -104,6 +104,7 @@ extern void PsyX_GetDitherViewport(int* w, int* h);
 /* Per-pixel flashlight beam live floats (PsyCross); mirrored by the sliders. */
 extern float g_PsyX_FlashlightIntensity;
 extern float g_PsyX_FogStrength;
+extern float g_cfg_renderScale;
 extern float g_PsyX_FlashlightSize;
 
 /* FMV movie (SDL PCM) live volume, 0..1; mirrored by the FMV Movie slider.
@@ -211,6 +212,9 @@ static const int RES_H[] = { 480,  720,  768,  900, 1080, 1440, 2160 };
 static const s_PcOpt PCOPT_G[] = {
     { "Resolution",     NULL,                           NULL,                   NULL,      0, NULL,      NULL,                          0, PCK_RES    },
     { "Window_Mode",    &g_PcConfig.fullscreen,         "fullscreen",           VAL_WIN,   3, LBL_WIN,   NULL,                          1, PCK_WINMODE },
+    /* Under Window_Mode on purpose: it scales whatever size those two rows
+     * give. */
+    { "Render_Scale",   NULL, "render_scale", NULL, 0, NULL, NULL, 1, PCK_SLIDER, &g_PcConfig.renderScale, &g_cfg_renderScale, 0.25f, 1.0f, 0.05f },
     { "VSync",          &g_PcConfig.vsync,              "vsync",                VAL_VSYNC, 2, LBL_VSYNC, NULL,                          1, PCK_VSYNC   },
     { "Texture_Filter", &g_PcConfig.textureFilter,      "texture_filter",       VAL_FILT,  7, LBL_FILT,  NULL,                          1, PCK_FILTER },
     /* Its own row, as in the launcher: Off, the PSX pixel grid, or a cell

@@ -120,6 +120,7 @@ s_PcConfig g_PcConfig = {
     .flashlightMode = 0, /* 0=Classic (PSX), 1=Classic+Shadows, 2=Modern, 3=Modern+Shadows */
     .perPixelFlashlight = 0, /* DERIVED from flashlightMode */
     .flashlightShadows  = 1, /* per-pixel flashlight casts real-time shadows (on by default; only visible when perPixelFlashlight is on) */
+    .renderScale          = 1.0f,
     .fogStrength          = 1.10f, /* PSX-matched density; lower reveals more of the widened draw distance */
     .flashlightIntensity  = 1.20f, /* per-pixel flashlight cone brightness scale, 0..6 */
     .flashlightSize       = 3.00f, /* per-pixel flashlight cone coverage multiplier */
@@ -792,6 +793,13 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "image_adjust_scope") == 0)
         {
             g_PcConfig.imageAdjustScope = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "render_scale") == 0)
+        {
+            float f = (float)atof(value);
+            if (f < 0.25f) f = 0.25f;
+            if (f > 1.0f)  f = 1.0f;
+            g_PcConfig.renderScale = f;
         }
         else if (strcmp(key, "native_resolution") == 0)
         {
@@ -2135,12 +2143,15 @@ static float PcConfig_SimplePresetScale(int p)
 
 static int s_presetScalePending = -1; /* the preset whose scale waits for the display */
 
-/* The online build has no render scale (the single-player port's Render_Scale
- * option was never brought over), so a preset's scale has nowhere to go here.
- * Kept as the one place to wire it up when that option arrives. */
 static void PcConfig_SimpleSetScale(float scale)
 {
-    (void)scale;
+    extern float g_cfg_renderScale;
+    char         buf[16];
+
+    g_PcConfig.renderScale = scale;
+    g_cfg_renderScale      = scale;
+    snprintf(buf, sizeof(buf), "%.2f", scale);
+    PcConfig_SaveKeyValue("render_scale", buf);
 }
 
 void PcConfig_SimpleAfterVideo(void)
