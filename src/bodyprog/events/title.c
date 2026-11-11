@@ -916,6 +916,12 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                 {
                     int mapId = MapRegistry_FindByName(g_PcConfig.mapName);
                     if (mapId < 0) mapId = 0;
+                    /* A room's New Game is the story's first map. The Map option
+                     * is a single-player test setting that saves as it is browsed;
+                     * left on another map it sent a hosted game there, and one
+                     * with no stage of its own (map1_s04) put the host in a void
+                     * reading NO STAGE. */
+                    if (g_PcCoopGame) mapId = 0;
                     /* A co-op guest starts in the host's map, not the config map. */
                     if (coopGuestMap >= 0) { mapId = coopGuestMap; coopGuestMap = -1; }
                     GameBoot_SavegameInitialize(mapId, newGameSelectedDifficultyIdx - 1);
