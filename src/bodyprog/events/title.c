@@ -304,6 +304,10 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
      * Nor under the Exit confirmation. */
     {
         extern int ShSession_Active(void);
+        {
+            extern void Pc_CoopMenu_FollowSession(void);
+            Pc_CoopMenu_FollowSession();
+        }
         int coopHoldsTitle = (Pc_CoopMenu_IsOpen() || ShSession_Active());
         playInGameDemo = g_PcConfig.attractDemos && g_MainMenuState != MenuState_Achievements &&
                          !coopHoldsTitle && !s_ExitConfirm.open &&

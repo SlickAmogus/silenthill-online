@@ -2381,6 +2381,28 @@ static int Coop_Adjust(int dir)
     }
 }
 
+/* Title screen, every frame. Becoming a guest by any route lands on the lobby
+ * page: an invite accepted in the Steam overlay joins the lobby whatever page
+ * the menu is on, or with the menu shut, and the only pages that used to
+ * follow the session were the two Join ones, so the guest sat on a menu that
+ * said nothing about the room they were now in. */
+void Pc_CoopMenu_FollowSession(void)
+{
+    static int s_wasGuest;
+    const int  guest = ShSession_Active() && !ShSession_IsHost();
+
+    if (guest && !s_wasGuest)
+    {
+        if (!s_open)
+        {
+            Pc_CoopMenu_Open();
+        }
+        s_page = COOP_PAGE_HOST;
+        s_sel  = 0;
+    }
+    s_wasGuest = guest;
+}
+
 void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int right)
 {
     int rows;

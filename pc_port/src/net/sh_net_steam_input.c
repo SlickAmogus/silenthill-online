@@ -17,7 +17,17 @@
  * That state is detected and said once; PsyCross's direct XInput read covers
  * Xbox-type pads meanwhile.
  *
- * Nothing here runs unless Steam came up: without it SDL owns the pads. */
+ * Nothing here runs unless Steam came up: without it SDL owns the pads.
+ *
+ * Threads. Every Steam call in the game is made on the network worker, which
+ * owns the callback pipe (manual dispatch); a Steam call from any other thread
+ * while callbacks are queued makes Steam assert and mis-deliver them, and the
+ * first version of this file, whose rumble went out from the game thread every
+ * frame, took lobbies and peer connections down with it. SDL's joysticks
+ * belong to the game thread. So the worker reads Steam into s_shared and sends
+ * the rumble it finds there; the game thread copies s_shared into the stand-in
+ * controllers and leaves its rumble requests there. Neither side calls into
+ * the other's library. */
 #include <stdio.h>
 #include <string.h>
 #include <SDL.h>
@@ -39,6 +49,9 @@ extern void* ShSteam_Symbol(const char* name);
 extern void PsyX_Pad_SteamBypassHold(int hold);
 extern void PsyX_Pad_StandInFeed(int slot, int present, unsigned buttons, const short* axes, const char* name, unsigned vid, unsigned pid);
 extern void PsyX_Pad_StandInSetRumble(int (*fn)(int slot, unsigned short low, unsigned short high));
+extern void PsyX_Pad_StandInSetSource(void (*fn)(void));
+
+void ShSteamInput_ApplyToPads(void);
 
 typedef unsigned long long u64h;
 
@@ -60,6 +73,21 @@ static const struct { const char* name; int button; } s_buttonDef[SI_BUTTONS] = 
     { "pad_up", SDL_CONTROLLER_BUTTON_DPAD_UP },    { "pad_down", SDL_CONTROLLER_BUTTON_DPAD_DOWN },
     { "pad_left", SDL_CONTROLLER_BUTTON_DPAD_LEFT }, { "pad_right", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
 };
+
+/* What crosses between the two threads, under s_sharedLock. */
+typedef struct
+{
+    int            present;
+    unsigned       buttons;
+    short          axes[SDL_CONTROLLER_AXIS_MAX];
+    int            type;
+    unsigned short rumbleLow, rumbleHigh;
+    int            rumbleDirty;
+} SiShared;
+
+static SDL_SpinLock s_sharedLock;
+static SiShared     s_shared[4];
+static int          s_sharedAnyBound;
 
 static void* s_input;
 static int   s_started;
@@ -105,12 +133,56 @@ static void SteamInput_Identity(int type, const char** name, unsigned* vid, unsi
     }
 }
 
+/* Game thread: only notes the request; the worker sends it. */
 static int SteamInput_Rumble(int slot, unsigned short low, unsigned short high)
 {
-    if (!s_started || slot < 0 || slot >= SI_SLOTS || s_slotHandle[slot] == 0 || s_Vibrate == NULL)
+    if (slot < 0 || slot >= SI_SLOTS)
         return 0;
-    s_Vibrate(s_input, s_slotHandle[slot], low, high);
+    SDL_AtomicLock(&s_sharedLock);
+    if (s_shared[slot].rumbleLow != low || s_shared[slot].rumbleHigh != high)
+    {
+        s_shared[slot].rumbleLow   = low;
+        s_shared[slot].rumbleHigh  = high;
+        s_shared[slot].rumbleDirty = 1;
+    }
+    SDL_AtomicUnlock(&s_sharedLock);
     return 1;
+}
+
+/* Game thread, once per pad update (PsyCross calls it): the worker's latest
+ * reading becomes the stand-in controllers. */
+void ShSteamInput_ApplyToPads(void)
+{
+    SiShared snap[SI_SLOTS];
+    int      i, anyBound;
+
+    SDL_AtomicLock(&s_sharedLock);
+    memcpy(snap, s_shared, sizeof(snap));
+    anyBound = s_sharedAnyBound;
+    SDL_AtomicUnlock(&s_sharedLock);
+
+    for (i = 0; i < SI_SLOTS; i++)
+    {
+        const char* name = NULL;
+        unsigned    vid = 0, pid = 0;
+
+        if (snap[i].present)
+            SteamInput_Identity(snap[i].type, &name, &vid, &pid);
+        PsyX_Pad_StandInFeed(i, snap[i].present, snap[i].buttons, snap[i].axes, name, vid, pid);
+    }
+    /* The XInput fallback stands down once Steam Input is delivering. */
+    PsyX_Pad_SteamBypassHold(anyBound);
+}
+
+static void SteamInput_Share(int slot, int present, unsigned buttons, const short* axes, int type)
+{
+    SDL_AtomicLock(&s_sharedLock);
+    s_shared[slot].present = present;
+    s_shared[slot].buttons = present ? buttons : 0;
+    s_shared[slot].type    = type;
+    if (present && axes != NULL)
+        memcpy(s_shared[slot].axes, axes, sizeof(s_shared[slot].axes));
+    SDL_AtomicUnlock(&s_sharedLock);
 }
 
 static short SteamInput_Axis(float v)
@@ -172,6 +244,7 @@ void ShSteamInput_Start(void)
         return;
     }
     PsyX_Pad_StandInSetRumble(SteamInput_Rumble);
+    PsyX_Pad_StandInSetSource(ShSteamInput_ApplyToPads);
     s_started = 1;
     SH_DBG("[STEAMINPUT] started with %s", path);
 }
@@ -184,12 +257,13 @@ void ShSteamInput_Stop(void)
         return;
     for (i = 0; i < SI_SLOTS; i++)
     {
-        PsyX_Pad_StandInFeed(i, 0, 0, NULL, NULL, 0, 0);
+        SteamInput_Share(i, 0, 0, NULL, 0);
         s_slotHandle[i] = 0;
         s_slotBound[i]  = 0;
     }
-    PsyX_Pad_StandInSetRumble(NULL);
-    PsyX_Pad_SteamBypassHold(0);
+    SDL_AtomicLock(&s_sharedLock);
+    s_sharedAnyBound = 0;
+    SDL_AtomicUnlock(&s_sharedLock);
     if (s_Shutdown != NULL)
         s_Shutdown(s_input);
     s_started = 0;
@@ -200,20 +274,12 @@ int ShSteamInput_NeedsLayout(void)
     return s_needsLayout;
 }
 
+static volatile int s_wantLayoutScreen;
+
+/* Any thread: the worker opens it on its next tick. */
 void ShSteamInput_ShowLayoutScreen(void)
 {
-    int i;
-
-    if (!s_started || s_ShowBindingPanel == NULL)
-        return;
-    for (i = 0; i < SI_SLOTS; i++)
-    {
-        if (s_slotHandle[i] != 0)
-        {
-            s_ShowBindingPanel(s_input, s_slotHandle[i]);
-            return;
-        }
-    }
+    s_wantLayoutScreen = 1;
 }
 
 void ShSteamInput_Tick(void)
@@ -226,6 +292,18 @@ void ShSteamInput_Tick(void)
     if (!s_started)
         return;
     s_RunFrame(s_input, 0);
+    if (s_wantLayoutScreen)
+    {
+        s_wantLayoutScreen = 0;
+        for (i = 0; i < SI_SLOTS && s_ShowBindingPanel != NULL; i++)
+        {
+            if (s_slotHandle[i] != 0)
+            {
+                s_ShowBindingPanel(s_input, s_slotHandle[i]);
+                break;
+            }
+        }
+    }
 
     /* Handles resolve once Steam has parsed the manifest, a frame or two in. */
     if (s_set == 0)
@@ -255,7 +333,7 @@ void ShSteamInput_Tick(void)
             alive = (s_slotHandle[i] != 0 && handles[k] == s_slotHandle[i]);
         if (s_slotHandle[i] != 0 && !alive)
         {
-            PsyX_Pad_StandInFeed(i, 0, 0, NULL, NULL, 0, 0);
+            SteamInput_Share(i, 0, 0, NULL, 0);
             s_slotHandle[i] = 0;
             s_slotBound[i]  = 0;
         }
@@ -285,13 +363,27 @@ void ShSteamInput_Tick(void)
 
     for (i = 0; i < SI_SLOTS; i++)
     {
-        const char* name;
-        unsigned    vid, pid, buttons = 0;
-        short       axes[SDL_CONTROLLER_AXIS_MAX];
-        SiAnalog    a;
+        unsigned buttons = 0;
+        short    axes[SDL_CONTROLLER_AXIS_MAX];
+        SiAnalog a;
 
         if (s_slotHandle[i] == 0)
             continue;
+        /* Rumble the game thread asked for since the last tick. */
+        if (s_Vibrate != NULL)
+        {
+            unsigned short low, high;
+            int            dirty;
+
+            SDL_AtomicLock(&s_sharedLock);
+            dirty = s_shared[i].rumbleDirty;
+            low   = s_shared[i].rumbleLow;
+            high  = s_shared[i].rumbleHigh;
+            s_shared[i].rumbleDirty = 0;
+            SDL_AtomicUnlock(&s_sharedLock);
+            if (dirty)
+                s_Vibrate(s_input, s_slotHandle[i], low, high);
+        }
         s_ActivateSet(s_input, s_slotHandle[i], s_set);
 
         /* Bound = Steam applied a layout that knows our actions. The player's
@@ -307,7 +399,7 @@ void ShSteamInput_Tick(void)
         if (!s_slotBound[i])
         {
             anyUnbound = 1;
-            PsyX_Pad_StandInFeed(i, 0, 0, NULL, NULL, 0, 0);
+            SteamInput_Share(i, 0, 0, NULL, 0);
             continue;
         }
         anyBound = 1;
@@ -328,12 +420,12 @@ void ShSteamInput_Tick(void)
         a = s_GetAnalog(s_input, s_slotHandle[i], s_rightTrigger);
         axes[SDL_CONTROLLER_AXIS_TRIGGERRIGHT] = (short)((int)(a.x * 65535.0f) - 32768);
 
-        SteamInput_Identity(s_GetType ? s_GetType(s_input, s_slotHandle[i]) : 0, &name, &vid, &pid);
-        PsyX_Pad_StandInFeed(i, 1, buttons, axes, name, vid, pid);
+        SteamInput_Share(i, 1, buttons, axes, s_GetType ? s_GetType(s_input, s_slotHandle[i]) : 0);
     }
 
-    /* The XInput fallback stands down once Steam Input is delivering. */
-    PsyX_Pad_SteamBypassHold(anyBound);
+    SDL_AtomicLock(&s_sharedLock);
+    s_sharedAnyBound = anyBound;
+    SDL_AtomicUnlock(&s_sharedLock);
     /* Steam applies a layout a moment after the controller appears, so "none
      * bound" only means something once it has lasted. */
     if (anyUnbound && !anyBound)
