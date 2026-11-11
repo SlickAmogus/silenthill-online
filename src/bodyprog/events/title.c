@@ -581,9 +581,16 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 
                 NmInput_FromGame(&in);
                 hoverAnswer = MainMenu_ExitConfirmHover();
-                c           = PmConfirm_ApplyHover(&s_ExitConfirm, &in, hoverAnswer);
+                {
+                    const int wasYes = (s_ExitConfirm.yes != 0);
 
-                res = NmConfirm_Update(&s_ExitConfirm, &c);
+                    c   = PmConfirm_ApplyHover(&s_ExitConfirm, &in, hoverAnswer);
+                    res = NmConfirm_Update(&s_ExitConfirm, &c);
+                    if (s_ExitConfirm.open && wasYes != (s_ExitConfirm.yes != 0))
+                    {
+                        SD_Call(Sfx_MenuMove);
+                    }
+                }
                 if (res == NM_CONFIRM_YES)
                 {
                     SH_DBG("[MENU] Exit selected — closing game");
