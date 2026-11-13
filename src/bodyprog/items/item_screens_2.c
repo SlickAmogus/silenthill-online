@@ -16,6 +16,7 @@
 #include "bodyprog/view/vw_calc.h" /* vbSetRefView: re-pin the carousel view after the co-op sim step */
 
 #ifdef SH_PC_PORT
+#include "pc_inventory_guard.h"
 #include "pc_inventory_mouse.h"
 #include "pc_mouse_cursor.h"
 #include "lang_ar.h"
@@ -1591,6 +1592,9 @@ bool Player_ItemRemove(u8 itemId, u8 count) // 0x8004EE94
                 {
                     g_SavegamePtr->items[i].id_0       = InvItemId_Empty;
                     g_SavegamePtr->inventorySlotCount = func_8004F190(g_SavegamePtr);
+#ifdef SH_PC_PORT
+                    Pc_Inventory_LogRemoved(itemId);
+#endif
                 }
                 break;
         }
