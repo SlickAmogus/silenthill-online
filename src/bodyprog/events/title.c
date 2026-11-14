@@ -17,6 +17,7 @@
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu_draw.h"
 #include "pc_pause_menu_core.h"
+#include "pc_qol_update.h"
 #include "pc_retroachievements.h"
 #endif
 
@@ -310,7 +311,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
         }
         int coopHoldsTitle = (Pc_CoopMenu_IsOpen() || ShSession_Active());
         playInGameDemo = g_PcConfig.attractDemos && g_MainMenuState != MenuState_Achievements &&
-                         !coopHoldsTitle && !s_ExitConfirm.open &&
+                         !coopHoldsTitle && !s_ExitConfirm.open && !Pc_QolUpdate_IsOpen() &&
                          (((g_Demo_ReproducedCount + 1) % 3) != 0);
     }
 #else
@@ -632,6 +633,24 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 
                 g_Controller0->pulsedBtnFlags  = 0;
                 g_Controller0->clickedBtnFlags = 0;
+            }
+            else if (!coopMenuOpen)
+            {
+                /* A mod update waiting to be offered (pc_qol_update.c). While its
+                 * question is up the menu under it takes no input, the same way
+                 * the exit question holds it. Never over the co-op menus, and
+                 * never while in a room: a guest there is waiting for the host. */
+                extern int ShSession_Active(void);
+                NmInput    in;
+
+                NmInput_FromGame(&in);
+                if ((Pc_QolUpdate_IsOpen() || !ShSession_Active()) &&
+                    Pc_QolUpdate_TitleFrame(in.left, in.right, in.confirm, in.cancel))
+                {
+                    exitConfirmActive              = true;
+                    g_Controller0->pulsedBtnFlags  = 0;
+                    g_Controller0->clickedBtnFlags = 0;
+                }
             }
 #endif
 
@@ -1102,7 +1121,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
     /* Hold the idle timer at zero while the achievements screen is up. Scrolling
      * a list is not idling, and at 1740 this loads STREAM.BIN and cuts to the
      * intro movie. */
-    if (g_MainMenuState == MenuState_Achievements || s_ExitConfirm.open)
+    if (g_MainMenuState == MenuState_Achievements || s_ExitConfirm.open || Pc_QolUpdate_IsOpen())
     {
         g_SysWork.counters_1C[1] = 0;
     }
