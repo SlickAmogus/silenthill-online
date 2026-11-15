@@ -94,7 +94,9 @@ extern const char* const PC_PGXP_FOG_MSG;
 
 #define QO_X_QUICK_WEAPONS 1000
 #define QO_GARBAGE  48
-#define QO_MAX_ROWS 24
+/* 25, not the single-player 24: the phone Graphics page here also carries
+ * PGXP, and reached 25 when Dithering left Texture Filter for a row of its own. */
+#define QO_MAX_ROWS 25
 /* CONTROLS is appended last, so every existing section index -- and the "Next
  * page (X)" label baked into each table -- stays where it was. Its rows differ
  * by platform (s_page5 / s_pageControls). */
