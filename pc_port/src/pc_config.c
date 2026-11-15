@@ -885,7 +885,7 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_server") == 0)
         {
             strncpy(g_PcConfig.onlineServer, value, sizeof(g_PcConfig.onlineServer) - 1);
-            g_PcConfig.onlineServer[sizeof(g_PcConfig.onlineServer) - 1] = ' ';
+            g_PcConfig.onlineServer[sizeof(g_PcConfig.onlineServer) - 1] = '\0';
         }
         else if (strcmp(key, "online_port") == 0)
         {
@@ -896,7 +896,7 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_name") == 0)
         {
             strncpy(g_PcConfig.onlineName, value, sizeof(g_PcConfig.onlineName) - 1);
-            g_PcConfig.onlineName[sizeof(g_PcConfig.onlineName) - 1] = ' ';
+            g_PcConfig.onlineName[sizeof(g_PcConfig.onlineName) - 1] = '\0';
         }
         else if (strncmp(key, "online_block_", 13) == 0)
         {
@@ -918,7 +918,7 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_password") == 0)
         {
             strncpy(g_PcConfig.onlinePassword, value, sizeof(g_PcConfig.onlinePassword) - 1);
-            g_PcConfig.onlinePassword[sizeof(g_PcConfig.onlinePassword) - 1] = ' ';
+            g_PcConfig.onlinePassword[sizeof(g_PcConfig.onlinePassword) - 1] = '\0';
         }
         else if (strcmp(key, "online_uid") == 0)
         {
