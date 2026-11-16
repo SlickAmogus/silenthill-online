@@ -54,7 +54,7 @@ static const VoiceSet s_sets[VOICE_CHARAS] = {
         { 44,  "Harry Mason." },      { 28,  "Yeah. Thanks." },    { 243, "Okay." },        { 545, "Where's Cheryl?" },
         { 464, "Wait!" },             { 561, "Damn!" },            { 42,  "What's that?" },   { 205, "Stop! Don't shoot!" } } },
     { Chara_Cybil, "cybil", {
-        { 45,  "Cybil Bennett." },    { 40,  "Glad to hear it." }, { 49,  "Got it?" },      { 249, "Alright." },
+        { 45,  "Cybil Bennett." },    { 214, "Must be on drugs." }, { 49,  "Got it?" },     { 249, "Alright." },
         { 209, "I'll cover you." },   { 195, "Be careful." },      { 231, "Harry!" },       { 26,  "It's dangerous out there." } } },
     { Chara_Kaufmann, "kaufmann", {
         { 454, "Give me that!" },     { 463, "Got it?" },          { 430, "None of your business!" }, { 452, "What are you doing?" },
