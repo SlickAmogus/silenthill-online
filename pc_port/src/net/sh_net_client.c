@@ -311,7 +311,7 @@ static void ShNetW_SendHello(ShNetWorker* w, int charaId)
     ShnPutU32(buf, &off, ShnPasswordProof(s_password, w->cookie));
     ShnPutU32(buf, &off, w->cookie);
     ShnPutU32(buf, &off, s_uid);
-    ShnPutU32(buf, &off, SHNET_CAP_SOCIAL);
+    ShnPutU32(buf, &off, SHNET_CAP_SOCIAL | SHNET_CAP_MEMO2);
 
     ShnPutHeader(buf, SHNET_MSG_HELLO, (shn_u16)(off - SHNET_HDR_SIZE), w->session);
     ShNetW_Send(w, buf, off);
@@ -408,7 +408,26 @@ static void ShNetW_SendCmd(ShNetWorker* w, const ShNetCmd* c)
         ShnPutS32(buf, &off, (shn_s32)c->u0);
         ShnPutS16(buf, &off, c->s0);
         ShnPutU16(buf, &off, 0);
+        if (c->a == SHNET_MARK_MEMO && c->w1 == SHNET_MEMO_NONE)
+        {
+            ShnPutStr(buf, &off, c->str, SHNET_MEMO_TEXT_MAX); /* the typed word */
+        }
         break;
+
+    case SHNET_MSG_ADMIN:
+    {
+        /* Made here, at the send, from the session this very datagram goes
+         * out on: a proof for any other session is refused. */
+        const unsigned long long proof =
+            ShnAdminProof(g_PcConfig.onlineAdminKey, w->session, s_sh.selfId, c->a, c->u0);
+        ShnPutU8(buf, &off, (shn_u8)c->a);
+        ShnPutU8(buf, &off, 0);
+        ShnPutU16(buf, &off, 0);
+        ShnPutU32(buf, &off, c->u0);
+        ShnPutU32(buf, &off, (shn_u32)(proof & 0xFFFFFFFFu));
+        ShnPutU32(buf, &off, (shn_u32)(proof >> 32));
+        break;
+    }
 
     case SHNET_MSG_MEMO_RATE:
         ShnPutU32(buf, &off, c->u0);
@@ -781,6 +800,17 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         {
             ShnGetStr(p, &off, SHNET_NAME_MAX, wire, SHNET_NAME_MAX);
         }
+        if (entryLen >= SHNET_MEMO_ENTRY_V2)
+        {
+            m.likes    = ShnGetU16(p, &off);
+            m.dislikes = ShnGetU16(p, &off);
+            m.mine     = (signed char)ShnGetU8(p, &off);
+            (void)ShnGetU8(p, &off);
+            ShnGetStr(p, &off, SHNET_MEMO_TEXT_MAX, m.text, SHNET_MEMO_TEXT_MAX);
+            /* The server masked it; this is for a server that did not. */
+            ShNet_SanitizeName(m.text);
+            ShNetChat_Censor(m.text);
+        }
         off = start + entryLen;
 
         /* Ours by this install's id (or the session's, for an old server);
@@ -789,6 +819,7 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         if (m.ownerId == s_uid || (!named && m.ownerId == s_sh.selfId))
         {
             SDL_strlcpy(m.owner, s_name, SHNET_NAME_MAX);
+            m.own = 1;
         }
         else if (wire[0])
         {
@@ -810,6 +841,9 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         {
             if (s_sh.memos[j].memoId == m.memoId)
             {
+                /* The server's table of votes forgets in time and this game
+                 * does not: a vote cast this session stays cast. */
+                if (!m.mine) m.mine = s_sh.memos[j].mine;
                 s_sh.memos[j] = m;
                 dup = 1;
                 break;
@@ -821,6 +855,28 @@ static void ShNetW_HandleMemoList(ShNetWorker* w, const unsigned char* p, int le
         }
     }
     w->memoPending = 0;
+}
+
+/* A marker left the map while we stand on it: its days ran out, an admin
+ * took it down, or its owner's newer one replaced it. */
+static void ShNetW_HandleMemoGone(const unsigned char* p, int len)
+{
+    int          off = 0, j;
+    unsigned int id;
+
+    if (len < 8)
+    {
+        return;
+    }
+    id = ShnGetU32(p, &off);
+    for (j = 0; j < s_sh.memoCount; j++)
+    {
+        if (s_sh.memos[j].memoId == id)
+        {
+            s_sh.memos[j] = s_sh.memos[--s_sh.memoCount];
+            return;
+        }
+    }
 }
 
 static void ShNetW_HandleEvent(const unsigned char* p, int len)
@@ -949,6 +1005,9 @@ static void ShNetW_Receive(ShNetWorker* w, unsigned int now)
             /* The placement landed; the next MEMO_LIST carries it back with a
              * server-assigned id, so nothing to do but stop retrying. */
             s_sh.wantMemos = 1;
+            break;
+        case SHNET_MSG_MEMO_GONE:
+            ShNetW_HandleMemoGone(pay, (int)payLen);
             break;
         case SHNET_MSG_EVENT:
             ShNetW_HandleEvent(pay, (int)payLen);
@@ -1907,12 +1966,73 @@ void ShNet_ReportDeath(int x, int y, int z, short rotY)
 
 void ShNet_RateMemo(unsigned int memoId, int delta)
 {
-    ShNetCmd c;
+    ShNetCmd  c;
+    const int dir = (delta >= 0) ? 1 : -1;
+    int       j;
+
     memset(&c, 0, sizeof(c));
     c.kind = SHNET_MSG_MEMO_RATE;
     c.u0   = memoId;
-    c.a    = (delta >= 0) ? 1 : -1;
-    ShNet_QueueCmd(&c);
+    c.a    = dir;
+    if (!ShNet_QueueCmd(&c))
+    {
+        return;
+    }
+    /* Marked as cast at once, on the game's copy and on the worker's, so the
+     * prompt goes and a second press is the game's again before the server's
+     * new totals arrive. */
+    for (j = 0; j < s_gt.memoCount; j++)
+    {
+        if (s_gt.memos[j].memoId == memoId) s_gt.memos[j].mine = (signed char)dir;
+    }
+    SDL_LockMutex(s_lock);
+    for (j = 0; j < s_sh.memoCount; j++)
+    {
+        if (s_sh.memos[j].memoId == memoId) s_sh.memos[j].mine = (signed char)dir;
+    }
+    SDL_UnlockMutex(s_lock);
+}
+
+int ShNet_PlaceMemoTyped(int x, int y, int z, short rotY, unsigned short phrase, const char* typed,
+                         unsigned short emoji)
+{
+    ShNetCmd c;
+
+    if (!s_enabled || !s_lock || !typed || !typed[0] || !(ShNet_ServerFlags() & SHNET_SF_MEMO2))
+    {
+        return 0;
+    }
+    memset(&c, 0, sizeof(c));
+    c.kind = SHNET_MSG_MEMO_PLACE;
+    c.a    = SHNET_MARK_MEMO;
+    SDL_LockMutex(s_lock);
+    c.b = s_sh.localMap;
+    SDL_UnlockMutex(s_lock);
+    c.c    = x;
+    c.d    = y;
+    c.u0   = (unsigned int)z;
+    c.s0   = rotY;
+    c.w0   = phrase;
+    c.w1   = SHNET_MEMO_NONE;
+    c.w2   = SHNET_MEMO_NONE;
+    c.w3   = emoji;
+    SDL_strlcpy(c.str, typed, SHNET_MEMO_TEXT_MAX);
+    return ShNet_QueueCmd(&c);
+}
+
+int ShNet_AdminRemove(unsigned int memoId)
+{
+    ShNetCmd c;
+
+    if (!s_enabled || !s_lock || !g_PcConfig.onlineAdminKey[0])
+    {
+        return 0;
+    }
+    memset(&c, 0, sizeof(c));
+    c.kind = SHNET_MSG_ADMIN;
+    c.a    = SHNET_ADMIN_REMOVE;
+    c.u0   = memoId;
+    return ShNet_QueueCmd(&c);
 }
 
 void ShNet_RequestMemos(void)

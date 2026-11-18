@@ -1202,7 +1202,7 @@ static void Nu_DrawComposer(int px)
     const float pad   = (float)px * 0.9f;
     const float rowH  = (float)px * 1.45f;
     const float w     = s_vpW * 0.58f < 560.0f ? (s_vpW - 32.0f < 560.0f ? s_vpW - 32.0f : 560.0f) : s_vpW * 0.58f;
-    const float h     = pad * 2.0f + rowH * (1.4f + (float)NU_COMPOSER_ROWS + 0.4f + 2.0f + 1.8f + 1.3f);
+    const float h     = pad * 2.0f + rowH * (1.4f + (float)NU_COMPOSER_ROWS + 0.4f + 2.0f + 1.8f + 1.3f + 0.95f);
     const float x     = (s_vpW - w) * 0.5f;
     const float y     = s_vpH * 0.10f;
     const int   col   = ShNetMemo_ComposerColumn();
@@ -1260,10 +1260,15 @@ static void Nu_DrawComposer(int px)
              * above the first is the last, which is how it navigates. */
             int idx = ((sel + k) % total + total) % total;
             int on  = (k == 0);
+            /* The word column lists "type your own" first where the server
+             * takes typed words; the table follows it. */
+            const int   wbase   = (i == 1) ? ShNetMemo_ComposerWordBase() : 0;
+            const int   isTyped = (i == 1 && wbase && idx == 0);
             const char* label = isPhrase ? ShNetMemo_Phrase(idx)
                               : isEmote  ? (idx == 0 ? "(none)" : ShNetMemo_Emote(idx))
-                                         : ShNetMemo_Word(idx);
+                              : isTyped  ? "" : ShNetMemo_Word(idx - wbase);
             float tx = cx + (on ? (float)px * 0.4f : 0.0f);
+            int   lpx = isEmote ? (int)((float)px * 0.85f) : px;
 
             if (isEmote)
             {
@@ -1293,9 +1298,28 @@ static void Nu_DrawComposer(int px)
                 buf[o] = '\0';
                 label  = buf;
             }
+            else if (isTyped)
+            {
+                /* What was typed, with a caret while the keyboard is up for
+                 * it, or the invitation to type. A long word is drawn smaller
+                 * rather than across the next column. */
+                const char* t = ShNetMemo_ComposerTyped();
+                float       avail = colW - (float)px * 0.4f, tw;
+                if (ShNetMemo_ComposerTyping())
+                    snprintf(buf, sizeof(buf), "%s%s", t, ((SDL_GetTicks() / 400u) & 1u) ? "_" : " ");
+                else
+                    snprintf(buf, sizeof(buf), "%s", t[0] ? t : "[ type your own ]");
+                label = buf;
+                tw    = Nu_TextWidth(label, lpx);
+                if (tw > avail && tw > 0.0f)
+                {
+                    lpx = (int)((float)lpx * avail / tw);
+                    if (lpx < (int)((float)px * 0.5f)) lpx = (int)((float)px * 0.5f);
+                }
+            }
             else
             {
-                const char* grp = ShNetMemo_WordGroup(idx);
+                const char* grp = ShNetMemo_WordGroup(idx - wbase);
                 if (grp && !on)
                 {
                     Nu_DrawTextRight(grp, cx + colW, cy, (int)((float)px * 0.8f),
@@ -1303,7 +1327,7 @@ static void Nu_DrawComposer(int px)
                 }
             }
 
-            Nu_DrawText(label, tx, cy, isEmote ? (int)((float)px * 0.85f) : px,
+            Nu_DrawText(label, tx, cy + (float)(px - lpx) * 0.5f * (isEmote ? 0.0f : 1.0f), lpx,
                         on ? 0.92f : 0.46f,
                         on ? 0.88f : 0.45f,
                         on ? 0.72f : 0.43f, on ? 1.0f : 0.85f);
@@ -1326,8 +1350,16 @@ static void Nu_DrawComposer(int px)
                         0.98f, 0.93f, 0.86f, 1.0f);
     ty += rowH * 1.8f;
 
-    Nu_DrawTextCentered("Click or tap an entry, wheel or drag a column to scroll.  Enter next, Cancel close",
+    Nu_DrawTextCentered(ShNetMemo_ComposerTyping()
+                            ? "Type the word, then Enter.  Esc gives it up"
+                            : "Click or tap an entry, wheel or drag a column to scroll.  Enter next, Cancel close",
                         x + w * 0.5f, ty, (int)((float)px * 0.85f), 0.42f, 0.42f, 0.40f, 1.0f);
+    if (ShNetMemo_ComposerWordBase())
+    {
+        ty += rowH * 0.95f;
+        Nu_DrawTextCentered("A message stays 7 days, and a day longer for each like it gets",
+                            x + w * 0.5f, ty, (int)((float)px * 0.85f), 0.42f, 0.42f, 0.40f, 1.0f);
+    }
     s_cmp.valid = 1;
 }
 
@@ -1407,8 +1439,16 @@ void ShNetUi_ComposerPointer(void)
         s_pressOk = 0;
         if (!s_dragging)
         {
-            if (x >= s_cmp.closeX && x < s_cmp.closeX + s_cmp.closeS && y >= s_cmp.closeY &&
-                y < s_cmp.closeY + s_cmp.closeS)
+            const int onClose = x >= s_cmp.closeX && x < s_cmp.closeX + s_cmp.closeS && y >= s_cmp.closeY &&
+                                y < s_cmp.closeY + s_cmp.closeS;
+            /* A tap anywhere else while the word is being typed takes the
+             * word as it stands first: a phone keyboard's own Enter is easy
+             * to miss, and the button below it is the obvious thing to press. */
+            if (!onClose && ShNetMemo_ComposerTyping())
+            {
+                ShNetChat_PromptAccept();
+            }
+            if (onClose)
             {
                 ShNetMemo_ComposerClose();
             }
@@ -1425,12 +1465,17 @@ void ShNetUi_ComposerPointer(void)
                     const int k = (int)((y - s_cmp.listTop) / s_cmp.rowH) - s_cmp.half;
                     if (k == 0 && ShNetMemo_ComposerColumn() == c)
                     {
-                        if (c < 2) ShNetMemo_ComposerSet(c + 1, ShNetMemo_ComposerIndex(c + 1));
-                        else       ShNetMemo_ComposerPlace();
+                        ShNetMemo_ComposerAdvance(c);
                     }
                     else
                     {
                         ShNetMemo_ComposerSet(c, ShNetMemo_ComposerIndex(c) + k);
+                        /* Picking "type your own" with a tap is asking for the
+                         * keyboard: one tap on a phone, not two. */
+                        if (c == 1 && ShNetMemo_ComposerWordBase() && ShNetMemo_ComposerIndex(1) == 0)
+                        {
+                            ShNetMemo_ComposerType();
+                        }
                     }
                 }
             }
@@ -1451,7 +1496,9 @@ static void Nu_DrawNearbyMemo(int px)
     const ShNetMemo* m;
     char             text[128];
     char             sub[128];
-    const int        big = (int)((float)px * 1.4f);
+    const char*      hint = "";
+    int              big = (int)((float)px * 1.4f);
+    const int        small = (int)((float)px * 0.9f);
     float            y;
 
     if (idx < 0)
@@ -1467,11 +1514,42 @@ static void Nu_DrawNearbyMemo(int px)
     ShNetMemo_Text(m, text, (int)sizeof(text));
     y = s_vpH * 0.80f;
 
+    if ((m->kind & 0x0F) == SHNET_MARK_MEMO)
     {
-        const float ew = (ShNetMemo_MemoEmoji(m) >= 0) ? (float)big * 2.0f : 0.0f;
-        const float tw = Nu_TextWidth(text, big) + ew;
-        const float bx = (s_vpW - tw) * 0.5f - (float)px;
-        Nu_Panel(bx, y - (float)px * 0.5f, tw + (float)px * 2.0f, (float)big * 2.6f, 0.85f);
+        /* Likes and dislikes are separate counts on a server that keeps them
+         * so; an older one has the one number. */
+        if (ShNet_ServerFlags() & SHNET_SF_MEMO2)
+            snprintf(sub, sizeof(sub), "- %s      likes %d   dislikes %d", m->owner[0] ? m->owner : "someone",
+                     (int)m->likes, (int)m->dislikes);
+        else
+            snprintf(sub, sizeof(sub), "- %s   (%+d)", m->owner[0] ? m->owner : "someone", (int)m->rating);
+        if (ShNetMemo_Votable(m))  hint = "Accept: like      Cancel: dislike";
+        else if (m->mine > 0)      hint = "You liked this message";
+        else if (m->mine < 0)      hint = "You disliked this message";
+    }
+    else
+    {
+        sub[0] = '\0';
+    }
+
+    {
+        const float ew   = (ShNetMemo_MemoEmoji(m) >= 0) ? (float)big * 2.0f : 0.0f;
+        const float room = s_vpW * 0.94f - (float)px * 2.0f;
+        float       tw   = Nu_TextWidth(text, big) + ew;
+        float       sw, hw, bw, bx;
+        /* A typed word can make a line wider than a phone held upright. */
+        if (tw > room && tw > 0.0f)
+        {
+            big = (int)((float)big * room / tw);
+            tw  = Nu_TextWidth(text, big) + ((ew > 0.0f) ? (float)big * 2.0f : 0.0f);
+        }
+        sw = Nu_TextWidth(sub, small);
+        hw = Nu_TextWidth(hint, small);
+        bw = tw > sw ? tw : sw;
+        if (hw > bw) bw = hw;
+        bx = (s_vpW - bw) * 0.5f - (float)px;
+        Nu_Panel(bx, y - (float)px * 0.5f, bw + (float)px * 2.0f,
+                 (float)big * 2.6f + (hint[0] ? (float)small * 1.5f : 0.0f), 0.85f);
     }
 
     {
@@ -1482,19 +1560,14 @@ static void Nu_DrawNearbyMemo(int px)
             Nu_DrawEmojiLine(ShNetMemo_MemoEmoji(m), text, s_vpW * 0.5f, y, big, 0.88f, 0.84f, 0.62f);
     }
 
-    if ((m->kind & 0x0F) == SHNET_MARK_MEMO)
-    {
-        snprintf(sub, sizeof(sub), "- %s   (%+d)", m->owner[0] ? m->owner : "someone",
-                 (int)m->rating);
-    }
-    else
-    {
-        snprintf(sub, sizeof(sub), "%s", "");
-    }
     if (sub[0])
     {
-        Nu_DrawTextCentered(sub, s_vpW * 0.5f, y + (float)big * 1.25f,
-                            (int)((float)px * 0.9f), 0.48f, 0.48f, 0.46f, 1.0f);
+        Nu_DrawTextCentered(sub, s_vpW * 0.5f, y + (float)big * 1.25f, small, 0.48f, 0.48f, 0.46f, 1.0f);
+    }
+    if (hint[0])
+    {
+        Nu_DrawTextCentered(hint, s_vpW * 0.5f, y + (float)big * 1.25f + (float)small * 1.5f, small,
+                            0.62f, 0.60f, 0.48f, 1.0f);
     }
 }
 

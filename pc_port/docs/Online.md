@@ -72,7 +72,8 @@ sh_master --cmd "players"        # or one command at a time
 | `kick <id or name> [reason]` | removes a player; they can reconnect |
 | `ban <id, name or IP> [minutes] [reason]` | bans by address and by player id; no minutes means forever |
 | `unban <IP or uid>`, `bans` | lift a ban, list them |
-| `memos [name or uid]` | marker counts per player, or one player's markers |
+| `memos [name or uid]` | marker counts per player, or one player's markers with their likes, dislikes, days left and typed word |
+| `adminkey new`, `adminkey show`, `adminkey off` | the key that lets its holder remove markers from inside the game (below) |
 | `prune old <days>` | deletes markers older than that |
 | `prune user <name or uid>` | deletes every marker a player placed |
 | `prune id <marker id>`, `prune deaths [days]` | one marker, or death markers |
@@ -83,9 +84,24 @@ sh_master --cmd "players"        # or one command at a time
 
 The console listens on 127.0.0.1 port 27891 only (`--admin PORT` moves it,
 `--admin 0` turns it off), so only someone logged in to the server machine
-can use it. Bans are kept in `bans.txt` next to the marker store. Pruned
-markers disappear for players already on that map the next time they change
-map.
+can use it. Bans are kept in `bans.txt` next to the marker store. A pruned
+marker disappears at once for the players standing on its map.
+
+**Removing markers from inside the game.** `adminkey new` in the console
+prints a key and keeps it in `admin.key` next to the marker store. In the
+game, type `/admin KEY` in chat once; it is saved in your settings. From then
+on `/remove` takes down the marker you are standing on, and `/remove ID` any
+marker by its id. The key itself is never sent: each remove carries a proof
+made from the key, your session and that one marker, so nobody can do it by
+using your name or by copying your traffic. That is also why it is a key and
+not a Steam id, which a server has no way to check. Anyone who has the key
+can remove markers, so keep it to yourself; `adminkey new` makes a new one
+and the old one stops working.
+
+**Lifetimes.** The server removes a message seven days after it was left,
+plus one day for each like. Death markers still go after a day. A store from
+before lifetimes is taken in once: every marker in it starts its seven days
+at that first start, and the file as it was is kept as `memos.db.v1`.
 
 ### 2. Point the game at it
 
@@ -151,16 +167,29 @@ cutscene the other player is standing where the camera put them, not where
 they walked.
 
 **Messages.** Press `M` to leave one. You pick a phrase, a word and an
-emoji from three lists; there is no typing, which is deliberate — nothing to
-moderate, nothing to translate at runtime, and a message costs a few bytes on
-the wire. Keys or a pad scroll the lists; with a mouse, click an entry to
-pick it (click it again to move on), roll the wheel over a list, or drag it;
-on a touchscreen, tap and drag the same way. **Leave Message** places it and
-the X in the corner closes the window. There are 52 phrases, about 170 words
-in thirteen groups (people, monsters, items, landmarks and more) and 56
-emoji. Stand on somebody's message to read it; two messages a couple of steps
-apart can each be read. You keep up to five messages on each level: leaving
-another removes your oldest one there.
+emoji from three lists. Keys or a pad scroll the lists; with a mouse, click
+an entry to pick it (click it again to move on), roll the wheel over a list,
+or drag it; on a touchscreen, tap and drag the same way. **Leave Message**
+places it and the X in the corner closes the window. There are 52 phrases,
+about 170 words in thirteen groups (people, monsters, items, landmarks and
+more) and 56 emoji. Stand on somebody's message to read it; two messages a
+couple of steps apart can each be read. You keep up to five messages on each
+level: leaving another removes your oldest one there.
+
+The word can also be your own. The first entry of the word list is **type
+your own**: pick it and type up to 31 characters, then Enter. On a phone or
+in a browser, tapping it raises the keyboard. The phrase still comes from the
+list, so a message stays a sentence about the place it was left in. Typed
+words go through the same filter as chat, in the game and again on the
+server, and racial slurs come out as asterisks.
+
+**Messages do not last.** A message stays for seven days, and one day longer
+for every like it gets. Stand on someone else's message and press **accept**
+to like it or **cancel** to dislike it. That press is the vote and does
+nothing else, so it cannot happen by accident while you open a door; after it
+both buttons are the game's again. You get one vote on each message, and none
+on your own. Everyone standing there sees the totals change as votes come in.
+A dislike is counted and shown, and takes no time away.
 
 **Death markers.** Placed automatically where you die, and visible to
 everyone for a day. Turn them off with `online_deaths = 0` if you would
@@ -234,6 +263,7 @@ and needs its tag only when several players share it.
 | `/report <name> "reason"` | report a player to the server admin |
 | `/color <color>`, `/color <name> <color>` | your name colour, or someone else's, on your screen |
 | `/accept`, `/decline` | answer an invite |
+| `/admin <key>`, `/remove [id]` | for the server's admin: hold its admin key, and take a marker down (see the server section) |
 
 Colours are red, orange, yellow, lime, green, teal, cyan, sky, blue, purple,
 magenta, pink, gold, peach, mint, lavender, white, silver, or `#RRGGBB`.
