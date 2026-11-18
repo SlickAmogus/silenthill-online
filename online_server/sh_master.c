@@ -32,6 +32,12 @@
  *   sh_master --cmd "kick Bob"
  * players, kick, ban, prune old markers and more; `help` lists them.
  *
+ * UPDATES
+ *   sh_master --version          (a release build has a number, a clone has none)
+ *   sh_master --update           (install the newest release build, after asking)
+ * A release build looks for a newer one by itself and says so in its log; it
+ * installs nothing until its host says yes. "Version and updates" below.
+ *
  * BROWSER PLAYERS
  *   sh_master --ws 27890
  * also takes WebSocket clients on TCP 27890. The browser build needs wss://,
@@ -115,6 +121,30 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
 #ifdef SH_MASTER_EMBED
 #include "sh_master_embed.h"
 #include "sh_log.h" /* embedded in the client: relay logs go to SilentHill.log */
+#endif
+
+#ifndef SH_MASTER_EMBED
+/* Which server this is. The release build writes sh_master_version.h beside
+ * this file and into the release zip, so a server compiled on the host from
+ * that zip knows its number as well. A clone built by hand has no number, and
+ * never looks for updates: it cannot tell whether a release is newer than it. */
+#if !defined(SRV_VERSION_NUM) && defined(__has_include)
+#if __has_include("sh_master_version.h")
+#include "sh_master_version.h"
+#endif
+#endif
+#ifndef SRV_VERSION_NUM
+#define SRV_VERSION_NUM 0
+#endif
+#ifndef SRV_VERSION_COMMIT
+#define SRV_VERSION_COMMIT ""
+#endif
+#ifndef SRV_VERSION_DATE
+#define SRV_VERSION_DATE ""
+#endif
+#if !defined(_WIN32)
+#include <sys/wait.h> /* the update check runs curl as a child */
+#endif
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -4389,6 +4419,608 @@ static void AdmPrune(int kind, const char* arg, long days)
               removed, g_memoCount);
 }
 
+/* ------------------------------------------------------------------ */
+/* Version and updates                                                 */
+/* ------------------------------------------------------------------ */
+
+/* The server looks at a folder on the web (update_url) for version.txt, and
+ * says so when the number in it is higher than its own. It never installs
+ * anything by itself: `sh_master --update`, "update" in the console, or a yes
+ * at the question a server started by hand asks, download the build for this
+ * machine and put it in place of this program's file.
+ *
+ * The settings are in sh_master.cfg beside the program, not beside the marker
+ * store: whoever may write there may replace the program anyway, so the link
+ * the next server comes from cannot be changed by anyone lesser. For the same
+ * reason the admin port can turn the check on and off but cannot set the link,
+ * and the install runs in the process of whoever asked for it, never in the
+ * server that is serving. */
+
+#define SRV_UPDATE_URL_DEFAULT "https://github.com/SlickAmogus/silenthill-online/releases/download/server"
+#define SRV_UPDATE_EVERY_MS    (6u * 60u * 60u * 1000u)
+/* "Start me again": Start-Server.bat loops on it, a service manager restarts. */
+#define SRV_EXIT_RESTART       75
+
+#if defined(_WIN64)
+#define SRV_UPDATE_ASSET "sh_master.exe"
+#define SRV_KEY_HINT     ""
+#elif defined(__linux__) && defined(__x86_64__)
+#define SRV_UPDATE_ASSET "sh_master-linux-x64"
+#elif defined(__linux__) && defined(__aarch64__)
+#define SRV_UPDATE_ASSET "sh_master-linux-arm64"
+#else
+#define SRV_UPDATE_ASSET ""
+#endif
+#ifndef SRV_KEY_HINT
+#define SRV_KEY_HINT ", then Enter"
+#endif
+
+typedef struct
+{
+    int  version; /* 0: the file named none */
+    int  proto;
+    char commit[12];
+    char built[32];
+} UpdInfo;
+
+typedef struct
+{
+    int running;
+#if defined(_WIN32)
+    HANDLE proc;
+#else
+    pid_t  pid;
+#endif
+} UpdJob;
+
+static char         g_exePath[1024];       /* this program's file, found before anything can replace it */
+static char         g_cfgPath[1100];
+static char         g_updLatestPath[1100]; /* the release's version.txt as the server last read it */
+static char         g_updUrl[320] = SRV_UPDATE_URL_DEFAULT;
+static int          g_updOn = 1;           /* update_check=ask */
+static int          g_updNoCheck;          /* --no-update-check: this run only */
+static int          g_cfgCreated;
+static int          g_cfgUrlBad;
+static UpdJob       g_updJob;
+static unsigned int g_updNextMs;           /* 0: look at the next tick */
+static UpdInfo      g_updLatest;
+static long         g_updReadUnix;         /* when the release was last read; 0 = not yet */
+static int          g_updTold;             /* the newest version already reported in the log */
+static int          g_updFailTold;
+static int          g_restartArmed;
+static unsigned int g_restartAtMs;
+static int          g_restartNow;
+
+static const char s_cfgDefault[] =
+    "# Silent Hill Online server settings. Lines starting with # are ignored.\n"
+    "# The server reads this file when it starts. An update never changes it.\n"
+    "#\n"
+    "# update_check: what the server does about new versions.\n"
+    "#   ask  look for a newer server at start and every six hours. A newer one\n"
+    "#        is reported in the log and the admin console, and a server started\n"
+    "#        by hand in a window asks before it installs. Nothing is ever\n"
+    "#        installed without a yes.\n"
+    "#   off  never look and never ask. This is what \"never ask again\" sets.\n"
+    "update_check=ask\n"
+    "#\n"
+    "# update_url: where new versions come from: a folder on the web that holds\n"
+    "# version.txt and the server programs, laid out like the project's release.\n"
+    "# Point it at your own copy to decide yourself what your server installs\n"
+    "# (README.md, \"Running your own update channel\").\n"
+    "update_url=" SRV_UPDATE_URL_DEFAULT "\n";
+
+static const char* UpdVersionText(void)
+{
+    static char s[128];
+#if SRV_VERSION_NUM > 0
+    const char* commit = SRV_VERSION_COMMIT;
+    if (commit[0])
+        snprintf(s, sizeof(s), "version %d (%s, %s), protocol v%d", SRV_VERSION_NUM, commit, SRV_VERSION_DATE,
+                 SHNET_PROTO_VER);
+    else
+        snprintf(s, sizeof(s), "version %d, protocol v%d", SRV_VERSION_NUM, SHNET_PROTO_VER);
+#else
+    snprintf(s, sizeof(s), "local build without a version number, protocol v%d", SHNET_PROTO_VER);
+#endif
+    return s;
+}
+
+static void UpdPathsInit(const char* argv0)
+{
+    char  dir[1024];
+    char* slash;
+#if defined(_WIN32)
+    const DWORD n = GetModuleFileNameA(NULL, g_exePath, (DWORD)sizeof(g_exePath));
+    char*       bs;
+    (void)argv0;
+    if (n == 0 || n >= sizeof(g_exePath)) g_exePath[0] = '\0';
+#else
+    const ssize_t n = readlink("/proc/self/exe", g_exePath, sizeof(g_exePath) - 1);
+    if (n > 0)
+    {
+        g_exePath[n] = '\0';
+    }
+    else
+    {
+        /* No /proc (macOS, the BSDs): a path with a slash in it can be
+         * resolved, a bare name found through PATH cannot, and then an update
+         * says it does not know which file to replace. */
+        char* abs = (argv0 && strchr(argv0, '/')) ? realpath(argv0, NULL) : NULL;
+        snprintf(g_exePath, sizeof(g_exePath), "%s", abs ? abs : "");
+        free(abs);
+    }
+#endif
+    snprintf(dir, sizeof(dir), "%s", g_exePath);
+    slash = strrchr(dir, '/');
+#if defined(_WIN32)
+    bs = strrchr(dir, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    if (slash) slash[1] = '\0';
+    else       dir[0] = '\0';
+    snprintf(g_cfgPath, sizeof(g_cfgPath), "%ssh_master.cfg", dir);
+    snprintf(g_updLatestPath, sizeof(g_updLatestPath), "%ssh_master.latest", dir);
+}
+
+/* The link is handed to curl as one argument, without a shell; this keeps out
+ * what could still end that argument early or be read as something else. */
+static int UpdUrlOk(const char* u)
+{
+    const size_t n = strlen(u);
+    size_t       i;
+    if (strncmp(u, "https://", 8) != 0 && strncmp(u, "http://", 7) != 0) return 0;
+    if (n < 10 || n > 300) return 0;
+    for (i = 0; i < n; i++)
+    {
+        const unsigned char c = (unsigned char)u[i];
+        if (!isalnum(c) && !strchr("-._~:/?#[]@!$&()*+,;=%", c)) return 0;
+    }
+    return 1;
+}
+
+static void UpdCfgLine(char* line)
+{
+    char*  eq;
+    char*  val;
+    size_t n;
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line == '#') return;
+    eq = strchr(line, '=');
+    if (!eq) return;
+    *eq = '\0';
+    n   = strlen(line);
+    while (n && (line[n - 1] == ' ' || line[n - 1] == '\t')) line[--n] = '\0';
+    val = eq + 1;
+    while (*val == ' ' || *val == '\t') val++;
+    n = strlen(val);
+    while (n && (val[n - 1] == '\n' || val[n - 1] == '\r' || val[n - 1] == ' ' || val[n - 1] == '\t')) val[--n] = '\0';
+
+    if (!strcmp(line, "update_check"))
+    {
+        g_updOn = !(!strcmp(val, "off") || !strcmp(val, "0") || !strcmp(val, "no") || !strcmp(val, "never"));
+    }
+    else if (!strcmp(line, "update_url"))
+    {
+        while (n && val[n - 1] == '/') val[--n] = '\0';
+        if (UpdUrlOk(val))
+        {
+            snprintf(g_updUrl, sizeof(g_updUrl), "%s", val);
+        }
+        else
+        {
+            /* Not the default instead: a host who set a link means to choose
+             * what gets installed, and a typo must not undo that. */
+            g_updUrl[0] = '\0';
+            g_cfgUrlBad = 1;
+        }
+    }
+}
+
+static void UpdCfgLoad(int create)
+{
+    char  line[512];
+    FILE* f = fopen(g_cfgPath, "r");
+    if (!f)
+    {
+        if (!create) return;
+        f = fopen(g_cfgPath, "w");
+        if (!f) return;
+        fputs(s_cfgDefault, f);
+        fclose(f);
+        g_cfgCreated = 1;
+        return;
+    }
+    while (fgets(line, sizeof(line), f)) UpdCfgLine(line);
+    fclose(f);
+}
+
+/* Rewrites one setting in place and leaves every other line, comments
+ * included, as the host wrote it. */
+static int UpdCfgSet(const char* key, const char* value)
+{
+    char         tmp[1120];
+    char         line[512];
+    const size_t klen = strlen(key);
+    FILE*        in   = fopen(g_cfgPath, "r");
+    FILE*        out;
+    int          done = 0;
+
+    snprintf(tmp, sizeof(tmp), "%s.tmp", g_cfgPath);
+    out = fopen(tmp, "w");
+    if (!out)
+    {
+        if (in) fclose(in);
+        return 0;
+    }
+    if (in)
+    {
+        while (fgets(line, sizeof(line), in))
+        {
+            const char* p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (!done && !strncmp(p, key, klen) && (p[klen] == '=' || p[klen] == ' ' || p[klen] == '\t'))
+            {
+                fprintf(out, "%s=%s\n", key, value);
+                done = 1;
+            }
+            else
+            {
+                fputs(line, out);
+            }
+        }
+        fclose(in);
+    }
+    else
+    {
+        fputs(s_cfgDefault, out);
+    }
+    if (!done) fprintf(out, "%s=%s\n", key, value);
+    if (fclose(out) != 0)
+    {
+        remove(tmp);
+        return 0;
+    }
+#if defined(_WIN32)
+    if (!MoveFileExA(tmp, g_cfgPath, MOVEFILE_REPLACE_EXISTING))
+#else
+    if (rename(tmp, g_cfgPath) != 0)
+#endif
+    {
+        remove(tmp);
+        return 0;
+    }
+    return 1;
+}
+
+/* Starts a program without a shell and without waiting for it. What it prints
+ * goes nowhere. */
+static int UpdJobStart(UpdJob* j, const char* const* argv)
+{
+#if defined(_WIN32)
+    char                cmd[2600];
+    size_t              len = 0;
+    int                 i;
+    STARTUPINFOA        si;
+    PROCESS_INFORMATION pi;
+    for (i = 0; argv[i]; i++)
+    {
+        /* No argument passed here holds a quote or ends in a backslash (paths
+         * to files, a link UpdUrlOk passed), so plain quoting is exact. */
+        const int n = snprintf(cmd + len, sizeof(cmd) - len, "%s\"%s\"", i ? " " : "", argv[i]);
+        if (n < 0 || (size_t)n >= sizeof(cmd) - len) return 0;
+        len += (size_t)n;
+    }
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    /* No handles inherited: a child holding the server's sockets would keep
+     * the port bound across a restart. */
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return 0;
+    CloseHandle(pi.hThread);
+    j->proc = pi.hProcess;
+#else
+    const pid_t pid = fork();
+    if (pid < 0) return 0;
+    if (pid == 0)
+    {
+        int       fd;
+        const int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0)
+        {
+            dup2(nul, 0);
+            dup2(nul, 1);
+            dup2(nul, 2);
+        }
+        for (fd = 3; fd < 1024; fd++) close(fd);
+        execvp(argv[0], (char* const*)argv);
+        _exit(127);
+    }
+    j->pid = pid;
+#endif
+    j->running = 1;
+    return 1;
+}
+
+/* 1 once the program has ended, with its exit code in *code (-1 when it ended
+ * some other way). */
+static int UpdJobDone(UpdJob* j, int wait, int* code)
+{
+#if defined(_WIN32)
+    DWORD ec = 0;
+    if (WaitForSingleObject(j->proc, wait ? INFINITE : 0) != WAIT_OBJECT_0) return 0;
+    *code = GetExitCodeProcess(j->proc, &ec) ? (int)ec : -1;
+    CloseHandle(j->proc);
+#else
+    int         st = 0;
+    const pid_t r  = waitpid(j->pid, &st, wait ? 0 : WNOHANG);
+    if (r == 0) return 0;
+    *code = (r == j->pid && WIFEXITED(st)) ? WEXITSTATUS(st) : -1;
+#endif
+    j->running = 0;
+    return 1;
+}
+
+static int UpdCurlStart(UpdJob* j, const char* url, const char* outPath, int maxSeconds)
+{
+    char        secs[16], conn[16];
+    const char* argv[20];
+    int         n   = 0;
+    const int   tls = !strncmp(url, "https://", 8);
+#if defined(_WIN32)
+    /* Windows 10 and later ship curl here. Named in full so that a curl.exe
+     * dropped into the server's folder is not the one that runs. */
+    static char curl[MAX_PATH + 16];
+    if (!curl[0])
+    {
+        const UINT k = GetSystemDirectoryA(curl, MAX_PATH);
+        if (k == 0 || k >= MAX_PATH) curl[0] = '\0';
+        strcat(curl, curl[0] ? "\\curl.exe" : "curl");
+        if (GetFileAttributesA(curl) == INVALID_FILE_ATTRIBUTES) strcpy(curl, "curl");
+    }
+    argv[n++] = curl;
+#else
+    argv[n++] = "curl";
+#endif
+    snprintf(secs, sizeof(secs), "%d", maxSeconds);
+    snprintf(conn, sizeof(conn), "%d", maxSeconds < 10 ? maxSeconds : 10);
+    argv[n++] = "-fsSLg"; /* g: the brackets a link may hold are not ranges to expand */
+    argv[n++] = "--proto";
+    argv[n++] = tls ? "=https" : "=http,https";
+    argv[n++] = "--proto-redir"; /* an https link is never followed down to http */
+    argv[n++] = tls ? "=https" : "=http,https";
+    argv[n++] = "--connect-timeout";
+    argv[n++] = conn;
+    argv[n++] = "--max-time";
+    argv[n++] = secs;
+    argv[n++] = "-o";
+    argv[n++] = outPath;
+    argv[n++] = url;
+    argv[n]   = NULL;
+    remove(outPath);
+    return UpdJobStart(j, argv);
+}
+
+static const char* UpdCurlWhy(int code)
+{
+    static char s[48];
+    switch (code)
+    {
+        case 6:   return "the address could not be found";
+        case 7:   return "could not connect";
+        case 22:  return "the link answered with an error: the file may not be there";
+        case 28:  return "it took too long";
+        case 127: return "curl is not installed";
+        default:  break;
+    }
+    snprintf(s, sizeof(s), "curl error %d", code);
+    return s;
+}
+
+static int UpdNum(const char* p)
+{
+    int v = 0, digits = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    for (; *p >= '0' && *p <= '9' && digits < 8; p++, digits++) v = v * 10 + (*p - '0');
+    return (digits && (*p == '\0' || *p == '\n' || *p == '\r' || *p == ' ')) ? v : 0;
+}
+
+/* What the release says about itself ends up in the log and on a terminal, so
+ * only plain characters are kept. */
+static void UpdClean(char* dst, int cap, const char* src)
+{
+    int n = 0;
+    while (*src == ' ' || *src == '\t') src++;
+    for (; *src && n < cap - 1; src++)
+    {
+        const unsigned char c = (unsigned char)*src;
+        if (isalnum(c) || c == ' ' || c == '-' || c == ':' || c == '.') dst[n++] = (char)c;
+    }
+    while (n && dst[n - 1] == ' ') n--;
+    dst[n] = '\0';
+}
+
+static int UpdReadInfo(const char* path, UpdInfo* out)
+{
+    char  line[256];
+    int   lines = 0;
+    FILE* f     = fopen(path, "rb");
+    memset(out, 0, sizeof(*out));
+    if (!f) return 0;
+    while (lines++ < 64 && fgets(line, sizeof(line), f))
+    {
+        if      (!strncmp(line, "version ", 8)) out->version = UpdNum(line + 8);
+        else if (!strncmp(line, "proto ", 6))   out->proto = UpdNum(line + 6);
+        else if (!strncmp(line, "commit ", 7))  UpdClean(out->commit, (int)sizeof(out->commit), line + 7);
+        else if (!strncmp(line, "built ", 6))   UpdClean(out->built, (int)sizeof(out->built), line + 6);
+    }
+    fclose(f);
+    return out->version > 0;
+}
+
+static int UpdEnabled(void)
+{
+    return g_updOn && !g_updNoCheck && SRV_VERSION_NUM > 0 && g_updUrl[0];
+}
+
+static void UpdAnnounce(const UpdInfo* in)
+{
+    if (in->version <= SRV_VERSION_NUM || in->version == g_updTold) return;
+    g_updTold = in->version;
+    SrvLog("update available: version %d (built %s). This server is version %d and keeps running as it is. "
+           "To install it: \"update\" in the admin console, or sh_master --update. \"update off\" stops the checks",
+           in->version, in->built, SRV_VERSION_NUM);
+    if (in->proto > 0 && in->proto != SHNET_PROTO_VER)
+    {
+        SrvLog("version %d speaks protocol v%d and this server v%d: players on the newest game cannot join "
+               "until this server is updated", in->version, in->proto, SHNET_PROTO_VER);
+    }
+}
+
+/* Once a second from the serving loop. The fetch is a child process that is
+ * only ever polled, so a slow or dead link never holds a datagram up. */
+static void UpdTick(unsigned int now)
+{
+    char url[360];
+    if (g_updJob.running)
+    {
+        UpdInfo in;
+        int     code = -1;
+        if (!UpdJobDone(&g_updJob, 0, &code)) return;
+        if (code == 0 && UpdReadInfo(g_updLatestPath, &in))
+        {
+            g_updLatest   = in;
+            g_updReadUnix = (long)time(NULL);
+            g_updFailTold = 0;
+            UpdAnnounce(&in);
+        }
+        else if (!g_updFailTold)
+        {
+            g_updFailTold = 1;
+            SrvLog("update check: could not read %s/version.txt (%s). It is tried again every six hours; "
+                   "update_check=off in %s stops it", g_updUrl, code == 0 ? "no version in it" : UpdCurlWhy(code),
+                   g_cfgPath);
+        }
+        return;
+    }
+    if (!UpdEnabled()) return;
+    if (g_updNextMs && (int)(now - g_updNextMs) < 0) return;
+    g_updNextMs = now + SRV_UPDATE_EVERY_MS;
+    if (!g_updNextMs) g_updNextMs = 1;
+    snprintf(url, sizeof(url), "%s/version.txt", g_updUrl);
+    if (!UpdCurlStart(&g_updJob, url, g_updLatestPath, 20) && !g_updFailTold)
+    {
+        g_updFailTold = 1;
+        SrvLog("update check: curl could not be started, so new versions go unnoticed. "
+               "update_check=off in %s stops the attempts", g_cfgPath);
+    }
+}
+
+static void AdmCmdVersion(void)
+{
+    AdmPrintf("%s\n", UpdVersionText());
+    if (SRV_VERSION_NUM == 0)
+        AdmPrintf("update: a local build does not look for updates\n");
+    else if (g_cfgUrlBad)
+        AdmPrintf("update: checks are off, because update_url in %s is not an http(s) link\n", g_cfgPath);
+    else if (!g_updOn)
+        AdmPrintf("update: checks are off (update_check=off in %s; update ask turns them on)\n", g_cfgPath);
+    else if (g_updNoCheck)
+        AdmPrintf("update: checks are off for this run (--no-update-check)\n");
+    else if (!g_updReadUnix)
+        AdmPrintf("update: %s has not been read yet\n", g_updUrl);
+    else if (g_updLatest.version > SRV_VERSION_NUM)
+        AdmPrintf("update: version %d is available (built %s). Type update to install it, update off to stop "
+                  "looking\n", g_updLatest.version, g_updLatest.built);
+    else
+        AdmPrintf("update: none, this is the newest (looked %ld min ago)\n",
+                  ((long)time(NULL) - g_updReadUnix) / 60);
+}
+
+static void AdmCmdUpdate(const char* rest)
+{
+    if (!strcmp(rest, "off"))
+    {
+        g_updOn = 0;
+        if (UpdCfgSet("update_check", "off"))
+            AdmPrintf("update checks are off (saved in %s). update ask turns them back on\n", g_cfgPath);
+        else
+            AdmPrintf("update checks are off for this run. %s could not be written: set update_check=off there "
+                      "to keep it\n", g_cfgPath);
+    }
+    else if (!strcmp(rest, "ask") || !strcmp(rest, "on"))
+    {
+        g_updOn       = 1;
+        g_updNextMs   = 0;
+        g_updTold     = 0;
+        g_updFailTold = 0;
+        if (UpdCfgSet("update_check", "ask"))
+            AdmPrintf("update checks are on (saved in %s)\n", g_cfgPath);
+        else
+            AdmPrintf("update checks are on for this run. %s could not be written: set update_check=ask there to "
+                      "keep it\n", g_cfgPath);
+    }
+    else if (!strcmp(rest, "check"))
+    {
+        g_updNextMs   = 0;
+        g_updTold     = 0;
+        g_updFailTold = 0;
+        if (UpdEnabled()) AdmPrintf("looking now; version shows the answer in a few seconds\n");
+        else              AdmPrintf("update checks are off; version says why\n");
+    }
+    else
+    {
+        AdmPrintf("update off | update ask | update check\n"
+                  "To install a newer server, type update in the console (sh_master --console) or run "
+                  "sh_master --update\n");
+    }
+}
+
+static void AdmCmdRestart(const char* rest)
+{
+    char text[96];
+    int  secs = 30, players = 0, i;
+
+    if (!strcmp(rest, "cancel"))
+    {
+        if (!g_restartArmed)
+        {
+            AdmPrintf("no restart is pending\n");
+            return;
+        }
+        g_restartArmed = 0;
+        SrvBroadcastEvent(SHNET_EV_SERVER, 0, "The server restart was called off.", NULL);
+        AdmPrintf("restart called off\n");
+        return;
+    }
+    if (*rest)
+    {
+        if (!isdigit((unsigned char)*rest))
+        {
+            AdmPrintf("restart [seconds] | restart cancel\n");
+            return;
+        }
+        secs = atoi(rest);
+        if (secs > 3600) secs = 3600;
+    }
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        if (g_clients[i].used) players++;
+    }
+    if (!players) secs = 0;
+    if (secs > 0)
+    {
+        snprintf(text, sizeof(text), "The server will restart in %d seconds.", secs);
+        SrvBroadcastEvent(SHNET_EV_SERVER, 0, text, NULL);
+        for (i = 0; i < g_clientHigh; i++)
+        {
+            if (g_clients[i].used) SrvSendChat(&g_clients[i], SHNET_CHAT_GLOBAL, 0, "Server", text, NULL);
+        }
+    }
+    g_restartArmed = 1;
+    g_restartAtMs  = SrvMillis() + (unsigned int)secs * 1000u;
+    if (secs > 0) AdmPrintf("%d player(s) warned; restarting in %d seconds\n", players, secs);
+    else          AdmPrintf("restarting now\n");
+}
+
 static void AdmHelp(void)
 {
     AdmPrintf(
@@ -4410,7 +5042,12 @@ static void AdmHelp(void)
         "watch [all | N]              the log since the server started (all: the whole file, N: the\n"
         "                             last N lines), then live: joins, leaves, living-world chat and\n"
         "                             markers, deaths, rooms, invites, network trouble. Enter stops\n"
-        "logfile                      where the log file is\n");
+        "logfile                      where the log file is\n"
+        "version                      this server's version, and whether a newer one is out\n"
+        "update                       install the newest server (asks first), then offer to restart\n"
+        "update off | ask | check     stop looking for new versions, look again, look right now\n"
+        "restart [seconds]            warn the players, then start the server again (30 s; at once\n"
+        "                             when nobody is on). restart cancel calls it off\n");
 }
 
 static void AdmRun(char* line)
@@ -4441,12 +5078,15 @@ static void AdmRun(char* line)
     if (!strcmp(cmd, "watch"))   { AdmCmdWatch(1); return; } /* refreshed every half minute: not journal-worthy */
     if (!strcmp(cmd, "unwatch")) { AdmCmdWatch(0); return; }
     if (!strcmp(cmd, "logfile")) { AdmPrintf("logfile %s\n", g_logFile ? g_logAbs : "-"); return; }
+    if (!strcmp(cmd, "version")) { AdmCmdVersion(); return; } /* every console asks it when it opens */
     /* Only what changes something goes in the log; looking (players, bans,
      * memos, help) is asked by scripts too, and filled it with noise. */
     if (strcmp(cmd, "players") && strcmp(cmd, "list") && strcmp(cmd, "who") && strcmp(cmd, "help") &&
         strcmp(cmd, "?") && strcmp(cmd, "bans") && strcmp(cmd, "memos"))
         SrvLog("admin: %s %s", cmd, rest);
 
+    if (!strcmp(cmd, "update"))  { AdmCmdUpdate(rest); return; }
+    if (!strcmp(cmd, "restart")) { AdmCmdRestart(rest); return; }
     if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) AdmHelp();
     else if (!strcmp(cmd, "players") || !strcmp(cmd, "list") || !strcmp(cmd, "who")) AdmCmdPlayers();
     else if (!strcmp(cmd, "kick"))
@@ -4883,8 +5523,396 @@ static void AdmWatchCmd(ShSock s, const struct sockaddr_in* to, const char* arg)
         AdmWatch(s, to);
 }
 
-static int AdmClient(const char* oneCmd, const char* watchArg)
+/* One command to the running server, its answer kept instead of printed. 0
+ * when nobody answered. */
+static int AdmAsk(ShSock s, const struct sockaddr_in* to, const char* cmd, char* out, int cap, int waitMs)
 {
+    fd_set         rd;
+    struct timeval tv;
+    int            n;
+    out[0] = '\0';
+    sendto(s, cmd, strlen(cmd), 0, (const struct sockaddr*)to, (ShSockLen)sizeof(*to));
+    FD_ZERO(&rd);
+    FD_SET(s, &rd);
+    tv.tv_sec  = waitMs / 1000;
+    tv.tv_usec = (waitMs % 1000) * 1000;
+    if (select((int)s + 1, &rd, NULL, NULL, &tv) <= 0) return 0;
+    /* Windows reports a closed port here as a failed read, not as silence. */
+    n = (int)recv(s, out, cap - 1, 0);
+    if (n <= 0) return 0;
+    out[n] = '\0';
+    return 1;
+}
+
+/* The release's version.txt, read now and waited for. */
+static int UpdFetchNow(UpdInfo* out, int maxSeconds, int quiet)
+{
+    char   url[360], path[1140];
+    UpdJob j;
+    int    code = -1, ok;
+
+    if (!g_updUrl[0])
+    {
+        if (!quiet) printf("update_url in %s is not an http(s) link, so there is nowhere to look.\n", g_cfgPath);
+        return 0;
+    }
+    snprintf(url, sizeof(url), "%s/version.txt", g_updUrl);
+    /* Its own file: the serving process may be writing sh_master.latest. */
+#if defined(_WIN32)
+    snprintf(path, sizeof(path), "%s.%ld", g_updLatestPath, (long)GetCurrentProcessId());
+#else
+    snprintf(path, sizeof(path), "%s.%ld", g_updLatestPath, (long)getpid());
+#endif
+    memset(&j, 0, sizeof(j));
+    if (!UpdCurlStart(&j, url, path, maxSeconds))
+    {
+        if (!quiet) printf("curl could not be started, and it is what looks for updates.\n");
+        return 0;
+    }
+    UpdJobDone(&j, 1, &code);
+    ok = code == 0 && UpdReadInfo(path, out);
+    remove(path);
+    if (!ok && !quiet) printf("Could not read %s (%s).\n", url, code == 0 ? "no version in it" : UpdCurlWhy(code));
+    return ok;
+}
+
+/* Puts the release's build for this machine in place of this program's file.
+ * The file it replaces stays beside it as .old. */
+static int UpdInstall(const UpdInfo* in)
+{
+    char        url[400], fresh[1040], old[1040], num[16];
+    const char* argv[4];
+    UpdJob      j;
+    int         code = -1;
+
+    if (!SRV_UPDATE_ASSET[0])
+    {
+        printf("The release holds no ready-made server for this kind of machine. Update with install-server.sh\n"
+               "from the new SHOnline-server.zip: it builds the server here.\n");
+        return 0;
+    }
+    if (!g_exePath[0])
+    {
+        printf("This program cannot tell which file it was started from, so it cannot replace it.\n"
+               "Start it by its full path and try again.\n");
+        return 0;
+    }
+    snprintf(url, sizeof(url), "%s/%s", g_updUrl, SRV_UPDATE_ASSET);
+    snprintf(fresh, sizeof(fresh), "%s.new", g_exePath);
+    snprintf(old, sizeof(old), "%s.old", g_exePath);
+
+    printf("Downloading version %d ...\n", in->version);
+    fflush(stdout);
+    memset(&j, 0, sizeof(j));
+    if (!UpdCurlStart(&j, url, fresh, 600))
+    {
+        printf("curl could not be started. Nothing was changed.\n");
+        return 0;
+    }
+    UpdJobDone(&j, 1, &code);
+    if (code != 0)
+    {
+        printf("The download failed (%s). Nothing was changed.\n", UpdCurlWhy(code));
+        remove(fresh);
+        return 0;
+    }
+#if !defined(_WIN32)
+    chmod(fresh, 0755);
+#endif
+    /* The download has to start on this machine and be the build version.txt
+     * named. A release caught halfway through being replaced, or a build this
+     * system cannot run, stops here with the working server untouched. */
+    snprintf(num, sizeof(num), "%d", in->version);
+    argv[0] = fresh;
+    argv[1] = "--is-version";
+    argv[2] = num;
+    argv[3] = NULL;
+    memset(&j, 0, sizeof(j));
+    code = -1;
+    if (UpdJobStart(&j, argv)) UpdJobDone(&j, 1, &code);
+    if (code != 0)
+    {
+        printf("The download does not run on this machine, or is not version %d yet (the release may be in the\n"
+               "middle of being replaced: try again in a few minutes). Nothing was changed.\n", in->version);
+        remove(fresh);
+        return 0;
+    }
+#if defined(_WIN32)
+    /* A running program can be renamed, not overwritten. */
+    if (!MoveFileExA(g_exePath, old, MOVEFILE_REPLACE_EXISTING))
+    {
+        printf("Could not move %s aside (error %lu). If a server from before the last update is still\n"
+               "running, restart it first. Nothing was changed.\n", g_exePath, (unsigned long)GetLastError());
+        remove(fresh);
+        return 0;
+    }
+    if (!MoveFileExA(fresh, g_exePath, 0))
+    {
+        printf("Could not put the new server in place (error %lu). The old one was put back.\n",
+               (unsigned long)GetLastError());
+        MoveFileExA(old, g_exePath, 0);
+        remove(fresh);
+        return 0;
+    }
+#else
+    remove(old);
+    if (link(g_exePath, old) != 0)
+    {
+        /* A filesystem without hard links: the update goes on with no spare copy. */
+        old[0] = '\0';
+    }
+    if (rename(fresh, g_exePath) != 0)
+    {
+        printf("Could not replace %s (%s). Nothing was changed.\n", g_exePath, strerror(errno));
+        remove(fresh);
+        return 0;
+    }
+#endif
+    printf("Installed version %d as %s\n", in->version, g_exePath);
+    if (old[0]) printf("The server it replaced is kept as %s\n", old);
+    return 1;
+}
+
+/* Becomes the program on disk, on systems that can; elsewhere returns the code
+ * that asks whatever started this server to start it again. */
+static int UpdStartAgain(char** argv)
+{
+#if defined(_WIN32)
+    (void)argv;
+#else
+    if (g_exePath[0])
+    {
+        int fd;
+        fflush(NULL);
+        /* The server that takes over must not ask about updates at its start:
+         * nobody may be at the keyboard of a restart. */
+        setenv("SH_MASTER_RESTARTED", "1", 1);
+        for (fd = 3; fd < 1024; fd++) close(fd);
+        execv(g_exePath, argv);
+        fprintf(stderr, "could not start %s again: %s\n", g_exePath, strerror(errno));
+    }
+#endif
+    return SRV_EXIT_RESTART;
+}
+
+static int UpdAtKeyboard(void)
+{
+#if defined(_WIN32)
+    /* Not _isatty: that is also true of NUL, which is where a service wrapper
+     * points both, and the question would then wait for a key nobody can press. */
+    DWORD mode;
+    return GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode) &&
+           GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+#else
+    return isatty(0) && isatty(1);
+#endif
+}
+
+/* One answer from whoever is at the keyboard, as a lower case letter; 0 when
+ * the time runs out. */
+static int UpdAskKey(int seconds)
+{
+#if defined(_WIN32)
+    const unsigned int end = SrvMillis() + (unsigned int)seconds * 1000u;
+    DWORD              mode;
+    if (!GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode))
+    {
+        /* A script's pipe, or nothing at all: _kbhit only ever sees a real
+         * keyboard and would sit out the whole wait. */
+        char line[64];
+        if (!fgets(line, sizeof(line), stdin))
+        {
+            printf("\n");
+            return 0;
+        }
+        return tolower((unsigned char)line[0]);
+    }
+    while ((int)(end - SrvMillis()) > 0)
+    {
+        if (_kbhit())
+        {
+            const int c = _getch();
+            if (c == 0 || c == 0xE0) /* arrow and function keys arrive as two */
+            {
+                _getch();
+                continue;
+            }
+            printf("%c\n", isprint(c) ? c : ' ');
+            return tolower(c);
+        }
+        Sleep(50);
+    }
+    printf("\n");
+    return 0;
+#else
+    fd_set         rd;
+    struct timeval tv;
+    char           line[64];
+    const char*    p = line;
+    FD_ZERO(&rd);
+    FD_SET(0, &rd);
+    tv.tv_sec  = seconds;
+    tv.tv_usec = 0;
+    if (select(1, &rd, NULL, NULL, &tv) <= 0 || !fgets(line, sizeof(line), stdin))
+    {
+        printf("\n");
+        return 0;
+    }
+    while (*p == ' ') p++;
+    return tolower((unsigned char)*p);
+#endif
+}
+
+/* --check-update: says what the release holds. 10 = it is newer than this. */
+static int UpdCheckOnly(void)
+{
+    UpdInfo in;
+    printf("This server: %s\n", UpdVersionText());
+    if (!UpdFetchNow(&in, 20, 0)) return 1;
+    printf("%s holds version %d (built %s, protocol v%d).\n", g_updUrl, in.version, in.built, in.proto);
+    if (SRV_VERSION_NUM == 0)
+    {
+        printf("A local build has no number to compare with it.\n");
+        return 0;
+    }
+    if (in.version <= SRV_VERSION_NUM)
+    {
+        printf("This is the newest.\n");
+        return 0;
+    }
+    printf("A newer server is available. sh_master --update installs it.\n");
+    return 10;
+}
+
+/* --update, and "update" typed in the console: look, ask, install, then offer
+ * to restart the server that is running, which still runs the old file. */
+static int UpdManual(int yes, ShSock s, const struct sockaddr_in* to)
+{
+    static char reply[ADM_REPLY_MAX + 1];
+    UpdInfo     in;
+
+    printf("This server: %s\nLooking at %s ...\n", UpdVersionText(), g_updUrl);
+    fflush(stdout);
+    if (!UpdFetchNow(&in, 20, 0)) return 1;
+    if (SRV_VERSION_NUM > 0 && in.version <= SRV_VERSION_NUM)
+    {
+        printf("Version %d is the newest. Nothing to do.\n", SRV_VERSION_NUM);
+        return 0;
+    }
+    printf("Version %d is available (built %s).\n", in.version, in.built);
+    if (in.proto > 0 && in.proto != SHNET_PROTO_VER)
+    {
+        printf("It speaks protocol v%d and this server v%d: players on the newest game need it to join.\n",
+               in.proto, SHNET_PROTO_VER);
+    }
+    if (!yes)
+    {
+        if (SRV_VERSION_NUM > 0) printf("Install it now? Type Y or N%s: ", SRV_KEY_HINT);
+        else printf("This is a local build without a version number. Replace it with the release's build?\n"
+                    "Type Y or N%s: ", SRV_KEY_HINT);
+        fflush(stdout);
+        if (UpdAskKey(120) != 'y')
+        {
+            printf("Nothing was changed.\n");
+            return 0;
+        }
+    }
+    if (!UpdInstall(&in)) return 1;
+
+    if (!AdmAsk(s, to, "players", reply, (int)sizeof(reply), 1500))
+    {
+        printf("No server is running on admin port %u. The new version is what starts next time.\n",
+               (unsigned)g_adminPort);
+        return 0;
+    }
+    if (!yes)
+    {
+        printf("The server that is running still runs the old version. Restart it now? Anyone playing gets a\n"
+               "30 second warning first. Type Y or N%s: ", SRV_KEY_HINT);
+        fflush(stdout);
+        if (UpdAskKey(120) != 'y')
+        {
+            printf("Not restarted. The new version is what starts next time (restart, in the console, does it).\n");
+            return 0;
+        }
+    }
+    if (!AdmAsk(s, to, "restart 30", reply, (int)sizeof(reply), 3000))
+    {
+        printf("The server did not answer. Restart it yourself to run the new version.\n");
+        return 1;
+    }
+    if (!strncmp(reply, "unknown command", 15))
+    {
+        printf("The server that is running is too old to restart itself. Restart it yourself to run the new\n"
+               "version (systemctl restart sh1pc, or close its window and start it again).\n");
+        return 0;
+    }
+    fputs(reply, stdout);
+    return 0;
+}
+
+/* A server started by hand in a window: look before serving, and ask. No
+ * answer counts as "not now", so an unattended start that happens to have a
+ * terminal is held up half a minute at most. Does not return when the new
+ * version takes over. */
+static void UpdStartupAsk(char** argv)
+{
+    UpdInfo in;
+    int     key;
+
+    if (!UpdEnabled() || getenv("SH_MASTER_RESTARTED") || !UpdAtKeyboard()) return;
+    /* Said out loud: with no way out to the internet this is a wait of a few
+     * seconds before the server opens, and a silent one looks like a hang. */
+    printf("Looking for a newer server ...\n");
+    fflush(stdout);
+    if (!UpdFetchNow(&in, 6, 1) || in.version <= SRV_VERSION_NUM) return;
+
+    printf("\nA newer server is available: version %d (built %s). This is version %d.\n", in.version, in.built,
+           SRV_VERSION_NUM);
+    if (in.proto > 0 && in.proto != SHNET_PROTO_VER)
+    {
+        printf("It speaks protocol v%d and this server v%d: players on the newest game need it to join.\n",
+               in.proto, SHNET_PROTO_VER);
+    }
+    printf("  Y  update now\n"
+           "  N  not now\n"
+           "  A  never ask again\n"
+           "Type Y, N or A%s (30 seconds, then not now): ", SRV_KEY_HINT);
+    fflush(stdout);
+    key = UpdAskKey(30);
+    if (key == 'a')
+    {
+        g_updOn = 0;
+        if (UpdCfgSet("update_check", "off"))
+            printf("Update checks are off. update_check=ask in %s turns them back on, and sh_master --update\n"
+                   "still updates whenever you ask.\n\n", g_cfgPath);
+        else
+            printf("Update checks are off for this run. %s could not be written: set update_check=off there\n"
+                   "to keep it.\n\n", g_cfgPath);
+        return;
+    }
+    if (key != 'y')
+    {
+        printf("Not now. The server starts as it is.\n\n");
+        return;
+    }
+    if (!UpdInstall(&in))
+    {
+        printf("The server starts as it is.\n\n");
+        return;
+    }
+#if defined(_WIN32)
+    printf("Start the server again to run it (Start-Server.bat does that by itself).\n");
+#else
+    printf("Starting it ...\n\n");
+#endif
+    fflush(stdout);
+    exit(UpdStartAgain(argv));
+}
+
+static int AdmClient(const char* oneCmd, const char* watchArg, int update)
+{
+    static char        reply[4096];
     struct sockaddr_in to;
     ShSock             s;
     char               line[1024];
@@ -4897,6 +5925,12 @@ static int AdmClient(const char* oneCmd, const char* watchArg)
     to.sin_family      = AF_INET;
     to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     to.sin_port        = htons(g_adminPort);
+    /* Installing is done here, by whoever is typing, and never by the server
+     * that is serving: see "Version and updates". */
+    if (update || (oneCmd && !strcmp(oneCmd, "update")))
+    {
+        return UpdManual(update > 1, s, &to);
+    }
     if (oneCmd)
     {
         return AdmSendOne(s, &to, oneCmd) ? 0 : 1;
@@ -4907,6 +5941,15 @@ static int AdmClient(const char* oneCmd, const char* watchArg)
         return 0;
     }
     printf("Silent Hill Online server console. Type help for commands, quit to leave.\n");
+    /* A server from before versions answers "unknown command", and nothing shows. */
+    if (AdmAsk(s, &to, "version", reply, (int)sizeof(reply), 1500))
+    {
+        const char* at = strstr(reply, "update: version ");
+        if (at)
+        {
+            printf("%.*s\n", (int)strcspn(at, "\n"), at);
+        }
+    }
     for (;;)
     {
         printf("> ");
@@ -4915,6 +5958,11 @@ static int AdmClient(const char* oneCmd, const char* watchArg)
         line[strcspn(line, "\r\n")] = '\0';
         if (!strcmp(line, "quit") || !strcmp(line, "exit")) break;
         if (!line[0]) continue;
+        if (!strcmp(line, "update"))
+        {
+            UpdManual(0, s, &to);
+            continue;
+        }
         if (!strncmp(line, "watch", 5) && (line[5] == '\0' || line[5] == ' '))
         {
             AdmWatchCmd(s, &to, line + 5);
@@ -4939,6 +5987,7 @@ static void SrvUsage(const char* argv0)
     printf("  %s [options]\n\n", argv0);
     printf("  -p PORT      UDP port to listen on (default %d)\n", SHNET_DEFAULT_PORT);
     printf("  --ws PORT    also take browser players over WebSocket on TCP PORT\n");
+    printf("               (behind a TLS proxy: browsers need wss://)\n");
     printf("  --admin PORT admin console port on 127.0.0.1 (default %d, 0 = off)\n", SHNET_DEFAULT_PORT + 3);
     printf("  --console    talk to the running server's admin console\n");
     printf("  --cmd TEXT   run one admin command on the running server (try help)\n");
@@ -4946,7 +5995,12 @@ static void SrvUsage(const char* argv0)
     printf("  --log FILE   write the log here (default sh_master.log beside the marker store)\n");
     printf("  --log-max MB rotate the log at this size (default 16; FILE.1 to .%d are kept)\n", SRV_LOG_KEEP);
     printf("  --no-log     no log file (the console's watch then shows only new events)\n");
-    printf("               (behind a TLS proxy: browsers need wss://)\n");
+    printf("  --version    which server this is\n");
+    printf("  --check-update     say whether a newer server is out (exit code 10 when one is)\n");
+    printf("  --update [--yes]   install the newest server and offer to restart the running one;\n");
+    printf("               --yes asks nothing: it installs, warns the players and restarts\n");
+    printf("  --no-update-check  do not look for new versions during this run\n");
+    printf("               (sh_master.cfg beside the program holds update_check and update_url)\n");
     printf("  -n NAME      server name shown to players\n");
     printf("  -m TEXT      message of the day\n");
     printf("  -w WORD      require this password\n");
@@ -4966,9 +6020,13 @@ static void SrvUsage(const char* argv0)
 int main(int argc, char** argv)
 {
     int         i;
-    int         console  = 0;
-    const char* oneCmd   = NULL;
-    const char* watchArg = NULL;
+    int         console   = 0;
+    int         update    = 0;
+    int         yes       = 0;
+    int         checkOnly = 0;
+    int         rc;
+    const char* oneCmd    = NULL;
+    const char* watchArg  = NULL;
 
     for (i = 1; i < argc; i++)
     {
@@ -4976,6 +6034,32 @@ int main(int argc, char** argv)
         if (!strcmp(a, "-p") && i + 1 < argc)
         {
             g_port = (unsigned short)atoi(argv[++i]);
+        }
+        else if (!strcmp(a, "--version"))
+        {
+            printf("sh_master %s\n", UpdVersionText());
+            return 0;
+        }
+        else if (!strcmp(a, "--is-version") && i + 1 < argc)
+        {
+            /* What an update runs the download with before trusting it. */
+            return (SRV_VERSION_NUM > 0 && SRV_VERSION_NUM == atoi(argv[i + 1])) ? 0 : 1;
+        }
+        else if (!strcmp(a, "--update"))
+        {
+            update = 1;
+        }
+        else if (!strcmp(a, "--yes"))
+        {
+            yes = 1;
+        }
+        else if (!strcmp(a, "--check-update"))
+        {
+            checkOnly = 1;
+        }
+        else if (!strcmp(a, "--no-update-check"))
+        {
+            g_updNoCheck = 1;
         }
         else if (!strcmp(a, "--admin") && i + 1 < argc)
         {
@@ -5057,12 +6141,22 @@ int main(int argc, char** argv)
         }
     }
 
-    if (console || oneCmd || watchArg)
+    UpdPathsInit(argv[0]);
+    if (checkOnly)
     {
-        return AdmClient(oneCmd, watchArg);
+        UpdCfgLoad(0);
+        return UpdCheckOnly();
     }
+    if (console || oneCmd || watchArg || update)
+    {
+        UpdCfgLoad(0);
+        return AdmClient(oneCmd, watchArg, update ? 1 + yes : 0);
+    }
+    UpdCfgLoad(1);
+    UpdStartupAsk(argv);
     SrvSanitize(g_serverName, SHNET_SERVER_MAX);
-    return ShMaster_Serve();
+    rc = ShMaster_Serve();
+    return (rc == 0 && g_restartNow) ? UpdStartAgain(argv) : rc;
 }
 #endif /* !SH_MASTER_EMBED */
 
@@ -5162,7 +6256,15 @@ int ShMaster_Serve(void)
 
 #ifndef SH_MASTER_EMBED
     SrvLogInit();
-    SrvLog("%s (protocol v%d, log %s)", SRV_LOG_START, SHNET_PROTO_VER, g_logFile ? g_logAbs : "off");
+    if (SRV_VERSION_NUM > 0)
+        SrvLog("%s (version %d, protocol v%d, log %s)", SRV_LOG_START, SRV_VERSION_NUM, SHNET_PROTO_VER,
+               g_logFile ? g_logAbs : "off");
+    else
+        SrvLog("%s (local build, protocol v%d, log %s)", SRV_LOG_START, SHNET_PROTO_VER,
+               g_logFile ? g_logAbs : "off");
+    if (g_cfgCreated) SrvLog("settings file written: %s (update_check, update_url)", g_cfgPath);
+    if (g_cfgUrlBad)
+        SrvLog("update_url in %s is not an http(s) link: update checks are off until it is fixed", g_cfgPath);
 #endif
     SrvLoadDb();
     SrvTokKeyInit();
@@ -5272,6 +6374,12 @@ int ShMaster_Serve(void)
             }
 #ifndef SH_MASTER_EMBED
             WsExpire(now);
+            UpdTick(now);
+            if (g_restartArmed && (int)(now - g_restartAtMs) >= 0)
+            {
+                g_restartNow = 1;
+                g_running    = 0;
+            }
 #endif
         }
         if (g_dbDirty && (now - g_lastSaveMs) >= SRV_SAVE_GAP_MS)
