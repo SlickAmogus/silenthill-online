@@ -37,7 +37,8 @@ $serverArgs = $cfg['args']
 $domain = $cfg['domain']
 
 $required = @('install-server.sh', 'sh_master.c', 'sh_net_proto.h', 'sh_net_memo_text.h', 'sh_net_chat_filter.h')
-$optional = @('sh_master-linux-x64', 'sh_master-linux-arm64')
+# sh_master_version.h is the version number a server built on the machine gets.
+$optional = @('sh_master_version.h', 'sh_master-linux-x64', 'sh_master-linux-arm64')
 foreach ($f in $required) {
     if (-not (Test-Path (Join-Path $here $f))) { Write-Host "ERROR: $f is missing next to this script" -ForegroundColor Red; exit 1 }
 }
@@ -143,6 +144,11 @@ if ($code -eq 0) {
     Write-Host "Done - the server on $target is up to date and running." -ForegroundColor Green
 } elseif ($code -eq 3) {
     Write-Host "Stopped - nothing was changed; the server keeps running the version it had." -ForegroundColor Yellow
+    $code = 0
+} elseif ($code -eq 4) {
+    Write-Host "The server on $target is newer than the files in this folder, so it was left alone." -ForegroundColor Yellow
+    Write-Host "It updates itself from now on: open Server-Console.bat and type update. To make this"
+    Write-Host "folder match it, unzip the current SHOnline-server.zip over it (keep your server.txt)."
     $code = 0
 } else {
     Write-Host "Deploy FAILED (exit $code). Read the output above for the cause." -ForegroundColor Red

@@ -17,6 +17,10 @@
 # --domain makes browser players possible: Caddy is installed as a TLS proxy so
 # the web game can reach the server as wss://DOMAIN. The DNS record must
 # already point at this machine, and ports 80 and 443 must be free for Caddy.
+#
+# Once installed, the server looks for newer versions by itself and says so in
+# its log; `sh_master --update` installs one (README.md, "Updates"). This
+# script never puts an older server over a newer one unless --force is given.
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -24,12 +28,14 @@ ARGS=""
 DOMAIN=""
 WARN=1
 ASK=1
+FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --args)    ARGS="$2"; shift 2 ;;
         --domain)  DOMAIN="$2"; shift 2 ;;
         --no-warn) WARN=0; ASK=0; shift ;;
         --yes)     ASK=0; shift ;;
+        --force)   FORCE=1; shift ;;
         *) echo "unknown option: $1"; exit 2 ;;
     esac
 done
@@ -77,6 +83,23 @@ else
 fi
 # A wrong architecture or a broken download fails here, before anything is replaced.
 "$BIN.new" --help >/dev/null
+
+# Never an older server over a newer one: the server may have updated itself
+# (sh_master --update) since these files were downloaded. A server from before
+# version numbers, or one built from a clone, reports none and is replaced as
+# it always was.
+ver_of() { "$1" --version 2>/dev/null | sed -n 's/^sh_master version \([0-9][0-9]*\).*/\1/p' | head -1; }
+NEWV="$(ver_of "$BIN.new")"
+OLDV=""
+[ -x "$BIN" ] && OLDV="$(ver_of "$BIN")"
+if [ "$FORCE" != 1 ] && [ -n "$NEWV" ] && [ -n "$OLDV" ] && [ "$OLDV" -gt "$NEWV" ]; then
+    rm -f "$BIN.new"
+    echo ">> this machine already runs version $OLDV, and the files here are version $NEWV (older)."
+    echo "   Nothing was changed. Get the current SHOnline-server.zip for files that match it,"
+    echo "   or run this again with --force to put the older server back."
+    exit 4
+fi
+if [ -n "$NEWV" ]; then echo "   version $NEWV${OLDV:+ (this machine has version $OLDV)}"; fi
 
 # Players online: say who, and ask before anything changes. At a terminal the
 # question is asked here; from Redeploy-Server.bat (no terminal) the line
@@ -256,4 +279,5 @@ IP="$(curl -4 -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2
 [ -n "$IP" ] || IP="this machine's address"
 echo ">> done. Players enter $IP (UDP $UDP_PORT) as the Living World IP."
 echo "   admin console: $BIN --console      live log: $BIN --watch"
+echo "   updates: the log and the console say when a newer server is out; $BIN --update installs it"
 echo "   log file: $("$BIN" --admin "$ADMIN_PORT" --cmd logfile 2>/dev/null | sed 's/^logfile //')  (also journalctl -u $UNIT -f)"
