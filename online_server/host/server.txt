@@ -13,3 +13,6 @@ args=-n "My Silent Hill server" -m "Welcome"
 # domain: a DNS name that points at the Linux server, so browser players can
 # connect (wss://). Leave it empty if you do not want browser players.
 domain=
+#
+# Update settings are not in this file. The server keeps them in sh_master.cfg,
+# which it writes beside itself the first time it starts (README.md, Updates).
