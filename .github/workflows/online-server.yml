@@ -98,14 +98,20 @@ jobs:
           # Each pass gets a fresh server and marker store: the test inspects the
           # first marker on a map and expects its own.
           for MODE in udp ws; do
-            rm -f "$RUNNER_TEMP/selftest.db" "$RUNNER_TEMP/sh_master.log"*
+            rm -f "$RUNNER_TEMP/selftest.db" "$RUNNER_TEMP/selftest.db.v1" "$RUNNER_TEMP/admin.key" "$RUNNER_TEMP/sh_master.log"*
             "$S" --no-update-check -p 27899 --ws 27900 --admin 27898 -d "$RUNNER_TEMP/selftest.db" -i 100 --max 128 > "$RUNNER_TEMP/server-$MODE.log" 2>&1 &
             SRV=$!
             sleep 1
+            # The server makes its admin key, so the test can try the removal
+            # that must work beside the ones that must not. The key's file is
+            # a password: for the server's own user only.
+            KEY="$("$S" --admin 27898 --cmd "adminkey new" | sed -n 's/^admin key: //p')"
+            [ "${#KEY}" = 32 ]
+            [ "$(stat -c %a "$RUNNER_TEMP/admin.key")" = 600 ]
             if [ "$MODE" = udp ]; then
-              "$RUNNER_TEMP/shnet_selftest" 127.0.0.1 27899
+              "$RUNNER_TEMP/shnet_selftest" --adminkey "$KEY" 127.0.0.1 27899
             else
-              "$RUNNER_TEMP/shnet_selftest" --ws 27900 127.0.0.1 27899
+              "$RUNNER_TEMP/shnet_selftest" --adminkey "$KEY" --ws 27900 127.0.0.1 27899
             fi
             "$S" --admin 27898 --cmd players
             # The log file beside the marker store, and the console's replay of it
@@ -115,6 +121,12 @@ jobs:
             kill $SRV; wait $SRV || true
             tail -3 "$RUNNER_TEMP/server-$MODE.log"
           done
+
+      # Lifetimes: a marker store from before them is taken in once, and
+      # messages go at the end of their days, seven and one more per like.
+      - name: Self-test the marker store
+        timeout-minutes: 3
+        run: bash online_server/store_selftest.sh "$RUNNER_TEMP/selftest/sh_master"
 
       # Versions and updates: noticing a newer release, refusing a bad one,
       # installing while serving, restarting, and the question a server asks

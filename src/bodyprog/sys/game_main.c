@@ -2620,6 +2620,24 @@ void MainLoop(void) // 0x80032EE0
             }
         }
 
+        /* A message under the player's feet takes one press of accept as a
+         * like and one of cancel as a dislike. The press is taken off the pad
+         * here, before any game logic reads it, so it is a vote and nothing
+         * else: otherwise opening a door beside a message would like it. Not
+         * while aiming, where accept is the attack. */
+        {
+            extern int ShNetMemo_ComposerActive(void);
+            extern int ShNetMemo_VoteInput(int, int);
+            const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
+
+            if (!ShNetMemo_ComposerActive() && !(g_Controller0->heldBtnFlags & cc->aim)) {
+                const int used = ShNetMemo_VoteInput((g_Controller0->clickedBtnFlags & cc->enter)  != 0,
+                                                     (g_Controller0->clickedBtnFlags & cc->cancel) != 0);
+                if (used == 1) g_Controller0->clickedBtnFlags &= ~cc->enter;
+                if (used == 2) g_Controller0->clickedBtnFlags &= ~cc->cancel;
+            }
+        }
+
         /* Online message composer. Same arrangement as the quick options above
          * and for the same reason: the pad edges are consumed HERE, after the
          * parse refills g_Controller0 and before any game logic reads it, then

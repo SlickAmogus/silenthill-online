@@ -901,6 +901,11 @@ void PcConfig_Load(const char* path)
             strncpy(g_PcConfig.onlineName, value, sizeof(g_PcConfig.onlineName) - 1);
             g_PcConfig.onlineName[sizeof(g_PcConfig.onlineName) - 1] = '\0';
         }
+        else if (strcmp(key, "online_admin_key") == 0)
+        {
+            strncpy(g_PcConfig.onlineAdminKey, value, sizeof(g_PcConfig.onlineAdminKey) - 1);
+            g_PcConfig.onlineAdminKey[sizeof(g_PcConfig.onlineAdminKey) - 1] = '\0';
+        }
         else if (strncmp(key, "online_block_", 13) == 0)
         {
             /* "<token hex> <name>": one /block entry (sh_net_social.c). */
@@ -2099,6 +2104,8 @@ void PcConfig_LogEffective(const char* path)
             continue;
         if (strncmp(p, "ra_token", 8) == 0)
             SH_DBG("[CFG] ra_token = <redacted>");
+        else if (strncmp(p, "online_admin_key", 16) == 0)
+            SH_DBG("[CFG] online_admin_key = <redacted>");
         else
             SH_DBG("[CFG] %s", p);
         n++;

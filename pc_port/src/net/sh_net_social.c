@@ -628,6 +628,73 @@ static void Soc_Color(const char* arg)
     Soc_Lookup(CMD_COLOR, who, rest);
 }
 
+/* /admin KEY: this game holds the living world server's admin key from now on
+ * (the server's console makes one with "adminkey new"). Kept in the settings
+ * and never sent: what goes to the server with each admin act is a proof made
+ * from it (ShnAdminProof). /admin off forgets it. */
+static void Soc_Admin(const char* arg)
+{
+    size_t n;
+    arg = Soc_SkipSpace(arg);
+    n   = strcspn(arg, " ");
+    if (!*arg)
+    {
+        Soc_Say(g_PcConfig.onlineAdminKey[0] ? "This game holds an admin key. /remove takes down the marker you stand on; /admin off forgets the key."
+                                             : "No admin key here. The server's owner gets one from its console (adminkey new) and types /admin KEY.");
+        return;
+    }
+    if (!SDL_strcasecmp(arg, "off"))
+    {
+        g_PcConfig.onlineAdminKey[0] = '\0';
+        PcConfig_SaveKeyValue("online_admin_key", "");
+        Soc_Say("Admin key forgotten.");
+        return;
+    }
+    if (n < 16 || n > SHNET_ADMIN_KEY_MAX || arg[n] != '\0')
+    {
+        Soc_Say("That is not an admin key: one word of 16 to %d characters, as the server's console printed it.",
+                SHNET_ADMIN_KEY_MAX);
+        return;
+    }
+    snprintf(g_PcConfig.onlineAdminKey, sizeof(g_PcConfig.onlineAdminKey), "%s", arg);
+    PcConfig_SaveKeyValue("online_admin_key", g_PcConfig.onlineAdminKey);
+    Soc_Say("Admin key saved. /remove takes down the marker you stand on, /remove ID any marker.");
+}
+
+/* /remove: the marker under the player's feet, or the one with that id. The
+ * server does it only for the holder of its admin key, and answers. */
+static void Soc_Remove(const char* arg)
+{
+    extern int ShNetMemo_NearestReadable(void);
+    unsigned int id = 0;
+
+    arg = Soc_SkipSpace(arg);
+    if (!g_PcConfig.onlineAdminKey[0])
+    {
+        Soc_Say("Removing markers is for the server's admin (/admin KEY first).");
+        return;
+    }
+    if (*arg)
+    {
+        id = (unsigned int)strtoul(arg, NULL, 10);
+    }
+    else
+    {
+        const ShNetMemo* m = ShNet_Memo(ShNetMemo_NearestReadable());
+        if (m) id = m->memoId;
+    }
+    if (!id)
+    {
+        Soc_Say(*arg ? "/remove takes a marker id (a number), or nothing to remove the marker you stand on."
+                     : "Stand on the marker to remove, or give its id: /remove ID.");
+        return;
+    }
+    if (!ShNet_AdminRemove(id))
+    {
+        Soc_Say("Not connected to a living world server.");
+    }
+}
+
 int ShSocial_Command(const char* line)
 {
     char        cmd[24];
@@ -643,6 +710,8 @@ int ShSocial_Command(const char* line)
     if (!SDL_strcasecmp(cmd, "blocklist")) { Soc_BlockList(); return 1; }
     if (!SDL_strcasecmp(cmd, "unblock"))   { Soc_Unblock(p); return 1; }
     if (!SDL_strcasecmp(cmd, "kick"))      { Soc_Kick(p); return 1; }
+    if (!SDL_strcasecmp(cmd, "remove"))    { Soc_Remove(p); return 1; }
+    if (!SDL_strcasecmp(cmd, "admin"))     { Soc_Admin(p); return 1; }
     if (!SDL_strcasecmp(cmd, "join"))      { Soc_Join(p); return 1; }
     if (!SDL_strcasecmp(cmd, "color") || !SDL_strcasecmp(cmd, "colour")) { Soc_Color(p); return 1; }
     if (!SDL_strcasecmp(cmd, "accept"))

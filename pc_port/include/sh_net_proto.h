@@ -100,6 +100,16 @@ typedef char shn_static_assert_widths[
 #define SHNET_MEMO_WORD_MAX   256
 #define SHNET_MEMO_NONE       0xFFFF /* second half of a memo left empty */
 
+/* A message's word may be typed instead of picked (servers with
+ * SHNET_SF_MEMO2). wordA is then SHNET_MEMO_NONE and the text travels beside
+ * it: printable ASCII, slur-masked on both ends, this long with its NUL. */
+#define SHNET_MEMO_TEXT_MAX   32
+
+/* How long a message stays where it was left, and what each like adds. The
+ * server's rule; here so the game can say it in the same numbers. */
+#define SHNET_MEMO_LIFE_S     (7L * 86400L)
+#define SHNET_MEMO_LIKE_S     86400L
+
 /* World coordinates any sane pose stays within (Q19.12, +-2048 m). */
 #define SHNET_COORD_MAX    (2048 << 12)
 
@@ -130,6 +140,11 @@ enum
 
     SHNET_MSG_CHAT_SAY   = 0x35, /* C->S  a line the player typed (scope + text) */
     SHNET_MSG_CHAT_MSG   = 0x36, /* S->C  a line to show (scope + sender + text) */
+
+    SHNET_MSG_MEMO_GONE  = 0x37, /* S->C  a marker left the map: u32 id, u8 map, u8 SHNET_GONE_*, u16 pad
+                                  *       (clients that send SHNET_CAP_MEMO2) */
+    SHNET_MSG_ADMIN      = 0x38, /* C->S  u8 SHNET_ADMIN_*, u8 pad, u16 pad, u32 arg, u32 proof lo, u32 proof hi
+                                  *       (ShnAdminProof); answered with an EVENT */
 
     SHNET_MSG_EVENT      = 0x40, /* S->C  a line for the toast feed */
 
@@ -198,6 +213,16 @@ enum
 /* HELLO's caps field (after uid). */
 #define SHNET_CAP_SOCIAL   (1u << 0) /* reads tags/tokens, sends LOOKUP/WHISPER/REPORT */
 #define SHNET_CAP_SPLIT_P2 (1u << 1) /* a split-screen Player 2 window: in rooms only, never named to others */
+#define SHNET_CAP_MEMO2    (1u << 2) /* reads SHNET_MEMO_ENTRY_V2 lists and MEMO_GONE */
+
+/* Why a marker left (MEMO_GONE). */
+#define SHNET_GONE_EXPIRED 0 /* its days ran out */
+#define SHNET_GONE_REMOVED 1 /* an admin took it down */
+#define SHNET_GONE_RETIRED 2 /* its owner left a newer one, or the map was full */
+
+/* ADMIN acts. */
+#define SHNET_ADMIN_REMOVE 1 /* arg = marker id */
+#define SHNET_ADMIN_KEY_MAX 64
 
 /* Per-player flags in the social roster, chat, whisper and lookup entries. */
 #define SHNET_RF_DUPNAME   (1u << 0) /* someone else online has this name: show the tag */
@@ -283,7 +308,8 @@ enum
     SHNET_SF_GHOSTS = 1 << 0,
     SHNET_SF_MEMOS  = 1 << 1,
     SHNET_SF_DEATHS = 1 << 2,
-    SHNET_SF_EVENTS = 1 << 3
+    SHNET_SF_EVENTS = 1 << 3,
+    SHNET_SF_MEMO2  = 1 << 4  /* typed words, likes and dislikes, lifetimes, MEMO_GONE, ADMIN */
 };
 
 /* REJECT reasons. */
@@ -325,10 +351,19 @@ enum
 /* A list entry with the author's name after it (servers from 2026-10-21);
  * a client reads the name when the entries are that long. */
 #define SHNET_MEMO_ENTRY_NAMED (SHNET_MEMO_ENTRY + SHNET_NAME_MAX)
+/* What a client with SHNET_CAP_MEMO2 is sent: the named entry, then u16 likes,
+ * u16 dislikes, s8 the reader's own vote (+1, -1, 0 none), u8 pad and the
+ * typed word. Still one length for every entry of a datagram, which is how a
+ * reader tells the three apart. */
+#define SHNET_MEMO_ENTRY_V2    (SHNET_MEMO_ENTRY_NAMED + 6 + SHNET_MEMO_TEXT_MAX)
+/* MEMO_PLACE: the fixed part, and with a typed word after it. */
+#define SHNET_MEMO_PLACE_LEN      28
+#define SHNET_MEMO_PLACE_LEN_TEXT (SHNET_MEMO_PLACE_LEN + SHNET_MEMO_TEXT_MAX)
 
 #define SHNET_SNAP_MAX   ((SHNET_MAX_PAYLOAD - 8) / SHNET_SNAP_ENTRY)
 #define SHNET_ROSTER_MAX ((SHNET_MAX_PAYLOAD - 8) / SHNET_ROSTER_ENTRY)
 #define SHNET_MEMO_MAX   ((SHNET_MAX_PAYLOAD - 8) / SHNET_MEMO_ENTRY_NAMED)
+#define SHNET_MEMO_V2_MAX ((SHNET_MAX_PAYLOAD - 8) / SHNET_MEMO_ENTRY_V2)
 
 /* ------------------------------------------------------------------ */
 /* Serialization primitives                                            */
@@ -680,6 +715,44 @@ SHN_FN shn_u32 ShnPasswordProof(const char* pw, shn_u32 cookie)
     c[4] = 'p'; c[5] = 'r'; c[6] = 'o'; c[7] = 'f';
     h0 = ShnSipHash(key, c, 8) & 0xFFFFFFFFULL;
     return h0 ? (shn_u32)h0 : 1u;
+}
+
+/* What an ADMIN message carries instead of the server's admin key: the key
+ * bound to this session, this player id, this act and its argument. The key
+ * never crosses the wire, a capture cannot be turned into any other act, and
+ * replaying it only repeats the one it already was. Sixty-four bits, so it
+ * cannot be found by trying. 0 = no key. */
+SHN_FN unsigned long long ShnAdminProof(const char* adminKey, shn_u32 session, shn_u32 playerId, int op, shn_u32 arg)
+{
+    static const shn_u8 kDeriveA[16] = { 'S','H','O','1','-','a','d','m','i','n','-','k','e','y','-','A' };
+    static const shn_u8 kDeriveB[16] = { 'S','H','O','1','-','a','d','m','i','n','-','k','e','y','-','B' };
+    shn_u8              key[16];
+    shn_u8              c[16];
+    unsigned long long  h0, h1;
+    int                 n = 0, i;
+
+    if (adminKey == 0 || adminKey[0] == 0)
+    {
+        return 0;
+    }
+    while (adminKey[n] && n < SHNET_ADMIN_KEY_MAX) n++;
+    h0 = ShnSipHash(kDeriveA, adminKey, n);
+    h1 = ShnSipHash(kDeriveB, adminKey, n);
+    for (i = 0; i < 8; i++)
+    {
+        key[i]     = (shn_u8)(h0 >> (8 * i));
+        key[8 + i] = (shn_u8)(h1 >> (8 * i));
+    }
+    for (i = 0; i < 4; i++)
+    {
+        c[i]     = (shn_u8)(session >> (8 * i));
+        c[4 + i] = (shn_u8)(playerId >> (8 * i));
+        c[8 + i] = (shn_u8)(arg >> (8 * i));
+    }
+    c[12] = (shn_u8)op;
+    c[13] = 'a'; c[14] = 'd'; c[15] = 'm';
+    h0 = ShnSipHash(key, c, 16);
+    return h0 ? h0 : 1ULL;
 }
 
 #ifdef __cplusplus
