@@ -88,8 +88,11 @@ can use it. Bans are kept in `bans.txt` next to the marker store. A pruned
 marker disappears at once for the players standing on its map.
 
 **Removing markers from inside the game.** `adminkey new` in the console
-prints a key and keeps it in `admin.key` next to the marker store. In the
-game, type `/admin KEY` in chat once; it is saved in your settings. From then
+prints a key and keeps it in `admin.key` next to the marker store. Copy it
+from the console window. In the game, open chat, type `/admin ` and paste the
+key with Ctrl+V, then Enter; it is saved in your settings, once per computer.
+(Or, with the game closed, add the line `online_admin_key = KEY` to
+`config.cfg`.) From then
 on `/remove` takes down the marker you are standing on, and `/remove ID` any
 marker by its id. The key itself is never sent: each remove carries a proof
 made from the key, your session and that one marker, so nobody can do it by
@@ -251,6 +254,8 @@ lines while it is open); the console's `chat hide` / `chat show` do the same.
 Racial slurs are masked with asterisks on the way in and on the way out, on
 the server and in the game. Global takes one message every 10 seconds from
 each player; the box says how long is left and keeps what you typed.
+
+Ctrl+V pastes the first line of the clipboard into the chat box.
 
 **Commands.** A line starting with `/` is a command. `/help` lists them and
 `/help <command>` explains one. A name can be typed as it is shown
