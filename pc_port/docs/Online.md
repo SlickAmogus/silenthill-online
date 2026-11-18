@@ -188,8 +188,9 @@ for every like it gets. Stand on someone else's message and press **accept**
 to like it or **cancel** to dislike it. That press is the vote and does
 nothing else, so it cannot happen by accident while you open a door; after it
 both buttons are the game's again. You get one vote on each message, and none
-on your own. Everyone standing there sees the totals change as votes come in.
-A dislike is counted and shown, and takes no time away.
+on your own. The totals show under the message as a thumbs up and a thumbs
+down, each with its count, and everyone standing there sees them change as
+votes come in. A dislike is counted and shown, and takes no time away.
 
 **Death markers.** Placed automatically where you die, and visible to
 everyone for a day. Turn them off with `online_deaths = 0` if you would

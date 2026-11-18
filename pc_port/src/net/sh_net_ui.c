@@ -1182,6 +1182,71 @@ static void Nu_DrawEmojiLine(int e, const char* text, float cx, float y, int px,
     Nu_DrawText(text, x, y, px, r, g, b, 1.0f);
 }
 
+/* A line that says a like and a dislike with the thumbs emoji instead of the
+ * words: these two bytes in it are drawn as the pictures. */
+#define NU_UP   "\001"
+#define NU_DOWN "\002"
+
+/* Walks such a line: measures it, and draws it from x when draw is set. Where
+ * the emoji sheet did not load the words stand in, or the line would have
+ * holes in it. */
+static float Nu_MixedLine(const char* s, float x, float y, int px, float r, float g, float b, int draw)
+{
+    const float size  = (float)px * 1.35f;
+    const float gap   = (float)px * 0.2f;
+    const int   icons = Nu_EmojiReady();
+    const float x0    = x;
+    char        run[128];
+    int         n = 0;
+
+    for (;; s++)
+    {
+        const int thumb = (*s == NU_UP[0] || *s == NU_DOWN[0]);
+        if (thumb && !icons)
+        {
+            const char* w = (*s == NU_UP[0]) ? "like" : "dislike";
+            for (; *w && n < (int)sizeof(run) - 1; w++) run[n++] = *w;
+            continue;
+        }
+        if (*s && !thumb && n < (int)sizeof(run) - 1)
+        {
+            run[n++] = *s;
+            continue;
+        }
+        run[n] = '\0';
+        if (n > 0)
+        {
+            if (draw) Nu_DrawText(run, x, y, px, r, g, b, 1.0f);
+            x += Nu_TextWidth(run, px);
+            n = 0;
+        }
+        if (!*s)
+        {
+            break;
+        }
+        if (thumb)
+        {
+            x += gap;
+            if (draw)
+            {
+                Nu_DrawEmoji(*s == NU_UP[0] ? SHNET_EMOJI_THUMBS_UP : SHNET_EMOJI_THUMBS_DOWN, x,
+                             y + ((float)px - size) * 0.5f, size, 1.0f);
+            }
+            x += size + gap;
+        }
+        else
+        {
+            run[n++] = *s; /* the run was full: this character starts the next */
+        }
+    }
+    return x - x0;
+}
+
+static void Nu_DrawMixedCentered(const char* s, float cx, float y, int px, float r, float g, float b)
+{
+    Nu_MixedLine(s, cx - Nu_MixedLine(s, 0.0f, y, px, r, g, b, 0) * 0.5f, y, px, r, g, b, 1);
+}
+
 /* ------------------------------------------------------------------ */
 /* Composer                                                            */
 /* ------------------------------------------------------------------ */
@@ -1357,8 +1422,8 @@ static void Nu_DrawComposer(int px)
     if (ShNetMemo_ComposerWordBase())
     {
         ty += rowH * 0.95f;
-        Nu_DrawTextCentered("A message stays 7 days, and a day longer for each like it gets",
-                            x + w * 0.5f, ty, (int)((float)px * 0.85f), 0.42f, 0.42f, 0.40f, 1.0f);
+        Nu_DrawMixedCentered("A message stays 7 days, and a day longer for each " NU_UP " it gets",
+                             x + w * 0.5f, ty, (int)((float)px * 0.85f), 0.42f, 0.42f, 0.40f);
     }
     s_cmp.valid = 1;
 }
@@ -1519,13 +1584,13 @@ static void Nu_DrawNearbyMemo(int px)
         /* Likes and dislikes are separate counts on a server that keeps them
          * so; an older one has the one number. */
         if (ShNet_ServerFlags() & SHNET_SF_MEMO2)
-            snprintf(sub, sizeof(sub), "- %s      likes %d   dislikes %d", m->owner[0] ? m->owner : "someone",
+            snprintf(sub, sizeof(sub), "- %s      " NU_UP " %d    " NU_DOWN " %d", m->owner[0] ? m->owner : "someone",
                      (int)m->likes, (int)m->dislikes);
         else
             snprintf(sub, sizeof(sub), "- %s   (%+d)", m->owner[0] ? m->owner : "someone", (int)m->rating);
-        if (ShNetMemo_Votable(m))  hint = "Accept: like      Cancel: dislike";
-        else if (m->mine > 0)      hint = "You liked this message";
-        else if (m->mine < 0)      hint = "You disliked this message";
+        if (ShNetMemo_Votable(m))  hint = "Accept: " NU_UP "       Cancel: " NU_DOWN;
+        else if (m->mine > 0)      hint = "Your vote: " NU_UP;
+        else if (m->mine < 0)      hint = "Your vote: " NU_DOWN;
     }
     else
     {
@@ -1543,13 +1608,13 @@ static void Nu_DrawNearbyMemo(int px)
             big = (int)((float)big * room / tw);
             tw  = Nu_TextWidth(text, big) + ((ew > 0.0f) ? (float)big * 2.0f : 0.0f);
         }
-        sw = Nu_TextWidth(sub, small);
-        hw = Nu_TextWidth(hint, small);
+        sw = Nu_MixedLine(sub, 0.0f, 0.0f, small, 0.0f, 0.0f, 0.0f, 0);
+        hw = Nu_MixedLine(hint, 0.0f, 0.0f, small, 0.0f, 0.0f, 0.0f, 0);
         bw = tw > sw ? tw : sw;
         if (hw > bw) bw = hw;
         bx = (s_vpW - bw) * 0.5f - (float)px;
         Nu_Panel(bx, y - (float)px * 0.5f, bw + (float)px * 2.0f,
-                 (float)big * 2.6f + (hint[0] ? (float)small * 1.5f : 0.0f), 0.85f);
+                 (float)big * 2.6f + (float)small * 0.3f + (hint[0] ? (float)small * 1.8f : 0.0f), 0.85f);
     }
 
     {
@@ -1562,12 +1627,12 @@ static void Nu_DrawNearbyMemo(int px)
 
     if (sub[0])
     {
-        Nu_DrawTextCentered(sub, s_vpW * 0.5f, y + (float)big * 1.25f, small, 0.48f, 0.48f, 0.46f, 1.0f);
+        Nu_DrawMixedCentered(sub, s_vpW * 0.5f, y + (float)big * 1.3f, small, 0.48f, 0.48f, 0.46f);
     }
     if (hint[0])
     {
-        Nu_DrawTextCentered(hint, s_vpW * 0.5f, y + (float)big * 1.25f + (float)small * 1.5f, small,
-                            0.62f, 0.60f, 0.48f, 1.0f);
+        Nu_DrawMixedCentered(hint, s_vpW * 0.5f, y + (float)big * 1.3f + (float)small * 1.8f, small,
+                             0.62f, 0.60f, 0.48f);
     }
 }
 
