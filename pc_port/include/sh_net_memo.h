@@ -112,6 +112,11 @@ void        ShNetMemo_ComposerType(void);
 /* Likes and dislikes                                                  */
 /* ------------------------------------------------------------------ */
 
+/* The emoji a vote is shown with, by their place on the emoji sheet
+ * (sh_net_memo_text.h: that table only ever grows at its end). */
+#define SHNET_EMOJI_THUMBS_UP   16
+#define SHNET_EMOJI_THUMBS_DOWN 17
+
 /* 1 when this player may still vote on that marker: someone else's message,
  * not voted on yet, on a server that counts votes. */
 int ShNetMemo_Votable(const ShNetMemo* m);
