@@ -126,7 +126,7 @@ jobs:
       # messages go at the end of their days, seven and one more per like.
       - name: Self-test the marker store
         timeout-minutes: 3
-        run: bash online_server/store_selftest.sh "$RUNNER_TEMP/selftest/sh_master"
+        run: bash online_server/store_selftest.sh "$RUNNER_TEMP/selftest/sh_master" "$RUNNER_TEMP/shnet_selftest"
 
       # Versions and updates: noticing a newer release, refusing a bad one,
       # installing while serving, restarting, and the question a server asks

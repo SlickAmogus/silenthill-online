@@ -1,15 +1,17 @@
 #!/bin/bash
 # store_selftest.sh - what the server does with a marker store it is started on.
 #
-#   bash online_server/store_selftest.sh <sh_master>
+#   bash online_server/store_selftest.sh <sh_master> [<shnet_selftest>]
 #
 # Two hand-made stores. One in the layout from before messages had lifetimes:
 # it must be taken in once, every marker's seven days starting at that moment,
 # the old ratings split into likes and dislikes, and the file as it was kept
 # beside the new one. One in the current layout, with messages on either side
-# of the end of their days: seven, and one more for each like. The release
-# workflow runs this before anything is published, because a mistake here
-# deletes what players left.
+# of the end of their days: seven, and one more for each like. With the
+# protocol self-test as a second argument it also leaves a message, likes it,
+# restarts the server and checks that the like, and the fact that it was cast,
+# are still there. The release workflow runs this before anything is
+# published, because a mistake here deletes what players left.
 set -euo pipefail
 
 BIN="$(realpath "$1")"
@@ -25,16 +27,21 @@ trap cleanup EXIT
 say() { echo; echo "== $*"; }
 fail() { echo "FAILED: $*"; echo "--- log:"; cat "$W/sh_master.log" 2>/dev/null || true; exit 1; }
 
-start() {  # start <store to begin from>
-    rm -f "$W"/sh_master.log* "$W/memos.db" "$W/memos.db.v1"
-    cp "$1" "$W/memos.db"
-    ( cd "$W" && exec "$BIN" --no-update-check -p 27961 --admin 27962 -d "$W/memos.db" > "$W/out.txt" 2>&1 ) &
+run() {  # the server on whatever store is there
+    rm -f "$W"/sh_master.log*
+    ( cd "$W" && exec "$BIN" --no-update-check -p 27961 --admin 27962 -d "$W/memos.db" -i 100 > "$W/out.txt" 2>&1 ) &
     SRV=$!
     for i in $(seq 1 50); do
         grep -q "listening on UDP" "$W/sh_master.log" 2>/dev/null && return 0
         sleep 0.1
     done
     fail "the server did not start"
+}
+
+start() {  # start <store to begin from>
+    rm -f "$W/memos.db" "$W/memos.db.v1" "$W/memos.db.votes"
+    cp "$1" "$W/memos.db"
+    run
 }
 
 stop() {
@@ -76,6 +83,8 @@ start "$W/again.db"
 if grep -q "before messages had lifetimes" "$W/sh_master.log"; then fail "a current store was taken in again"; fi
 stop
 [ "$(field 11 16)" = "$LIFE" ] || fail "a restart moved the start of a message's days"
+[ "$(field 11 9)" = 3 ] && [ "$(field 12 10)" = 2 ] || fail "a restart lost likes or dislikes"
+echo "likes, dislikes and the start of the days are the same after a restart"
 
 say "messages at the end of their days"
 {
@@ -98,6 +107,24 @@ stop
 [ -z "$(field 26 1)" ] || fail "a typed-word message with no word in it was kept"
 grep -q "$(printf '24 600 .*Six Days Disliked\ta typed word')" "$W/memos.db" || fail "a typed word did not survive a load and a save"
 echo "kept and removed by the rule: 7 days, and 1 more per like"
+
+if [ -n "${2:-}" ]; then
+    TEST="$(realpath "$2")"
+    say "a like, and who cast it, are kept across a restart"
+    printf '# sh_master marker store v2\n' > "$W/empty.db"
+    start "$W/empty.db"
+    "$TEST" --votes 1 127.0.0.1 27961 | tee "$W/votes1.txt"
+    ID="$(sed -n 's/^VOTED_ID=//p' "$W/votes1.txt")"
+    grep -q "^PASSED" "$W/votes1.txt" && [ -n "$ID" ] || fail "the message could not be left and liked"
+    stop
+    grep -q " $ID 1\$" "$W/memos.db.votes" || fail "the vote was not written beside the store"
+    if grep -q "127.0.0.1" "$W/memos.db.votes"; then fail "the votes file holds an address"; fi
+    run
+    grep -q "loaded 1 vote(s)" "$W/sh_master.log" || fail "the vote was not read back"
+    "$TEST" --votes 2 --memo "$ID" 127.0.0.1 27961 | tee "$W/votes2.txt"
+    grep -q "^PASSED" "$W/votes2.txt" || fail "the like or its voter did not survive the restart"
+    stop
+fi
 
 echo
 echo "store self-test passed"
