@@ -331,6 +331,14 @@ void ShNetChat_Tick(void)
  * raise for a canvas: there a hidden text box takes the typing (web_platform.c)
  * and the SDL events are ignored, or a desktop key would arrive twice. */
 static int          s_touchText;
+/* The box lent out for one line that is not chat (ShNetChat_PromptOpen). It is
+ * open as far as the keyboard is concerned and closed as far as the chat's
+ * own display is: the borrower shows the line itself. */
+static int          s_prompt;
+static int          s_promptMax;
+static int          s_promptStartedText;
+static void       (*s_promptDone)(const char* text);
+#define CHAT_SHOWN_AS_OPEN (s_open && !s_prompt)
 static SDL_SpinLock s_tLock;
 static char         s_tTyped[128];
 static int          s_tLen, s_tBack, s_tEnter, s_tEsc;
@@ -423,6 +431,16 @@ void ShNetChat_Close(void)
     s_open     = 0;
     s_inputLen = 0;
     s_input[0] = '\0';
+    if (s_prompt)
+    {
+        s_prompt     = 0;
+        s_promptDone = NULL;
+        if (s_promptStartedText)
+        {
+            s_promptStartedText = 0;
+            SDL_StopTextInput();
+        }
+    }
     if (s_touchText)
     {
         s_touchText = 0;
@@ -436,13 +454,10 @@ void ShNetChat_Close(void)
     }
 }
 
-void ShNetChat_OpenTouch(void)
+/* Typing by text events from here on: the chat button on a touchscreen, and
+ * the prompt on every platform. */
+static void Chat_BeginTextEvents(void)
 {
-    ShNetChat_Open();
-    if (!s_open)
-    {
-        return;
-    }
     SDL_AtomicLock(&s_tLock);
     s_tLen = s_tBack = s_tEnter = s_tEsc = 0;
     SDL_AtomicUnlock(&s_tLock);
@@ -463,9 +478,49 @@ void ShNetChat_OpenTouch(void)
 #endif
 }
 
+void ShNetChat_OpenTouch(void)
+{
+    ShNetChat_Open();
+    if (!s_open)
+    {
+        return;
+    }
+    Chat_BeginTextEvents();
+}
+
+/* One line of text for something that is not chat. Text events on every
+ * platform, so a keyboard, a phone's keyboard and the browser's text box are
+ * one path. `done` gets the line on Enter, slur-masked; Escape gives it up
+ * and `done` is not called. */
+void ShNetChat_PromptOpen(const char* start, int maxLen, void (*done)(const char* text))
+{
+    extern int Pc_QuickOptions_IsOpen(void);
+    if (Pc_QuickOptions_IsOpen() || s_open)
+    {
+        return;
+    }
+    if (maxLen > CHAT_INPUT_MAX) maxLen = CHAT_INPUT_MAX;
+    s_open       = 1;
+    s_scroll     = 0;
+    s_haveKeys   = 0;
+    s_prompt     = 1;
+    s_promptMax  = maxLen;
+    s_promptDone = done;
+    SDL_strlcpy(s_input, start ? start : "", (size_t)maxLen);
+    s_inputLen = (int)strlen(s_input);
+    Chat_BeginTextEvents();
+    /* A keyboard sends no text events until text input is on, and on a phone
+     * the call above already raised the keyboard. */
+    if (!SDL_HasScreenKeyboardSupport() && !SDL_IsTextInputActive())
+    {
+        SDL_StartTextInput();
+        s_promptStartedText = 1;
+    }
+}
+
 int ShNetChat_TouchTyping(void)
 {
-    return s_open && s_touchText;
+    return s_open && s_touchText && !s_prompt;
 }
 
 int ShNetChat_Available(void)
@@ -569,6 +624,16 @@ static void Chat_SendCoop(const char* piece)
 
 static void Chat_Submit(void)
 {
+    if (s_prompt)
+    {
+        void (*done)(const char*) = s_promptDone;
+        char text[CHAT_INPUT_MAX];
+        ShNetChat_Censor(s_input);
+        SDL_strlcpy(text, s_input, sizeof(text));
+        ShNetChat_Close();
+        if (done) done(text);
+        return;
+    }
     if (s_inputLen > 0)
     {
         const int scope = Chat_Scope();
@@ -576,13 +641,17 @@ static void Chat_Submit(void)
         /* All shows everything but speaks to everyone: it sends as Global. */
         const int sendScope = (scope == SHNET_CHAT_GAME) ? SHNET_CHAT_GAME : SHNET_CHAT_GLOBAL;
         int       wait;
-        ShNetChat_Censor(s_input);
+        /* /admin carries a key, which is not speech: masking could change it,
+         * and it must not reach the log either. */
+        const int secret = !SDL_strncasecmp(s_input, "/admin", 6);
+        if (!secret) ShNetChat_Censor(s_input);
         if (s_input[0] == '/')
         {
             char line[CHAT_INPUT_MAX];
             SDL_strlcpy(line, s_input, sizeof(line));
             ShNetChat_Close();
-            SH_DBG("[CHAT] command %s", line[1] == 'w' || !SDL_strncasecmp(line, "/msg", 4) ? "(whisper)" : line);
+            SH_DBG("[CHAT] command %s", secret ? "/admin (not logged)"
+                                      : line[1] == 'w' || !SDL_strncasecmp(line, "/msg", 4) ? "(whisper)" : line);
             ShSocial_Command(line);
             return;
         }
@@ -676,7 +745,7 @@ static char Chat_Glyph(int sc, int shift)
 
 static void Chat_Append(char c)
 {
-    if (c && s_inputLen < CHAT_INPUT_MAX - 1)
+    if (c && s_inputLen < (s_prompt ? s_promptMax : CHAT_INPUT_MAX) - 1)
     {
         s_input[s_inputLen++] = c;
         s_input[s_inputLen]   = '\0';
@@ -774,7 +843,7 @@ done:
 static float Chat_Alpha(const ChatLine* l)
 {
     unsigned int age;
-    if (s_open)
+    if (CHAT_SHOWN_AS_OPEN)
     {
         return 1.0f; /* everything held up while composing */
     }
@@ -805,14 +874,15 @@ static int Chat_OnChannel(const ChatLine* l)
 static int Chat_Collect(void)
 {
     /* Typing on a touchscreen, the box sits above the keyboard: fewer lines. */
-    const int shown = s_open ? (s_touchText ? CHAT_SHOWN_TOUCH : CHAT_SHOWN_OPEN) : CHAT_SHOWN;
-    const int last  = s_logCount - (s_open ? s_scroll : 0);
+    const int open  = CHAT_SHOWN_AS_OPEN;
+    const int shown = open ? (s_touchText ? CHAT_SHOWN_TOUCH : CHAT_SHOWN_OPEN) : CHAT_SHOWN;
+    const int last  = s_logCount - (open ? s_scroll : 0);
     int       i;
     s_visCount = 0;
     for (i = 0; i < last; i++)
     {
         if (!Chat_OnChannel(&s_log[i])) continue;
-        if (!s_open && Chat_Alpha(&s_log[i]) <= 0.0f) continue;
+        if (!open && Chat_Alpha(&s_log[i]) <= 0.0f) continue;
         if (s_visCount == shown)
         {
             memmove(&s_vis[0], &s_vis[1], sizeof(s_vis[0]) * (size_t)(shown - 1));
@@ -825,11 +895,11 @@ static int Chat_Collect(void)
 
 int ShNetChat_DisplayActive(void)
 {
-    if ((g_PcConfig.onlineChatHidden && !s_open) || !ShNet_Enabled())
+    if ((g_PcConfig.onlineChatHidden && !CHAT_SHOWN_AS_OPEN) || !ShNet_Enabled())
     {
         return 0;
     }
-    if (s_open)
+    if (CHAT_SHOWN_AS_OPEN)
     {
         return 1;
     }
@@ -838,7 +908,7 @@ int ShNetChat_DisplayActive(void)
 
 int ShNetChat_LineCount(void)
 {
-    if (g_PcConfig.onlineChatHidden && !s_open)
+    if (g_PcConfig.onlineChatHidden && !CHAT_SHOWN_AS_OPEN)
     {
         return 0;
     }
@@ -878,7 +948,25 @@ int ShNetChat_LineName(int i, float* r, float* g, float* b)
 
 int ShNetChat_Composing(void)
 {
-    return s_open;
+    return CHAT_SHOWN_AS_OPEN;
+}
+
+int ShNetChat_Prompting(void)
+{
+    return s_open && s_prompt;
+}
+
+const char* ShNetChat_PromptText(void)
+{
+    return (s_open && s_prompt) ? s_input : "";
+}
+
+void ShNetChat_PromptAccept(void)
+{
+    if (s_open && s_prompt)
+    {
+        Chat_Submit();
+    }
 }
 
 int ShNetChat_Scope(void)

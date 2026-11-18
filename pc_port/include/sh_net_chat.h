@@ -46,6 +46,16 @@ void ShNetChat_CycleScope(void);
 void ShNetChat_Close(void);
 int  ShNetChat_IsOpen(void);      /* 1 while composing (input must be swallowed) */
 
+/* The box's keyboard lent out for one line that is not chat (the message
+ * composer's typed word). Text events on every platform: a keyboard, a
+ * phone's and the browser's text box alike. `done` gets the line on Enter,
+ * slur-masked; Escape gives it up without calling it. The chat itself draws
+ * nothing meanwhile: the borrower shows ShNetChat_PromptText. */
+void        ShNetChat_PromptOpen(const char* start, int maxLen, void (*done)(const char* text));
+int         ShNetChat_Prompting(void);
+const char* ShNetChat_PromptText(void);
+void        ShNetChat_PromptAccept(void); /* as Enter would */
+
 /* Console `chat show|hide|on|off`: hide suppresses the whole overlay. */
 void ShNetChat_SetHidden(int hidden);
 int  ShNetChat_Hidden(void);

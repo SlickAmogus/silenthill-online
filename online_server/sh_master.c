@@ -111,7 +111,7 @@ typedef socklen_t ShSockLen;
 /* The admin feed: one line to every console in watch mode. Loopback only. */
 static void SrvFeed(const char* fmt, ...);
 static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map,
-                        unsigned int id);
+                        unsigned int id, const char* typed);
 #else
 /* The embedded relay has no consoles; its events go to the game's log. */
 #define SrvFeed          SrvLog
@@ -208,8 +208,14 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
 
 #define SRV_MEMO_GAP_MS       5000
 #define SRV_RATING_CLAMP      1000
-#define SRV_VOTE_BUCKETS      1024
+/* A like is worth a day of a message's life now, so a vote has to be
+ * remembered for about as long as messages last: 32768 of them. */
+#define SRV_VOTE_BUCKETS      8192
 #define SRV_VOTE_WAYS         4
+#define SRV_VOTES_MAX         60000
+/* The marker store's first line since messages have lifetimes. A store
+ * without it is the older layout and is taken in once (SrvLoadDb). */
+#define SRV_DB_HEAD_V2        "# sh_master marker store v2"
 
 #define SRV_JOIN_FAILS_MAX    10
 #define SRV_JOIN_BLOCK_MS     60000
@@ -311,9 +317,14 @@ typedef struct
     int     mapIdx;
     shn_s32 x, y, z;
     shn_s16 rotY;
-    shn_s16 rating;
+    shn_u16 likes, dislikes;
     shn_u16 phraseA, wordA, phraseB, wordB;
+    /* The typed word of a message whose wordA is SHNET_MEMO_NONE. */
+    char    text[SHNET_MEMO_TEXT_MAX];
     long    placedUnix;
+    /* When its days began to count: placedUnix, or for a marker older than
+     * lifetimes themselves, the first start of a server that had them. */
+    long    lifeUnix;
     /* Placer's IPv4 (network order), memory only: the quota is per address
      * because a playerId is fresh on every HELLO. Never sent, never saved, so
      * markers loaded from disk carry 0 and count against nobody. */
@@ -364,13 +375,14 @@ static PassFail      g_passFails[SRV_PASS_TABLE];
 
 typedef struct
 {
-    shn_u32 ip;
-    shn_u32 memoId;
+    shn_u32     ip;
+    shn_u32     memoId;
+    signed char dir; /* +1 liked, -1 disliked */
 } Vote;
 static Vote          g_votes[SRV_VOTE_BUCKETS][SRV_VOTE_WAYS];
 static unsigned char g_voteNext[SRV_VOTE_BUCKETS];
 static int           g_featureFlags = SHNET_SF_GHOSTS | SHNET_SF_MEMOS |
-                                      SHNET_SF_DEATHS | SHNET_SF_EVENTS;
+                                      SHNET_SF_DEATHS | SHNET_SF_EVENTS | SHNET_SF_MEMO2;
 static char          g_dbPath[512] = "memos.db";
 static int           g_dbDirty;
 static unsigned int  g_lastSaveMs;
@@ -586,7 +598,7 @@ static void SrvIpStr(shn_u32 netIp, char* out, int cap)
 /* One note per address and reason a minute; the repeats are counted into the
  * next. Keeps a flood from writing the log full. */
 enum { SRV_WARN_BANNED = 1, SRV_WARN_FULL, SRV_WARN_WS_HANDSHAKE, SRV_WARN_WS_FRAME,
-       SRV_WARN_WS_OVERFLOW, SRV_WARN_WS_SLOTS };
+       SRV_WARN_WS_OVERFLOW, SRV_WARN_WS_SLOTS, SRV_WARN_ADMIN };
 #define SRV_WARN_SLOTS 64
 static struct { shn_u32 ip; int reason; unsigned int lastMs; int skipped; } g_warnIp[SRV_WARN_SLOTS];
 
@@ -1260,6 +1272,42 @@ static int SrvMemosOnMap(int mapIdx)
     return n;
 }
 
+static int SrvMemoRating(const Memo* m)
+{
+    return (int)m->likes - (int)m->dislikes;
+}
+
+/* A message stays seven days, and a day longer for every like it has. */
+static long SrvMemoExpiry(const Memo* m)
+{
+    return m->lifeUnix + SHNET_MEMO_LIFE_S + (long)m->likes * SHNET_MEMO_LIKE_S;
+}
+
+/* Every way a marker leaves goes through here, so the players standing on its
+ * map see it go instead of reading it until they next walk in. */
+static void SrvMemoRemoveAt(int at, int why)
+{
+    const Memo* m = &g_memos[at];
+    int         i;
+    for (i = 0; i < g_clientHigh; i++)
+    {
+        Client* o = &g_clients[i];
+        shn_u8  buf[SHNET_HDR_SIZE + 8];
+        int     bo = SHNET_HDR_SIZE;
+        if (!o->used || o->mapIdx != m->mapIdx || !(o->caps & SHNET_CAP_MEMO2))
+        {
+            continue;
+        }
+        ShnPutU32(buf, &bo, m->memoId);
+        ShnPutU8(buf, &bo, (shn_u8)m->mapIdx);
+        ShnPutU8(buf, &bo, (shn_u8)why);
+        ShnPutU16(buf, &bo, 0);
+        SrvSendTo(o, buf, bo - SHNET_HDR_SIZE, SHNET_MSG_MEMO_GONE);
+    }
+    g_memos[at] = g_memos[--g_memoCount];
+    g_dbDirty   = 1;
+}
+
 /* Drop the lowest-rated, oldest marker on a full map so a busy area keeps
  * turning over instead of freezing at whatever was placed first. */
 static void SrvEvictOnMap(int mapIdx)
@@ -1272,8 +1320,8 @@ static void SrvEvictOnMap(int mapIdx)
             continue;
         }
         if (worst < 0 ||
-            g_memos[i].rating < g_memos[worst].rating ||
-            (g_memos[i].rating == g_memos[worst].rating &&
+            SrvMemoRating(&g_memos[i]) < SrvMemoRating(&g_memos[worst]) ||
+            (SrvMemoRating(&g_memos[i]) == SrvMemoRating(&g_memos[worst]) &&
              g_memos[i].placedUnix < g_memos[worst].placedUnix))
         {
             worst = i;
@@ -1281,29 +1329,43 @@ static void SrvEvictOnMap(int mapIdx)
     }
     if (worst >= 0)
     {
-        g_memos[worst] = g_memos[--g_memoCount];
-        g_dbDirty = 1;
+        SrvMemoRemoveAt(worst, SHNET_GONE_RETIRED);
     }
 }
 
-/* Death markers older than a day go; one from before markers were dated
- * counts as old. Run at load and once a minute. */
-static void SrvPurgeDeaths(void)
+/* Death markers older than a day go (one from before markers were dated
+ * counts as old), and so do messages whose days have run out. Run at load
+ * and once a minute. */
+static void SrvPurgeExpired(void)
 {
-    const long cutoff = (long)time(NULL) - SRV_DEATH_TTL_S;
-    int        i, removed = 0;
+    const long now    = (long)time(NULL);
+    const long cutoff = now - SRV_DEATH_TTL_S;
+    int        i, deaths = 0, memos = 0;
     for (i = 0; i < g_memoCount; i++)
     {
-        if ((g_memos[i].kind & 0x0F) == SHNET_MARK_DEATH && g_memos[i].placedUnix < cutoff)
+        const Memo* m    = &g_memos[i];
+        const int   kind = m->kind & 0x0F;
+        if (kind == SHNET_MARK_DEATH && m->placedUnix < cutoff)
         {
-            g_memos[i--] = g_memos[--g_memoCount];
-            removed++;
+            deaths++;
         }
+        else if (kind == SHNET_MARK_MEMO && now >= SrvMemoExpiry(m))
+        {
+            memos++;
+        }
+        else
+        {
+            continue;
+        }
+        SrvMemoRemoveAt(i--, SHNET_GONE_EXPIRED);
     }
-    if (removed)
+    if (deaths)
     {
-        g_dbDirty = 1;
-        SrvLog("purged %d death marker(s) older than a day", removed);
+        SrvLog("purged %d death marker(s) older than a day", deaths);
+    }
+    if (memos)
+    {
+        SrvLog("%d message(s) came to the end of their days (7, and 1 more per like) and were removed", memos);
     }
 }
 
@@ -1323,27 +1385,85 @@ static void SrvSaveDb(void)
         return;
     }
     /* Plain text on purpose: an admin has to be able to delete one bad marker
-     * with a text editor without a tool for it. */
-    fprintf(f, "# sh_master marker store v1\n");
-    fprintf(f, "# id owner kind map x y z rot rating phraseA wordA phraseB wordB unix name\n");
+     * with a text editor without a tool for it. A tab ends the name, because
+     * a name may hold spaces and the typed word comes after it. */
+    fprintf(f, "%s\n", SRV_DB_HEAD_V2);
+    fprintf(f, "# id owner kind map x y z rot likes dislikes phraseA wordA phraseB wordB placed life name<TAB>typed word\n");
     for (i = 0; i < g_memoCount; i++)
     {
         const Memo* m = &g_memos[i];
-        fprintf(f, "%u %u %d %d %d %d %d %d %d %u %u %u %u %ld %s\n",
+        fprintf(f, "%u %u %d %d %d %d %d %d %u %u %u %u %u %u %ld %ld %s\t%s\n",
                 m->memoId, m->ownerId, m->kind, m->mapIdx,
-                (int)m->x, (int)m->y, (int)m->z, (int)m->rotY, (int)m->rating,
+                (int)m->x, (int)m->y, (int)m->z, (int)m->rotY,
+                (unsigned)m->likes, (unsigned)m->dislikes,
                 (unsigned)m->phraseA, (unsigned)m->wordA,
                 (unsigned)m->phraseB, (unsigned)m->wordB,
-                m->placedUnix, m->ownerName);
+                m->placedUnix, m->lifeUnix, m->ownerName, m->text);
     }
     fclose(f);
     g_dbDirty = 0;
 }
 
+/* The store as it was before lifetimes, kept once beside the new one: a
+ * server from before them cannot read what this one writes. */
+static void SrvBackupDbV1(void)
+{
+    char   to[560];
+    char   block[4096];
+    size_t n;
+    FILE*  in;
+    FILE*  out;
+
+    snprintf(to, sizeof(to), "%s.v1", g_dbPath);
+    out = fopen(to, "rb");
+    if (out)
+    {
+        fclose(out);
+        return;
+    }
+    in = fopen(g_dbPath, "rb");
+    if (!in)
+    {
+        return;
+    }
+    out = fopen(to, "wb");
+    if (out)
+    {
+        while ((n = fread(block, 1, sizeof(block), in)) > 0)
+        {
+            fwrite(block, 1, n, out);
+        }
+        fclose(out);
+        SrvLog("the marker store as it was is kept as %s", to);
+    }
+    fclose(in);
+}
+
+/* A typed word as the server keeps it: printable ASCII with the ends trimmed
+ * and the chat's slur mask over it. May come out empty. */
+static void SrvCleanMemoText(char* s)
+{
+    int i, n = 0, start = 0;
+    for (i = 0; i < SHNET_MEMO_TEXT_MAX - 1 && s[i]; i++)
+    {
+        const unsigned char c = (unsigned char)s[i];
+        s[i] = (c < 32 || c > 126) ? ' ' : (char)c;
+    }
+    s[i] = '\0';
+    while (s[start] == ' ') start++;
+    for (i = start; s[i]; i++) s[n++] = s[i];
+    while (n && s[n - 1] == ' ') n--;
+    s[n] = '\0';
+    ShNetChat_Censor(s);
+}
+
 static void SrvLoadDb(void)
 {
-    FILE* f = fopen(g_dbPath, "r");
-    char  line[512];
+    FILE*      f   = fopen(g_dbPath, "r");
+    char       line[512];
+    const long now = (long)time(NULL);
+    int        v2  = 0;
+    int        old = 0;
 
     if (!f)
     {
@@ -1353,19 +1473,52 @@ static void SrvLoadDb(void)
     while (fgets(line, sizeof(line), f))
     {
         Memo m;
-        unsigned int id, owner, pa, wa, pb, wb;
-        int kind, map, x, y, z, rot, rating;
-        long unixT;
+        unsigned int id, owner, pa, wa, pb, wb, likes = 0, dislikes = 0;
+        int kind, map, x, y, z, rot, rating = 0;
+        long unixT, lifeT = 0;
         char nm[64];
+        char text[SHNET_MEMO_TEXT_MAX];
 
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
+        if (line[0] == '#')
+        {
+            if (!strncmp(line, SRV_DB_HEAD_V2, strlen(SRV_DB_HEAD_V2))) v2 = 1;
+            continue;
+        }
+        if (line[0] == '\n' || line[0] == '\r')
         {
             continue;
         }
-        nm[0] = '\0';
-        if (sscanf(line, "%u %u %d %d %d %d %d %d %d %u %u %u %u %ld %63[^\n]",
-                   &id, &owner, &kind, &map, &x, &y, &z, &rot, &rating,
-                   &pa, &wa, &pb, &wb, &unixT, nm) < 14)
+        nm[0]   = '\0';
+        text[0] = '\0';
+        if (v2)
+        {
+            int         at = 0;
+            const char* rest;
+            const char* tab;
+            size_t      n;
+            if (sscanf(line, "%u %u %d %d %d %d %d %d %u %u %u %u %u %u %ld %ld %n",
+                       &id, &owner, &kind, &map, &x, &y, &z, &rot, &likes, &dislikes,
+                       &pa, &wa, &pb, &wb, &unixT, &lifeT, &at) < 16 || at <= 0)
+            {
+                continue;
+            }
+            rest = line + at;
+            tab  = strchr(rest, '\t');
+            n    = tab ? (size_t)(tab - rest) : strcspn(rest, "\r\n");
+            if (n > sizeof(nm) - 1) n = sizeof(nm) - 1;
+            memcpy(nm, rest, n);
+            nm[n] = '\0';
+            if (tab)
+            {
+                n = strcspn(tab + 1, "\r\n");
+                if (n > sizeof(text) - 1) n = sizeof(text) - 1;
+                memcpy(text, tab + 1, n);
+                text[n] = '\0';
+            }
+        }
+        else if (sscanf(line, "%u %u %d %d %d %d %d %d %d %u %u %u %u %ld %63[^\n]",
+                        &id, &owner, &kind, &map, &x, &y, &z, &rot, &rating,
+                        &pa, &wa, &pb, &wb, &unixT, nm) < 14)
         {
             continue;
         }
@@ -1373,34 +1526,54 @@ static void SrvLoadDb(void)
         {
             break;
         }
+        SrvCleanMemoText(text);
         /* A store written before the server checked template indices may
          * still hold bad ones; they must not be served again. */
         if (map < 0 || map >= SRV_MAP_COUNT ||
             !SrvCoordOk(x) || !SrvCoordOk(y) || !SrvCoordOk(z) ||
             ((kind & 0x0F) == SHNET_MARK_MEMO &&
-             (pa >= SHNET_MEMO_PHRASE_MAX || wa >= SHNET_MEMO_WORD_MAX ||
+             (pa >= SHNET_MEMO_PHRASE_MAX ||
+              (wa == SHNET_MEMO_NONE ? !text[0] : wa >= SHNET_MEMO_WORD_MAX) ||
               (pb != SHNET_MEMO_NONE && pb >= SHNET_MEMO_PHRASE_MAX) ||
               (wb != SHNET_MEMO_NONE && wb >= SHNET_MEMO_WORD_MAX))))
         {
             continue;
         }
-        if (rating > SRV_RATING_CLAMP)  rating = SRV_RATING_CLAMP;
-        if (rating < -SRV_RATING_CLAMP) rating = -SRV_RATING_CLAMP;
+        if (!v2)
+        {
+            /* One number then, for and against together. */
+            if (rating > SRV_RATING_CLAMP)  rating = SRV_RATING_CLAMP;
+            if (rating < -SRV_RATING_CLAMP) rating = -SRV_RATING_CLAMP;
+            likes    = rating > 0 ? (unsigned int)rating : 0;
+            dislikes = rating < 0 ? (unsigned int)-rating : 0;
+            /* And no lifetime: every marker's days begin now, as if it had
+             * been left today. */
+            lifeT = now;
+            old++;
+        }
+        if (likes > SRV_VOTES_MAX)    likes = SRV_VOTES_MAX;
+        if (dislikes > SRV_VOTES_MAX) dislikes = SRV_VOTES_MAX;
         memset(&m, 0, sizeof(m));
-        m.memoId  = id;
-        m.ownerId = owner;
-        m.kind    = kind;
-        m.mapIdx  = map;
-        m.x       = x;
-        m.y       = y;
-        m.z       = z;
-        m.rotY    = (shn_s16)rot;
-        m.rating  = (shn_s16)rating;
-        m.phraseA = (shn_u16)pa;
-        m.wordA   = (shn_u16)wa;
-        m.phraseB = (shn_u16)pb;
-        m.wordB   = (shn_u16)wb;
+        m.memoId   = id;
+        m.ownerId  = owner;
+        m.kind     = kind;
+        m.mapIdx   = map;
+        m.x        = x;
+        m.y        = y;
+        m.z        = z;
+        m.rotY     = (shn_s16)rot;
+        m.likes    = (shn_u16)likes;
+        m.dislikes = (shn_u16)dislikes;
+        m.phraseA  = (shn_u16)pa;
+        m.wordA    = (shn_u16)wa;
+        m.phraseB  = (shn_u16)pb;
+        m.wordB    = (shn_u16)wb;
         m.placedUnix = unixT;
+        m.lifeUnix   = lifeT > 0 ? lifeT : now;
+        if ((kind & 0x0F) == SHNET_MARK_MEMO && wa == SHNET_MEMO_NONE)
+        {
+            snprintf(m.text, sizeof(m.text), "%s", text);
+        }
         snprintf(m.ownerName, sizeof(m.ownerName), "%s", nm[0] ? nm : "?");
         SrvSanitize(m.ownerName, SHNET_NAME_MAX);
 
@@ -1412,6 +1585,12 @@ static void SrvLoadDb(void)
     }
     fclose(f);
     SrvLog("loaded %d markers from %s (next id %u)", g_memoCount, g_dbPath, g_nextMemoId);
+    if (old)
+    {
+        SrvLog("the store is from before messages had lifetimes: the 7 days of all %d markers in it start now", old);
+        SrvBackupDbV1();
+        g_dbDirty = 1;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1754,14 +1933,99 @@ static void SrvHandleRosterReq(Client* c)
     }
 }
 
+/* One vote per (address, memo). A set-associative table rather than an exact
+ * record: it forgets the oldest votes once a set fills, which bounds memory
+ * and still turns a vote flood into one vote per memo per address. */
+static Vote* SrvVoteSet(shn_u32 ip, shn_u32 memoId, int* bucket)
+{
+    shn_u8 key[8];
+    memcpy(key, &ip, 4);
+    memcpy(key + 4, &memoId, 4);
+    *bucket = (int)(ShnSipHash(g_cookieKey, key, 8) % SRV_VOTE_BUCKETS);
+    return g_votes[*bucket];
+}
+
+/* +1 or -1 when this address voted on that memo and the table still knows. */
+static int SrvVoteOf(shn_u32 ip, shn_u32 memoId)
+{
+    int         b, w;
+    const Vote* set = SrvVoteSet(ip, memoId, &b);
+    for (w = 0; w < SRV_VOTE_WAYS; w++)
+    {
+        if (set[w].dir && set[w].memoId == memoId && set[w].ip == ip)
+        {
+            return set[w].dir;
+        }
+    }
+    return 0;
+}
+
+static int SrvVoteOnce(shn_u32 ip, shn_u32 memoId, int dir)
+{
+    int   b, w;
+    Vote* set;
+
+    if (SrvVoteOf(ip, memoId))
+    {
+        return 0;
+    }
+    set = SrvVoteSet(ip, memoId, &b);
+    w   = g_voteNext[b];
+    g_voteNext[b] = (unsigned char)((w + 1) % SRV_VOTE_WAYS);
+    set[w].ip     = ip;
+    set[w].memoId = memoId;
+    set[w].dir    = (signed char)dir;
+    return 1;
+}
+
+/* A message with a typed word has no word index for a client from before
+ * them to look up; it would show an empty box, so it is not sent one. */
+static int SrvMemoReadableBy(const Memo* m, const Client* c)
+{
+    return (c->caps & SHNET_CAP_MEMO2) || (m->kind & 0x0F) != SHNET_MARK_MEMO || m->wordA != SHNET_MEMO_NONE;
+}
+
+/* One marker as this client reads it: the entry every client knows, with for
+ * and against as the single number it used to be, and for a client that asked
+ * (SHNET_CAP_MEMO2) the two counts, its own vote and the typed word after. */
+static void SrvPutMemo(shn_u8* buf, int* o, const Memo* m, const Client* to)
+{
+    int rating = SrvMemoRating(m);
+    if (rating > SRV_RATING_CLAMP)  rating = SRV_RATING_CLAMP;
+    if (rating < -SRV_RATING_CLAMP) rating = -SRV_RATING_CLAMP;
+    ShnPutU32(buf, o, m->memoId);
+    ShnPutU32(buf, o, m->ownerId);
+    ShnPutU8(buf, o, (shn_u8)m->kind);
+    ShnPutU8(buf, o, (shn_u8)m->mapIdx);
+    ShnPutS16(buf, o, (shn_s16)rating);
+    ShnPutU16(buf, o, m->phraseA);
+    ShnPutU16(buf, o, m->wordA);
+    ShnPutU16(buf, o, m->phraseB);
+    ShnPutU16(buf, o, m->wordB);
+    ShnPutS32(buf, o, m->x);
+    ShnPutS32(buf, o, m->y);
+    ShnPutS32(buf, o, m->z);
+    ShnPutS16(buf, o, m->rotY);
+    ShnPutStr(buf, o, m->ownerName, SHNET_NAME_MAX);
+    if (to->caps & SHNET_CAP_MEMO2)
+    {
+        ShnPutU16(buf, o, m->likes);
+        ShnPutU16(buf, o, m->dislikes);
+        ShnPutU8(buf, o, (shn_u8)(signed char)SrvVoteOf(to->addr.sin_addr.s_addr, m->memoId));
+        ShnPutU8(buf, o, 0);
+        ShnPutStr(buf, o, m->text, SHNET_MEMO_TEXT_MAX);
+    }
+}
+
 static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
 {
-    shn_u8 buf[SHNET_MTU];
-    int    off = 0;
-    int    mapIdx;
-    int    kinds;
-    int    i;
-    int    emitted = 0;
+    shn_u8    buf[SHNET_MTU];
+    int       off = 0;
+    int       mapIdx;
+    int       kinds;
+    int       i;
+    int       emitted = 0;
+    const int perPage = (c->caps & SHNET_CAP_MEMO2) ? SHNET_MEMO_V2_MAX : SHNET_MEMO_MAX;
 
     if (!(g_featureFlags & SHNET_SF_MEMOS))
     {
@@ -1791,7 +2055,7 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
         ShnPutU16(buf, &o, 0); /* count, back-patched */
         ShnPutU32(buf, &o, 0);
 
-        for (; i < g_memoCount && count < SHNET_MEMO_MAX; i++)
+        for (; i < g_memoCount && count < perPage; i++)
         {
             const Memo* m = &g_memos[i];
             if (m->mapIdx != mapIdx)
@@ -1802,20 +2066,11 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
             {
                 continue;
             }
-            ShnPutU32(buf, &o, m->memoId);
-            ShnPutU32(buf, &o, m->ownerId);
-            ShnPutU8(buf, &o, (shn_u8)m->kind);
-            ShnPutU8(buf, &o, (shn_u8)m->mapIdx);
-            ShnPutS16(buf, &o, m->rating);
-            ShnPutU16(buf, &o, m->phraseA);
-            ShnPutU16(buf, &o, m->wordA);
-            ShnPutU16(buf, &o, m->phraseB);
-            ShnPutU16(buf, &o, m->wordB);
-            ShnPutS32(buf, &o, m->x);
-            ShnPutS32(buf, &o, m->y);
-            ShnPutS32(buf, &o, m->z);
-            ShnPutS16(buf, &o, m->rotY);
-            ShnPutStr(buf, &o, m->ownerName, SHNET_NAME_MAX);
+            if (!SrvMemoReadableBy(m, c))
+            {
+                continue;
+            }
+            SrvPutMemo(buf, &o, m, c);
             count++;
         }
 
@@ -1840,18 +2095,20 @@ static void SrvHandleMemoQuery(Client* c, const shn_u8* p, int len)
     }
 }
 
-/* Live markers: push a just-placed memo to everyone else on that map now, so it
- * appears without waiting for their next map-entry query. Reuses the MEMO_LIST
- * wire (one entry); the client merges by memoId. */
-static void SrvPushMemo(const Memo* m)
+/* Live markers: push one memo to the players on its map now, so a new one
+ * appears, and a vote shows in its totals, without waiting for their next
+ * map-entry query. Reuses the MEMO_LIST wire (one entry); the client merges by
+ * memoId. A new memo skips its owner, who is answered with an ACK. */
+static void SrvPushMemo(const Memo* m, int toOwner)
 {
     int i;
     for (i = 0; i < g_clientHigh; i++)
     {
         Client* o = &g_clients[i];
-        shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_MEMO_ENTRY_NAMED];
+        shn_u8  buf[SHNET_HDR_SIZE + 8 + SHNET_MEMO_ENTRY_V2];
         int     bo = SHNET_HDR_SIZE;
-        if (!o->used || o->mapIdx != m->mapIdx || SRV_IDENT(o) == m->ownerId)
+        if (!o->used || o->mapIdx != m->mapIdx || (!toOwner && SRV_IDENT(o) == m->ownerId) ||
+            !SrvMemoReadableBy(m, o))
         {
             continue;
         }
@@ -1859,20 +2116,7 @@ static void SrvPushMemo(const Memo* m)
         ShnPutU8(buf, &bo, 0);
         ShnPutU16(buf, &bo, 1); /* one entry */
         ShnPutU32(buf, &bo, 0);
-        ShnPutU32(buf, &bo, m->memoId);
-        ShnPutU32(buf, &bo, m->ownerId);
-        ShnPutU8(buf, &bo, (shn_u8)m->kind);
-        ShnPutU8(buf, &bo, (shn_u8)m->mapIdx);
-        ShnPutS16(buf, &bo, m->rating);
-        ShnPutU16(buf, &bo, m->phraseA);
-        ShnPutU16(buf, &bo, m->wordA);
-        ShnPutU16(buf, &bo, m->phraseB);
-        ShnPutU16(buf, &bo, m->wordB);
-        ShnPutS32(buf, &bo, m->x);
-        ShnPutS32(buf, &bo, m->y);
-        ShnPutS32(buf, &bo, m->z);
-        ShnPutS16(buf, &bo, m->rotY);
-        ShnPutStr(buf, &bo, m->ownerName, SHNET_NAME_MAX);
+        SrvPutMemo(buf, &bo, m, o);
         SrvSendTo(o, buf, bo - SHNET_HDR_SIZE, SHNET_MSG_MEMO_LIST);
     }
 }
@@ -1908,6 +2152,11 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     m.y       = ShnGetS32(p, &off);
     m.z       = ShnGetS32(p, &off);
     m.rotY    = ShnGetS16(p, &off);
+    (void)ShnGetU16(p, &off);
+    if (len >= SHNET_MEMO_PLACE_LEN_TEXT)
+    {
+        ShnGetStr(p, &off, SHNET_MEMO_TEXT_MAX, m.text, SHNET_MEMO_TEXT_MAX);
+    }
 
     if (m.mapIdx < 0 || m.mapIdx >= SRV_MAP_COUNT)
     {
@@ -1935,7 +2184,22 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
      * it. Only memos use them; the other kinds carry none. */
     if ((m.kind & 0x0F) == SHNET_MARK_MEMO)
     {
-        if (m.phraseA >= SHNET_MEMO_PHRASE_MAX || m.wordA >= SHNET_MEMO_WORD_MAX)
+        /* No word index means the word was typed. It is stored and shown to
+         * everyone who passes, so it is cleaned and slur-masked here whatever
+         * the client did, and a word that cleans away to nothing is refused. */
+        if (m.wordA == SHNET_MEMO_NONE)
+        {
+            SrvCleanMemoText(m.text);
+            if (!m.text[0])
+            {
+                return;
+            }
+        }
+        else
+        {
+            m.text[0] = '\0';
+        }
+        if (m.phraseA >= SHNET_MEMO_PHRASE_MAX || (m.wordA != SHNET_MEMO_NONE && m.wordA >= SHNET_MEMO_WORD_MAX))
         {
             return;
         }
@@ -1951,6 +2215,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     else
     {
         m.phraseA = m.wordA = m.phraseB = m.wordB = SHNET_MEMO_NONE;
+        m.text[0] = '\0';
     }
     /* Deaths are exempt: they are already one per death by the dedupe below,
      * and dying twice in five seconds is a real thing that happens. */
@@ -2011,8 +2276,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
         {
             SrvLog("  %s has %d messages on map %d; retiring the oldest (id %u)", c->name, here, m.mapIdx,
                    g_memos[oldest].memoId);
-            g_memos[oldest] = g_memos[--g_memoCount];
-            g_dbDirty = 1;
+            SrvMemoRemoveAt(oldest, SHNET_GONE_RETIRED);
             continue; /* a store from before this limit can hold more: down to it */
         }
         break;
@@ -2039,7 +2303,7 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
         }
         if (oldest >= 0)
         {
-            g_memos[oldest] = g_memos[--g_memoCount];
+            SrvMemoRemoveAt(oldest, SHNET_GONE_RETIRED);
         }
     }
 
@@ -2059,8 +2323,10 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     m.memoId     = g_nextMemoId++;
     m.ownerId    = SRV_IDENT(c);
     m.ownerIp    = ip;
-    m.rating     = 0;
+    m.likes      = 0;
+    m.dislikes   = 0;
     m.placedUnix = (long)time(NULL);
+    m.lifeUnix   = m.placedUnix;
     memcpy(m.ownerName, c->name, SHNET_NAME_MAX);
 
     g_memos[g_memoCount++] = m;
@@ -2075,10 +2341,10 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     ShnPutU32(ack, &ao, (shn_u32)m.mapIdx);
     SrvSendTo(c, ack, ao - SHNET_HDR_SIZE, SHNET_MSG_MEMO_ACK);
 
-    SrvPushMemo(&m); /* live: everyone else on this map sees it now */
+    SrvPushMemo(&m, 0); /* live: everyone else on this map sees it now */
 
     SrvFeedMemo(c->name, (int)m.kind, (int)m.phraseA, (int)m.wordA, (int)m.phraseB, (int)m.wordB, (int)m.mapIdx,
-                m.memoId);
+                m.memoId, m.text);
 
     if ((m.kind & 0x0F) == SHNET_MARK_DEATH)
     {
@@ -2088,33 +2354,9 @@ static void SrvHandleMemoPlace(Client* c, const shn_u8* p, int len)
     }
 }
 
-/* One vote per (address, memo). A small set-associative table rather than an
- * exact record: it forgets old votes once it fills, which bounds memory and
- * still turns a vote flood into one vote per memo per address. */
-static int SrvVoteOnce(shn_u32 ip, shn_u32 memoId)
-{
-    shn_u8  key[8];
-    int     b, w;
-    Vote*   set;
-
-    memcpy(key, &ip, 4);
-    memcpy(key + 4, &memoId, 4);
-    b   = (int)(ShnSipHash(g_cookieKey, key, 8) % SRV_VOTE_BUCKETS);
-    set = g_votes[b];
-    for (w = 0; w < SRV_VOTE_WAYS; w++)
-    {
-        if (set[w].memoId == memoId && set[w].ip == ip)
-        {
-            return 0;
-        }
-    }
-    w = g_voteNext[b];
-    g_voteNext[b] = (unsigned char)((w + 1) % SRV_VOTE_WAYS);
-    set[w].ip     = ip;
-    set[w].memoId = memoId;
-    return 1;
-}
-
+/* A like or a dislike on a message. Each like is a day more of its life
+ * (SrvMemoExpiry); a dislike is counted and shown and takes nothing away, or
+ * two players could delete a third's message between them. */
 static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
 {
     int     off = 0;
@@ -2131,30 +2373,42 @@ static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
 
     for (i = 0; i < g_memoCount; i++)
     {
-        int r;
-        if (g_memos[i].memoId != id)
+        Memo* m = &g_memos[i];
+        if (m->memoId != id)
         {
             continue;
         }
-        if (g_memos[i].ownerId == SRV_IDENT(c))
+        if ((m->kind & 0x0F) != SHNET_MARK_MEMO || m->ownerId == SRV_IDENT(c))
         {
-            return; /* no self-rating */
+            return; /* messages only, and never one's own */
         }
         /* You rate what you are reading, which means standing on its map;
          * this also stops one client sweeping ratings across the whole store. */
-        if (c->mapIdx != g_memos[i].mapIdx)
+        if (c->mapIdx != m->mapIdx)
         {
             return;
         }
-        if (!SrvVoteOnce(c->addr.sin_addr.s_addr, id))
+        if (!SrvVoteOnce(c->addr.sin_addr.s_addr, id, delta >= 0 ? 1 : -1))
         {
             return;
         }
-        r = (int)g_memos[i].rating + (delta >= 0 ? 1 : -1);
-        if (r >  SRV_RATING_CLAMP) r =  SRV_RATING_CLAMP;
-        if (r < -SRV_RATING_CLAMP) r = -SRV_RATING_CLAMP;
-        g_memos[i].rating = (shn_s16)r;
+        if (delta >= 0)
+        {
+            if (m->likes < SRV_VOTES_MAX) m->likes++;
+        }
+        else if (m->dislikes < SRV_VOTES_MAX)
+        {
+            m->dislikes++;
+        }
         g_dbDirty = 1;
+        /* Everyone standing on the map sees the new totals, the voter and
+         * the author included. */
+        SrvPushMemo(m, 1);
+        if (g_verbose)
+        {
+            SrvLog("  %s %s marker %u (now %u for, %u against)", c->name, delta >= 0 ? "liked" : "disliked",
+                   (unsigned)id, (unsigned)m->likes, (unsigned)m->dislikes);
+        }
         return;
     }
 }
@@ -3235,6 +3489,10 @@ static void SrvHandleCoopRelay(Client* c, const shn_u8* p, int len)
     }
 }
 
+#ifndef SH_MASTER_EMBED
+static void SrvHandleAdmin(Client* c, const shn_u8* p, int len);
+#endif
+
 static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n)
 {
     shn_u8       type;
@@ -3318,6 +3576,9 @@ static void SrvDispatch(const struct sockaddr_in* from, const shn_u8* buf, int n
     case SHNET_MSG_MEMO_QUERY: SrvHandleMemoQuery(c, pay, (int)payLen);  break;
     case SHNET_MSG_MEMO_PLACE: SrvHandleMemoPlace(c, pay, (int)payLen);  break;
     case SHNET_MSG_MEMO_RATE:  SrvHandleMemoRate(c, pay, (int)payLen);   break;
+#ifndef SH_MASTER_EMBED
+    case SHNET_MSG_ADMIN:      SrvHandleAdmin(c, pay, (int)payLen);      break;
+#endif
     case SHNET_MSG_CHAT_SAY:   SrvHandleChatSay(c, pay, (int)payLen);    break;
     case SHNET_MSG_ROOM_CREATE:   SrvHandleRoomCreate(c, pay, (int)payLen); break;
     case SHNET_MSG_ROOM_JOIN:     SrvHandleRoomJoin(c, pay, (int)payLen);   break;
@@ -4035,7 +4296,7 @@ static void SrvFeed(const char* fmt, ...)
 /* A marker in the words the players see. The substitution is by hand, as in
  * the client: the phrase strings are data, never a printf format. */
 static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phraseB, int wordB, int map,
-                        unsigned int id)
+                        unsigned int id, const char* typed)
 {
     const int   k  = kind & 0x0F;
     const int   em = ShNetMemo_EmojiOf(kind, phraseB, wordB);
@@ -4048,7 +4309,8 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
     if (k == SHNET_MARK_DEATH) { SrvFeed("x %s died on map %d (marker %u)", who, map, id); return; }
     if (k == SHNET_MARK_SAVE)  { SrvFeed("~ %s rested on map %d (marker %u)", who, map, id); return; }
     p = (phrase >= 0 && phrase < (int)(sizeof(s_phrases) / sizeof(s_phrases[0]))) ? s_phrases[phrase] : "?";
-    w = (word >= 0 && word < (int)(sizeof(s_words) / sizeof(s_words[0]))) ? s_words[word] : "?";
+    w = (word == SHNET_MEMO_NONE && typed && typed[0]) ? typed
+      : (word >= 0 && word < (int)(sizeof(s_words) / sizeof(s_words[0]))) ? s_words[word] : "?";
     e = (em >= 0) ? s_emoji[em] : "";
     while (*p && o < (int)sizeof(body) - 1)
     {
@@ -4062,7 +4324,8 @@ static void SrvFeedMemo(const char* who, int kind, int phrase, int word, int phr
         body[o++] = *p++;
     }
     body[o] = '\0';
-    SrvFeed("memo %s on map %d: %s%s%s (marker %u)", who, map, e, e[0] ? "  " : "", body, id);
+    SrvFeed("memo %s on map %d: %s%s%s%s (marker %u)", who, map, e, e[0] ? "  " : "", body,
+            (word == SHNET_MEMO_NONE) ? "  [typed word]" : "", id);
 }
 
 static void AdmCmdWatch(int on)
@@ -4372,7 +4635,8 @@ static void AdmCmdMemos(const char* who)
         AdmPrintf("%d markers from %d players\n", g_memoCount, nt);
         return;
     }
-    AdmPrintf("%-8s %4s %-6s %7s %s\n", "id", "map", "kind", "rating", "age");
+    AdmPrintf("%-8s %4s %-6s %5s %7s %8s %9s  %s\n", "id", "map", "kind", "likes", "against", "age", "days left",
+              "typed word");
     for (i = 0; i < g_memoCount; i++)
     {
         const Memo* m = &g_memos[i];
@@ -4380,9 +4644,16 @@ static void AdmCmdMemos(const char* who)
         total++;
         if (shown < 200)
         {
-            long days = m->placedUnix ? (t - m->placedUnix) / 86400 : -1;
-            AdmPrintf("%-8u %4d %-6s %7d %ld days\n", m->memoId, m->mapIdx,
-                      (m->kind & 0x0F) == SHNET_MARK_DEATH ? "death" : "memo", (int)m->rating, days);
+            const int kind = m->kind & 0x0F;
+            long      days = m->placedUnix ? (t - m->placedUnix) / 86400 : -1;
+            char      left[16];
+            /* Only messages run out this way: deaths go after a day, and a
+             * resting place stays. */
+            if (kind == SHNET_MARK_MEMO) snprintf(left, sizeof(left), "%.1f", (double)(SrvMemoExpiry(m) - t) / 86400.0);
+            else                         snprintf(left, sizeof(left), "-");
+            AdmPrintf("%-8u %4d %-6s %5u %7u %3ld days %9s  %s\n", m->memoId, m->mapIdx,
+                      kind == SHNET_MARK_DEATH ? "death" : kind == SHNET_MARK_SAVE ? "rest" : "memo",
+                      (unsigned)m->likes, (unsigned)m->dislikes, days, left, m->text);
             shown++;
         }
     }
@@ -4405,18 +4676,188 @@ static void AdmPrune(int kind, const char* arg, long days)
                  : ((m->kind & 0x0F) == SHNET_MARK_DEATH && (days <= 0 || (m->placedUnix && m->placedUnix < cutoff)));
         if (gone)
         {
-            g_memos[i--] = g_memos[--g_memoCount];
+            SrvMemoRemoveAt(i--, SHNET_GONE_REMOVED);
             removed++;
         }
     }
     if (removed)
     {
-        g_dbDirty = 1;
         SrvSaveDb();
     }
     SrvLog("admin pruned %d marker(s)", removed);
-    AdmPrintf("removed %d marker(s); %d left. Players see the change on their next map change.\n",
+    AdmPrintf("removed %d marker(s); %d left. Players standing there see them go at once.\n",
               removed, g_memoCount);
+}
+
+/* ------------------------------------------------------------------ */
+/* The admin key: acting as the admin from inside the game             */
+/* ------------------------------------------------------------------ */
+
+/* The console above needs a login to the machine. This is the other way in:
+ * a key the server holds (admin.key beside the marker store) and its owner
+ * enters once in the game (/admin KEY). The game never sends it. Every act
+ * carries a proof made from the key and from that session, that player and
+ * that very act (ShnAdminProof), so a name, a player id, a Steam id or a
+ * captured packet is no use to anyone else: without the key a marker cannot
+ * be taken down. */
+static char g_adminKey[SHNET_ADMIN_KEY_MAX + 1];
+static char g_adminKeyPath[600];
+
+static void AdmKeyLoad(void)
+{
+    const char* slash = strrchr(g_dbPath, '/');
+    char        line[128];
+    FILE*       f;
+#if defined(_WIN32)
+    const char* bs = strrchr(g_dbPath, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    if (slash && g_dbPath[0])
+        snprintf(g_adminKeyPath, sizeof(g_adminKeyPath), "%.*sadmin.key", (int)(slash - g_dbPath + 1), g_dbPath);
+    else
+        snprintf(g_adminKeyPath, sizeof(g_adminKeyPath), "admin.key");
+
+    g_adminKey[0] = '\0';
+    f = fopen(g_adminKeyPath, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f))
+    {
+        const size_t n = strcspn(line, " \t\r\n");
+        if (line[0] == '#' || n == 0) continue;
+        /* Long enough that it cannot be guessed. A short one is refused
+         * rather than trusted. */
+        if (n >= 16 && n <= SHNET_ADMIN_KEY_MAX)
+        {
+            memcpy(g_adminKey, line, n);
+            g_adminKey[n] = '\0';
+        }
+        break;
+    }
+    fclose(f);
+    if (g_adminKey[0])
+        SrvLog("admin key loaded from %s: its holder can remove markers from inside the game", g_adminKeyPath);
+    else
+        SrvLog("%s holds no usable admin key (16 to %d characters): nobody is admin in the game", g_adminKeyPath,
+               SHNET_ADMIN_KEY_MAX);
+}
+
+static int AdmKeySave(void)
+{
+    FILE* f;
+#if defined(_WIN32)
+    f = fopen(g_adminKeyPath, "w");
+    if (!f) return 0;
+#else
+    /* A password: for the server's own user and nobody else on the machine. */
+    const int fd = open(g_adminKeyPath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return 0;
+    fchmod(fd, 0600);
+    f = fdopen(fd, "w");
+    if (!f)
+    {
+        close(fd);
+        return 0;
+    }
+#endif
+    fprintf(f, "# Silent Hill Online: whoever holds this key can remove markers from inside the game.\n%s\n",
+            g_adminKey);
+    return fclose(f) == 0;
+}
+
+static void AdmCmdAdminKey(const char* rest)
+{
+    if (!strcmp(rest, "new"))
+    {
+        static const char hex[] = "0123456789abcdef";
+        shn_u8            rnd[16];
+        int               i;
+        SrvRandomBytes(rnd, (int)sizeof(rnd));
+        for (i = 0; i < 16; i++)
+        {
+            g_adminKey[i * 2]     = hex[rnd[i] >> 4];
+            g_adminKey[i * 2 + 1] = hex[rnd[i] & 15];
+        }
+        g_adminKey[32] = '\0';
+        if (!AdmKeySave())
+        {
+            AdmPrintf("could not write %s: this key works until the server restarts\n", g_adminKeyPath);
+        }
+        AdmPrintf("admin key: %s\n"
+                  "In the game, open chat and type   /admin %s   once. It is kept in the game's\n"
+                  "settings and is never sent to anyone, this server included.\n"
+                  "After that /remove takes down the marker you are standing on, and /remove ID any marker.\n"
+                  "Whoever has this key can do the same, so keep it to yourself. adminkey new makes a new\n"
+                  "one and this one stops working; adminkey off turns it off.\n", g_adminKey, g_adminKey);
+    }
+    else if (!strcmp(rest, "off"))
+    {
+        g_adminKey[0] = '\0';
+        remove(g_adminKeyPath);
+        AdmPrintf("no admin key now: nobody can remove markers from inside the game\n");
+    }
+    else if (!strcmp(rest, "show"))
+    {
+        if (g_adminKey[0]) AdmPrintf("admin key: %s   (in the game: /admin %s)\n", g_adminKey, g_adminKey);
+        else               AdmPrintf("no admin key (adminkey new makes one)\n");
+    }
+    else
+    {
+        AdmPrintf("adminkey new | adminkey show | adminkey off\n%s\n",
+                  g_adminKey[0] ? "A key is set." : "No key is set: nobody can remove markers from inside the game.");
+    }
+}
+
+static void SrvHandleAdmin(Client* c, const shn_u8* p, int len)
+{
+    int                off = 0;
+    int                op, i;
+    shn_u32            arg, lo, hi;
+    unsigned long long want;
+    char               text[SHNET_EVENT_MAX];
+
+    if (len < 16)
+    {
+        return;
+    }
+    op  = (int)ShnGetU8(p, &off);
+    (void)ShnGetU8(p, &off);
+    (void)ShnGetU16(p, &off);
+    arg = ShnGetU32(p, &off);
+    lo  = ShnGetU32(p, &off);
+    hi  = ShnGetU32(p, &off);
+
+    want = ShnAdminProof(g_adminKey, c->session, c->playerId, op, arg);
+    if (!want || want != (((unsigned long long)hi << 32) | lo))
+    {
+        char addr[40];
+        SrvAddrStr(&c->addr, addr, (int)sizeof(addr));
+        SrvWarnIp(c->addr.sin_addr.s_addr, SRV_WARN_ADMIN,
+                  "! %s (id %u, %s) sent an admin command without the admin key: refused", c->name, c->playerId,
+                  addr);
+        SrvSendEvent(c, SHNET_EV_SERVER, 0, g_adminKey[0] ? "The admin key was not accepted"
+                                                           : "This server has no admin key");
+        return;
+    }
+    if (op != SHNET_ADMIN_REMOVE)
+    {
+        return;
+    }
+    for (i = 0; i < g_memoCount; i++)
+    {
+        const Memo* m = &g_memos[i];
+        if (m->memoId != arg)
+        {
+            continue;
+        }
+        SrvLog("admin %s (id %u, in the game) removed marker %u by %s on map %d%s%s", c->name, c->playerId,
+               (unsigned)arg, m->ownerName, m->mapIdx, m->text[0] ? ", typed word: " : "", m->text);
+        SrvMemoRemoveAt(i, SHNET_GONE_REMOVED);
+        snprintf(text, sizeof(text), "Marker %u removed", (unsigned)arg);
+        SrvSendEvent(c, SHNET_EV_SERVER, 0, text);
+        return;
+    }
+    snprintf(text, sizeof(text), "There is no marker %u", (unsigned)arg);
+    SrvSendEvent(c, SHNET_EV_SERVER, 0, text);
 }
 
 /* ------------------------------------------------------------------ */
@@ -5031,7 +5472,10 @@ static void AdmHelp(void)
         "                             ban by address and player id; no minutes = forever\n"
         "unban <ip|uid>               lift a ban\n"
         "bans                         list bans\n"
-        "memos [name|uid]             marker counts by player, or one player's markers\n"
+        "memos [name|uid]             marker counts by player, or one player's markers, with their likes,\n"
+        "                             dislikes and days left (a message lasts 7 days, 1 more per like)\n"
+        "adminkey new | show | off    the key that lets its holder remove markers from inside the game\n"
+        "                             (/admin KEY once, then /remove); new replaces the old one\n"
         "prune old <days>             delete markers older than <days>\n"
         "prune user <name|uid>        delete every marker by a player\n"
         "prune id <marker id>         delete one marker\n"
@@ -5086,6 +5530,7 @@ static void AdmRun(char* line)
         SrvLog("admin: %s %s", cmd, rest);
 
     if (!strcmp(cmd, "update"))  { AdmCmdUpdate(rest); return; }
+    if (!strcmp(cmd, "adminkey")) { AdmCmdAdminKey(rest); return; }
     if (!strcmp(cmd, "restart")) { AdmCmdRestart(rest); return; }
     if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) AdmHelp();
     else if (!strcmp(cmd, "players") || !strcmp(cmd, "list") || !strcmp(cmd, "who")) AdmCmdPlayers();
@@ -6268,11 +6713,12 @@ int ShMaster_Serve(void)
 #endif
     SrvLoadDb();
     SrvTokKeyInit();
-    SrvPurgeDeaths();
+    SrvPurgeExpired();
     g_lastSaveMs = SrvMillis();
     g_startUnix  = (long)time(NULL);
 #ifndef SH_MASTER_EMBED
     AdmLoadBans();
+    AdmKeyLoad();
     if (g_adminPort && !AdmListen())
     {
         SrvLog("admin console unavailable: 127.0.0.1:%u is in use", (unsigned)g_adminPort);
@@ -6370,7 +6816,7 @@ int ShMaster_Serve(void)
             if (now - s_lastPurge >= 60000u)
             {
                 s_lastPurge = now;
-                SrvPurgeDeaths();
+                SrvPurgeExpired();
             }
 #ifndef SH_MASTER_EMBED
             WsExpire(now);
@@ -6424,7 +6870,7 @@ void ShMaster_SetConfig(unsigned short port, int maxPlayers, const char* name)
     g_dbPath[0] = '\0';   /* no marker store on disk when embedded */
     /* Advertise only what this relay serves, so clients do not wait on ghost
      * snapshots or marker lists that will never come. */
-    g_featureFlags &= ~(SHNET_SF_MEMOS | SHNET_SF_GHOSTS);
+    g_featureFlags &= ~(SHNET_SF_MEMOS | SHNET_SF_GHOSTS | SHNET_SF_MEMO2);
     g_running   = 1;
 }
 

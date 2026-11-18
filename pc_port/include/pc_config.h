@@ -537,6 +537,10 @@ typedef struct {
     int  onlinePort;          /* UDP port; 0 = SHNET_DEFAULT_PORT (online_port) */
     char onlineName[24];      /* how other players see you (online_name) */
     char onlinePassword[64];  /* shared word for a private server, "" = none (online_password) */
+    /* The living world server's admin key, for its owner: /admin KEY sets it,
+     * /remove then takes markers down. Never sent (ShnAdminProof) and never
+     * logged. "" = not an admin (online_admin_key) */
+    char onlineAdminKey[72];
     /* Players this one has /blocked: the server's address token for them and
      * the name they had (online_block_0 .. online_block_63, "<hex> <name>"). */
     struct { unsigned int token; char name[24]; } onlineBlocks[PC_ONLINE_BLOCK_MAX];
