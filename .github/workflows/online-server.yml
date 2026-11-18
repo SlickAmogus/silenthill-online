@@ -5,6 +5,11 @@ name: Silent Hill Online (server)
 # and publishes everything with the host scripts (online_server/host/) to this
 # repo's rolling `server` pre-release, so anyone can run their own server from
 # files that are always current. Runs only when server files change.
+#
+# Every build is numbered (online_server/version.sh). Installed servers read
+# the release's version.txt to learn that a newer one is out, and download
+# their program from here when their host says yes, so the update path is
+# tested end to end before anything is published.
 
 on:
   push:
@@ -36,6 +41,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The server's version is the number of commits that changed its
+          # source (online_server/version.sh), so the whole history is needed:
+          # the commits and their trees, not the files in them.
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Cross compilers
         run: |
@@ -47,18 +58,28 @@ jobs:
           set -euo pipefail
           STAGE="$RUNNER_TEMP/SHOnline-server"
           rm -rf "$STAGE"; mkdir -p "$STAGE"
-          CFLAGS="-O2 -Wall -Wextra -static -I pc_port/include"
-          gcc                     $CFLAGS -o "$STAGE/sh_master-linux-x64"   online_server/sh_master.c
-          aarch64-linux-gnu-gcc   $CFLAGS -o "$STAGE/sh_master-linux-arm64" online_server/sh_master.c
-          x86_64-w64-mingw32-gcc  $CFLAGS -o "$STAGE/sh_master.exe"         online_server/sh_master.c -lws2_32
-          gcc -O2 -I pc_port/include -o "$RUNNER_TEMP/shnet_selftest" online_server/shnet_selftest.c
+          VER="$(sh online_server/version.sh)"
+          PROTO="$(sed -n 's/^#define SHNET_PROTO_VER *\([0-9]*\).*/\1/p' pc_port/include/sh_net_proto.h)"
+          echo "SRV_VER=$VER" >> "$GITHUB_ENV"
+          echo "server version $VER, protocol v$PROTO"
+          # The three programs are built from the zip's own copy of the source,
+          # with the version stamped beside it: exactly what a host's gcc gets,
+          # which also proves that those files are all the server needs.
           cp online_server/sh_master.c pc_port/include/sh_net_proto.h pc_port/include/sh_net_memo_text.h pc_port/include/sh_net_chat_filter.h "$STAGE/"
+          printf '/* Written by the release build: which server this source is. */\n#define SRV_VERSION_NUM %s\n#define SRV_VERSION_COMMIT "%s"\n#define SRV_VERSION_DATE "%s"\n' \
+            "$VER" "${GITHUB_SHA:0:9}" "$(date -u '+%Y-%m-%d')" > "$STAGE/sh_master_version.h"
+          CFLAGS="-O2 -Wall -Wextra -static"
+          gcc                     $CFLAGS -o "$STAGE/sh_master-linux-x64"   "$STAGE/sh_master.c"
+          aarch64-linux-gnu-gcc   $CFLAGS -o "$STAGE/sh_master-linux-arm64" "$STAGE/sh_master.c"
+          x86_64-w64-mingw32-gcc  $CFLAGS -o "$STAGE/sh_master.exe"         "$STAGE/sh_master.c" -lws2_32
+          gcc -O2 -I pc_port/include -o "$RUNNER_TEMP/shnet_selftest" online_server/shnet_selftest.c
           cp online_server/host/* "$STAGE/"
           # The batch files must stay CRLF whatever the checkout did.
           for f in "$STAGE"/*.bat; do sed -i 's/\r$//; s/$/\r/' "$f"; done
           chmod 755 "$STAGE"/sh_master-linux-* "$STAGE"/install-server.sh
-          printf 'commit %s\nbuilt  %s UTC\nproto  %s\n' "$GITHUB_SHA" "$(date -u '+%Y-%m-%d %H:%M:%S')" \
-            "$(sed -n 's/^#define SHNET_PROTO_VER *\([0-9]*\).*/\1/p' pc_port/include/sh_net_proto.h)" > "$STAGE/version.txt"
+          # What an installed server reads to learn that a newer one is out.
+          printf 'version %s\ncommit %s\nbuilt  %s UTC\nproto  %s\n' "$VER" "$GITHUB_SHA" "$(date -u '+%Y-%m-%d %H:%M:%S')" "$PROTO" > "$STAGE/version.txt"
+          cat "$STAGE/version.txt"
           ls -la "$STAGE"
 
       # The self-test speaks the wire protocol from the same header as the game,
@@ -67,13 +88,18 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          S="$RUNNER_TEMP/SHOnline-server/sh_master-linux-x64"
+          # A copy outside the folder that becomes the zip: a server writes its
+          # settings file beside itself, and a host must not be handed ours.
+          rm -rf "$RUNNER_TEMP/selftest"; mkdir -p "$RUNNER_TEMP/selftest"
+          cp "$RUNNER_TEMP/SHOnline-server/sh_master-linux-x64" "$RUNNER_TEMP/selftest/sh_master"
+          S="$RUNNER_TEMP/selftest/sh_master"
           "$S" --help >/dev/null
+          "$S" --version
           # Each pass gets a fresh server and marker store: the test inspects the
           # first marker on a map and expects its own.
           for MODE in udp ws; do
             rm -f "$RUNNER_TEMP/selftest.db" "$RUNNER_TEMP/sh_master.log"*
-            "$S" -p 27899 --ws 27900 --admin 27898 -d "$RUNNER_TEMP/selftest.db" -i 100 --max 128 > "$RUNNER_TEMP/server-$MODE.log" 2>&1 &
+            "$S" --no-update-check -p 27899 --ws 27900 --admin 27898 -d "$RUNNER_TEMP/selftest.db" -i 100 --max 128 > "$RUNNER_TEMP/server-$MODE.log" 2>&1 &
             SRV=$!
             sleep 1
             if [ "$MODE" = udp ]; then
@@ -90,10 +116,21 @@ jobs:
             tail -3 "$RUNNER_TEMP/server-$MODE.log"
           done
 
+      # Versions and updates: noticing a newer release, refusing a bad one,
+      # installing while serving, restarting, and the question a server asks
+      # when it is started by hand. Nothing is published unless this passes,
+      # because every installed server trusts the release to update it.
+      - name: Self-test the update path
+        timeout-minutes: 5
+        run: bash online_server/update_selftest.sh "$RUNNER_TEMP/selftest/sh_master" "$RUNNER_TEMP/SHOnline-server" "$SRV_VER"
+
       - name: Zip
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
+          for f in sh_master.cfg sh_master.latest sh_master.log memos.db bans.txt addrkey.bin; do
+            if [ -e "SHOnline-server/$f" ]; then echo "ERROR: $f is a running server's own file and must not be in the zip"; exit 1; fi
+          done
           rm -f SHOnline-server.zip
           zip -r -9 SHOnline-server.zip SHOnline-server
           ls -la SHOnline-server.zip
@@ -112,7 +149,9 @@ jobs:
           NOTES="$(cat <<EOF
           The Silent Hill Online living world server, for anyone who wants to run their own: outlines, markers, messages and the room list. Rebuilt here whenever the server changes, so these files are always current.
 
-          **Newest server: \`$SHORT\`, $DATE UTC, protocol v$PROTO**
+          **Newest server: version $SRV_VER (\`$SHORT\`), $DATE UTC, protocol v$PROTO**
+
+          A server installed from here looks for a newer version when it starts and every six hours, and says so in its log and its console. It installs one only when its host says yes: \`update\` in the console, \`sh_master --update\`, or the question Start-Server.bat asks (update now, not now, never ask again). \`update_check=off\` in \`sh_master.cfg\` turns the check off, and \`update_url\` there points it at a release of your own. See **Updates** in the README.
 
           - **SHOnline-server.zip**: everything below plus the scripts. Unzip it, fill in \`server.txt\`, then double-click **Redeploy-Server.bat** to install or update the server on a Linux machine over ssh, **Server-Console.bat** for its admin console (players, kick, ban, prune, say), or **Start-Server.bat** to run it on this Windows PC. Full instructions in the zip's README, also [here](https://github.com/$GITHUB_REPOSITORY/blob/main/online_server/host/README.md).
           - \`sh_master-linux-x64\`, \`sh_master-linux-arm64\`: the server for Linux, static, no dependencies.
@@ -129,6 +168,10 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             "$RUNNER_TEMP/SHOnline-server.zip" \
             "$STAGE/sh_master-linux-x64" "$STAGE/sh_master-linux-arm64" "$STAGE/sh_master.exe" \
-            "$STAGE/install-server.sh" "$STAGE/version.txt"
+            "$STAGE/install-server.sh"
+          # version.txt on its own and last: installed servers read it to learn
+          # of a new version, and must not see the number before the programs
+          # are there (one upload call sends its files side by side).
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$STAGE/version.txt"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --notes "$NOTES"
           echo "Published $SHORT to the $TAG release."
