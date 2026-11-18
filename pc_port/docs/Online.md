@@ -99,7 +99,10 @@ can remove markers, so keep it to yourself; `adminkey new` makes a new one
 and the old one stops working.
 
 **Lifetimes.** The server removes a message seven days after it was left,
-plus one day for each like. Death markers still go after a day. A store from
+plus one day for each like. Death markers still go after a day. Likes,
+dislikes and who cast them are saved with the marker store (`memos.db` and
+`memos.db.votes`), so a restart changes neither a message's days nor who may
+still vote on it. A store from
 before lifetimes is taken in once: every marker in it starts its seven days
 at that first start, and the file as it was is kept as `memos.db.v1`.
 
