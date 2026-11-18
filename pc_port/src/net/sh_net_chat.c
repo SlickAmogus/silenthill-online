@@ -341,7 +341,7 @@ static void       (*s_promptDone)(const char* text);
 #define CHAT_SHOWN_AS_OPEN (s_open && !s_prompt)
 static SDL_SpinLock s_tLock;
 static char         s_tTyped[128];
-static int          s_tLen, s_tBack, s_tEnter, s_tEsc;
+static int          s_tLen, s_tBack, s_tEnter, s_tEsc, s_tPaste;
 static int          s_tWatching;
 #if defined(__EMSCRIPTEN__)
 extern void Web_TextBegin(void);
@@ -373,6 +373,7 @@ static int SDLCALL Chat_TextWatch(void* user, SDL_Event* e)
     {
         const SDL_Scancode sc = e->key.keysym.scancode;
         if (sc == SDL_SCANCODE_BACKSPACE) s_tBack++;
+        else if (sc == SDL_SCANCODE_V && (e->key.keysym.mod & KMOD_CTRL)) s_tPaste = 1;
         else if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) s_tEnter = 1;
         else if (sc == SDL_SCANCODE_ESCAPE || sc == SDL_SCANCODE_AC_BACK) s_tEsc = 1;
     }
@@ -459,7 +460,7 @@ void ShNetChat_Close(void)
 static void Chat_BeginTextEvents(void)
 {
     SDL_AtomicLock(&s_tLock);
-    s_tLen = s_tBack = s_tEnter = s_tEsc = 0;
+    s_tLen = s_tBack = s_tEnter = s_tEsc = s_tPaste = 0;
     SDL_AtomicUnlock(&s_tLock);
     if (!s_tWatching)
     {
@@ -531,12 +532,34 @@ int ShNetChat_Available(void)
 static void Chat_Submit(void);
 static void Chat_Append(char c);
 
+/* Ctrl+V: the clipboard's first line, as far as the box takes it. A long
+ * thing to get right by hand is what gets pasted: a room code, an address,
+ * the server's admin key after /admin. Only what could have been typed. */
+static void Chat_Paste(void)
+{
+    char*       clip = SDL_GetClipboardText();
+    const char* c;
+
+    if (!clip)
+    {
+        return;
+    }
+    for (c = clip; *c && *c != '\n' && *c != '\r'; c++)
+    {
+        if ((unsigned char)*c >= 32 && (unsigned char)*c <= 126)
+        {
+            Chat_Append(*c);
+        }
+    }
+    SDL_free(clip);
+}
+
 /* What the touch path collected since the last frame. Only printable ASCII is
  * kept, as the server keeps only that. */
 static void Chat_FeedTouch(void)
 {
     char typed[160];
-    int  n, back, enter, esc, i;
+    int  n, back, enter, esc, paste, i;
 
     SDL_AtomicLock(&s_tLock);
     n = s_tLen;
@@ -544,7 +567,8 @@ static void Chat_FeedTouch(void)
     back  = s_tBack;
     enter = s_tEnter;
     esc   = s_tEsc;
-    s_tLen = s_tBack = s_tEnter = s_tEsc = 0;
+    paste = s_tPaste;
+    s_tLen = s_tBack = s_tEnter = s_tEsc = s_tPaste = 0;
     SDL_AtomicUnlock(&s_tLock);
 #if defined(__EMSCRIPTEN__)
     {
@@ -575,6 +599,10 @@ static void Chat_FeedTouch(void)
         {
             Chat_Append(typed[i]);
         }
+    }
+    if (paste)
+    {
+        Chat_Paste();
     }
     if (enter)
     {
@@ -815,6 +843,11 @@ void ShNetChat_FeedKeys(const unsigned char* ks)
     if (ks[SDL_SCANCODE_BACKSPACE] && !s_prevKeys[SDL_SCANCODE_BACKSPACE] && s_inputLen > 0)
     {
         s_input[--s_inputLen] = '\0';
+    }
+
+    if (ctrl && ks[SDL_SCANCODE_V] && !s_prevKeys[SDL_SCANCODE_V])
+    {
+        Chat_Paste();
     }
 
     if (!ctrl)

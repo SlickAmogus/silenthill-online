@@ -126,10 +126,15 @@ ever go back.
 **Removing markers from inside the game.** You do not have to open the
 console to take down a message you come across while playing:
 
-1. In the console, type `adminkey new`. It prints a key and keeps it in
-   `admin.key`.
-2. In the game, open chat and type `/admin KEY` once. The key is saved in the
-   game's settings.
+1. Open **Server-Console.bat** and type `adminkey new`. The key is printed in
+   that window, on your own computer, and the server keeps its copy in
+   `admin.key`. Nothing sends it to your game for you: carrying it across by
+   hand, once, is what keeps it off the network.
+2. Select the key in the console window and copy it (Enter or a right click
+   copies the selection). In the game, open chat, type `/admin ` and press
+   Ctrl+V to paste the key, then Enter. It is saved in the game's settings, so
+   this is done once per computer. `adminkey show` prints the key again if
+   you need it on another one.
 3. From then on `/remove` takes down the marker you are standing on, and
    `/remove ID` any marker by its id. The server logs who removed what.
 
