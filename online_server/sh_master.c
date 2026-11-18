@@ -375,12 +375,14 @@ static PassFail      g_passFails[SRV_PASS_TABLE];
 
 typedef struct
 {
-    shn_u32     ip;
+    shn_u32     who;  /* SrvAddrToken of the voter's address */
     shn_u32     memoId;
-    signed char dir; /* +1 liked, -1 disliked */
+    signed char dir;  /* +1 liked, -1 disliked */
 } Vote;
 static Vote          g_votes[SRV_VOTE_BUCKETS][SRV_VOTE_WAYS];
 static unsigned char g_voteNext[SRV_VOTE_BUCKETS];
+static int           g_votesDirty;
+static shn_u32 SrvAddrToken(shn_u32 ipNet);
 static int           g_featureFlags = SHNET_SF_GHOSTS | SHNET_SF_MEMOS |
                                       SHNET_SF_DEATHS | SHNET_SF_EVENTS | SHNET_SF_MEMO2;
 static char          g_dbPath[512] = "memos.db";
@@ -1369,6 +1371,144 @@ static void SrvPurgeExpired(void)
     }
 }
 
+/* One vote per (voter, memo). A voter is an address, held as the server's own
+ * token for it (SrvAddrToken) so that no address is ever written down. A
+ * set-associative table rather than an exact record: it forgets the oldest
+ * votes once a set fills, which bounds memory and still turns a vote flood
+ * into one vote per memo per address. */
+static Vote* SrvVoteSet(shn_u32 who, shn_u32 memoId, int* bucket)
+{
+    shn_u8 key[8];
+    memcpy(key, &who, 4);
+    memcpy(key + 4, &memoId, 4);
+    *bucket = (int)(ShnSipHash(g_cookieKey, key, 8) % SRV_VOTE_BUCKETS);
+    return g_votes[*bucket];
+}
+
+/* +1 or -1 when this voter voted on that memo and the table still knows. */
+static int SrvVoteOf(shn_u32 who, shn_u32 memoId)
+{
+    int         b, w;
+    const Vote* set = SrvVoteSet(who, memoId, &b);
+    for (w = 0; w < SRV_VOTE_WAYS; w++)
+    {
+        if (set[w].dir && set[w].memoId == memoId && set[w].who == who)
+        {
+            return set[w].dir;
+        }
+    }
+    return 0;
+}
+
+static int SrvVoteOnce(shn_u32 who, shn_u32 memoId, int dir)
+{
+    int   b, w;
+    Vote* set;
+
+    if (SrvVoteOf(who, memoId))
+    {
+        return 0;
+    }
+    set = SrvVoteSet(who, memoId, &b);
+    w   = g_voteNext[b];
+    g_voteNext[b] = (unsigned char)((w + 1) % SRV_VOTE_WAYS);
+    set[w].who    = who;
+    set[w].memoId = memoId;
+    set[w].dir    = (signed char)dir;
+    g_votesDirty  = 1;
+    return 1;
+}
+
+/* Who has voted on what is kept beside the marker store (<store>.votes). A
+ * like is a day of a message's life, so a restart must not hand every player
+ * their vote back. Only votes on markers that still exist are written, or the
+ * file would carry every message there ever was. */
+static void SrvSaveVotes(void)
+{
+    char           path[560];
+    const shn_u32  top = g_nextMemoId;
+    unsigned char* live;
+    FILE*          f;
+    int            i, b, w;
+
+    if (!g_dbPath[0] || !g_votesDirty)
+    {
+        return;
+    }
+    live = (unsigned char*)calloc((size_t)(top / 8u) + 1u, 1);
+    if (!live)
+    {
+        return;
+    }
+    for (i = 0; i < g_memoCount; i++)
+    {
+        const shn_u32 id = g_memos[i].memoId;
+        if (id < top) live[id >> 3] |= (unsigned char)(1u << (id & 7u));
+    }
+    snprintf(path, sizeof(path), "%s.votes", g_dbPath);
+    f = fopen(path, "w");
+    if (!f)
+    {
+        free(live);
+        SrvLog("could not write %s", path);
+        return;
+    }
+    fprintf(f, "# sh_master votes v1\n");
+    fprintf(f, "# voter marker vote   (voter: this server's token for an address, never the address itself)\n");
+    for (b = 0; b < SRV_VOTE_BUCKETS; b++)
+    {
+        for (w = 0; w < SRV_VOTE_WAYS; w++)
+        {
+            const Vote* v = &g_votes[b][w];
+            if (!v->dir || v->memoId >= top || !(live[v->memoId >> 3] & (1u << (v->memoId & 7u))))
+            {
+                continue;
+            }
+            fprintf(f, "%08x %u %d\n", (unsigned)v->who, (unsigned)v->memoId, (int)v->dir);
+        }
+    }
+    fclose(f);
+    free(live);
+    g_votesDirty = 0;
+}
+
+/* After the marker store, and after g_cookieKey is set: the table is laid out
+ * by this run's key, so each vote is put back in through the front door. */
+static void SrvLoadVotes(void)
+{
+    char  path[560];
+    char  line[96];
+    FILE* f;
+    int   n = 0;
+
+    if (!g_dbPath[0])
+    {
+        return;
+    }
+    snprintf(path, sizeof(path), "%s.votes", g_dbPath);
+    f = fopen(path, "r");
+    if (!f)
+    {
+        return;
+    }
+    while (fgets(line, sizeof(line), f))
+    {
+        unsigned int who, id;
+        int          dir;
+        if (line[0] == '#' || sscanf(line, "%x %u %d", &who, &id, &dir) != 3 || (dir != 1 && dir != -1))
+        {
+            continue;
+        }
+        n += SrvVoteOnce((shn_u32)who, (shn_u32)id, dir);
+    }
+    fclose(f);
+    g_votesDirty = 0;
+    if (n)
+    {
+        SrvLog("loaded %d vote(s) from %s: nobody votes twice on a message for a restart", n, path);
+    }
+}
+
 static void SrvSaveDb(void)
 {
     FILE* f;
@@ -1402,6 +1542,7 @@ static void SrvSaveDb(void)
     }
     fclose(f);
     g_dbDirty = 0;
+    SrvSaveVotes();
 }
 
 /* The store as it was before lifetimes, kept once beside the new one: a
@@ -1933,51 +2074,6 @@ static void SrvHandleRosterReq(Client* c)
     }
 }
 
-/* One vote per (address, memo). A set-associative table rather than an exact
- * record: it forgets the oldest votes once a set fills, which bounds memory
- * and still turns a vote flood into one vote per memo per address. */
-static Vote* SrvVoteSet(shn_u32 ip, shn_u32 memoId, int* bucket)
-{
-    shn_u8 key[8];
-    memcpy(key, &ip, 4);
-    memcpy(key + 4, &memoId, 4);
-    *bucket = (int)(ShnSipHash(g_cookieKey, key, 8) % SRV_VOTE_BUCKETS);
-    return g_votes[*bucket];
-}
-
-/* +1 or -1 when this address voted on that memo and the table still knows. */
-static int SrvVoteOf(shn_u32 ip, shn_u32 memoId)
-{
-    int         b, w;
-    const Vote* set = SrvVoteSet(ip, memoId, &b);
-    for (w = 0; w < SRV_VOTE_WAYS; w++)
-    {
-        if (set[w].dir && set[w].memoId == memoId && set[w].ip == ip)
-        {
-            return set[w].dir;
-        }
-    }
-    return 0;
-}
-
-static int SrvVoteOnce(shn_u32 ip, shn_u32 memoId, int dir)
-{
-    int   b, w;
-    Vote* set;
-
-    if (SrvVoteOf(ip, memoId))
-    {
-        return 0;
-    }
-    set = SrvVoteSet(ip, memoId, &b);
-    w   = g_voteNext[b];
-    g_voteNext[b] = (unsigned char)((w + 1) % SRV_VOTE_WAYS);
-    set[w].ip     = ip;
-    set[w].memoId = memoId;
-    set[w].dir    = (signed char)dir;
-    return 1;
-}
-
 /* A message with a typed word has no word index for a client from before
  * them to look up; it would show an empty box, so it is not sent one. */
 static int SrvMemoReadableBy(const Memo* m, const Client* c)
@@ -2011,7 +2107,7 @@ static void SrvPutMemo(shn_u8* buf, int* o, const Memo* m, const Client* to)
     {
         ShnPutU16(buf, o, m->likes);
         ShnPutU16(buf, o, m->dislikes);
-        ShnPutU8(buf, o, (shn_u8)(signed char)SrvVoteOf(to->addr.sin_addr.s_addr, m->memoId));
+        ShnPutU8(buf, o, (shn_u8)(signed char)SrvVoteOf(SrvAddrToken(to->addr.sin_addr.s_addr), m->memoId));
         ShnPutU8(buf, o, 0);
         ShnPutStr(buf, o, m->text, SHNET_MEMO_TEXT_MAX);
     }
@@ -2388,7 +2484,7 @@ static void SrvHandleMemoRate(Client* c, const shn_u8* p, int len)
         {
             return;
         }
-        if (!SrvVoteOnce(c->addr.sin_addr.s_addr, id, delta >= 0 ? 1 : -1))
+        if (!SrvVoteOnce(SrvAddrToken(c->addr.sin_addr.s_addr), id, delta >= 0 ? 1 : -1))
         {
             return;
         }
@@ -6713,6 +6809,7 @@ int ShMaster_Serve(void)
 #endif
     SrvLoadDb();
     SrvTokKeyInit();
+    SrvLoadVotes();
     SrvPurgeExpired();
     g_lastSaveMs = SrvMillis();
     g_startUnix  = (long)time(NULL);

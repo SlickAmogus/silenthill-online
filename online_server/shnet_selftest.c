@@ -533,14 +533,87 @@ static void PeerQueryMemos(Peer* p, int mapIdx)
     PeerSend(p, buf, off);
 }
 
+/* --votes 1 | 2 [--memo ID]: the two halves of the restart check that
+ * store_selftest.sh runs around a restart of the server on the same store.
+ * The first leaves a message with a typed word, likes it from another player
+ * and prints its id. The second expects the like, the typed word and the fact
+ * that this address voted to have survived, and a second like to be refused:
+ * a like is a day of a message's life, so a restart must neither lose one nor
+ * let it be cast again. */
+static int VotesAcrossRestart(const char* host, unsigned short port, int half, shn_u32 id)
+{
+    Peer     c, d;
+    MemoRead r;
+    shn_u8   pay[SHNET_MAX_PAYLOAD];
+    int      n, o = 0, tries;
+
+    memset(&r, 0, sizeof(r));
+    PeerOpen(&d, host, port, "VoteReader");
+    d.caps = SHNET_CAP_MEMO2;
+    if (half == 1)
+    {
+        PeerOpen(&c, host, port, "VoteAuthor");
+        c.caps = SHNET_CAP_MEMO2;
+        CHECK(PeerHello(&c) && PeerHello(&d), "two players joined");
+        PeerState(&c, 7, 10 << 12, 0, 10 << 12, 0, SHNET_PF_ALIVE);
+        PeerState(&d, 7, 11 << 12, 0, 10 << 12, 0, SHNET_PF_ALIVE);
+        T_SLEEP(150);
+        PeerPlaceTyped(&c, 7, 10 << 12, 10 << 12, 3, "kept across a restart");
+        n = PeerWait(&c, SHNET_MSG_MEMO_ACK, 1500, pay, sizeof(pay));
+        CHECK(n >= 8, "a message with a typed word was left");
+        if (n >= 8)
+        {
+            id = ShnGetU32(pay, &o);
+        }
+        PeerRate(&d, id, 1);
+        /* The reader is sent the new message first and the vote's totals after. */
+        for (tries = 0; tries < 4 && r.likes != 1; tries++)
+        {
+            n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+            if (n <= 0 || !MemoFind(pay, n, id, &r))
+            {
+                break;
+            }
+        }
+        CHECK(r.likes == 1 && r.mine == 1, "another player liked it (%d for, own vote %d)", r.likes, r.mine);
+        PeerSimple(&c, SHNET_MSG_BYE);
+        printf("VOTED_ID=%u\n", (unsigned)id);
+    }
+    else
+    {
+        CHECK(PeerHello(&d), "the same player joined the restarted server");
+        PeerState(&d, 7, 11 << 12, 0, 10 << 12, 0, SHNET_PF_ALIVE);
+        T_SLEEP(150);
+        PeerQueryMemos(&d, 7);
+        n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r), "the message is still there after the restart");
+        CHECK(r.likes == 1 && r.dislikes == 0, "with its like (%d for, %d against)", r.likes, r.dislikes);
+        CHECK(!strcmp(r.text, "kept across a restart"), "and its typed word (\"%s\")", r.text);
+        CHECK(r.mine == 1, "and the server still knows this address cast that like (own vote %d)", r.mine);
+        PeerRate(&d, id, 1);
+        CHECK(PeerWait(&d, SHNET_MSG_MEMO_LIST, 600, pay, sizeof(pay)) < 0, "so a second like from it is refused");
+        PeerQueryMemos(&d, 7);
+        n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r) && r.likes == 1, "and the total stays at one like (%d)", r.likes);
+    }
+    PeerSimple(&d, SHNET_MSG_BYE);
+    printf("\n%s (%d failures)\n", g_fail ? "FAILED" : "PASSED", g_fail);
+    return g_fail ? 1 : 0;
+}
+
 int main(int argc, char** argv)
 {
+    int     votesHalf = 0;
+    shn_u32 votesMemo = 0;
     /* --adminkey KEY: the running server's admin key (its console's "adminkey
      * new" prints one), to try a removal that should succeed. */
-    while (argc > 2 && (!strcmp(argv[1], "--ws") || !strcmp(argv[1], "--adminkey")))
+    while (argc > 2 && (!strcmp(argv[1], "--ws") || !strcmp(argv[1], "--adminkey") ||
+                        !strcmp(argv[1], "--votes") || !strcmp(argv[1], "--memo")))
     {
-        if (!strcmp(argv[1], "--ws")) g_wsPort = (unsigned short)atoi(argv[2]);
-        else                          snprintf(g_adminKey, sizeof(g_adminKey), "%s", argv[2]);
+        if (!strcmp(argv[1], "--ws"))         g_wsPort = (unsigned short)atoi(argv[2]);
+        else if (!strcmp(argv[1], "--votes")) votesHalf = atoi(argv[2]);
+        else if (!strcmp(argv[1], "--memo"))  votesMemo = (shn_u32)strtoul(argv[2], NULL, 10);
+        else                                  snprintf(g_adminKey, sizeof(g_adminKey), "%s", argv[2]);
         argc -= 2;
         argv += 2;
     }
@@ -557,6 +630,10 @@ int main(int argc, char** argv)
     if (argc > 3)
     {
         g_password = argv[3];
+    }
+    if (votesHalf)
+    {
+        return VotesAcrossRestart(host, port, votesHalf, votesMemo);
     }
     printf("Silent Hill Online protocol self-test against %s:%u%s\n\n", host, (unsigned)port,
            g_wsPort ? " over WebSocket" : "");

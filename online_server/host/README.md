@@ -88,11 +88,12 @@ the commands:
 
 The console only listens on the machine itself (127.0.0.1:27891), so it needs
 the ssh login. When the connection drops, press a key in the window to log in
-again. Markers live in `memos.db`, bans in `bans.txt`, the admin key in
-`admin.key` and the key behind the address tokens players' block lists hold in
-`addrkey.bin`, all in the service's working directory (`/root` by default).
-Keep `addrkey.bin`: a new one makes every player's saved blocks point at
-nobody.
+again. Markers live in `memos.db`, who has voted on them in `memos.db.votes`,
+bans in `bans.txt`, the admin key in `admin.key` and the key behind the
+address tokens in `addrkey.bin`, all in the service's working directory
+(`/root` by default). Keep `addrkey.bin`: a new one makes every player's saved
+blocks point at nobody, and lets everyone vote again on messages they already
+voted on.
 
 ### Messages: lifetimes, likes and removing them
 
@@ -102,6 +103,13 @@ pressing accept or cancel; the server keeps one vote per address on each
 message and shows the totals to everyone standing there. A dislike is counted
 and takes no time away. Death markers go after a day, as before. The server
 does all of this by itself: there is nothing to run.
+
+Nothing of this is lost when the server restarts or is updated. A message's
+likes, dislikes and the day its seven days began are written into `memos.db`
+with it, so it has exactly the days it had. Who voted is kept beside it in
+`memos.db.votes`, so a restart does not let a player like the same message a
+second time. That file holds the server's own tokens for addresses, never the
+addresses themselves.
 
 The word in a message can be typed by the player. The server masks racial
 slurs in it, the same way it does in chat and in names, before it stores the
