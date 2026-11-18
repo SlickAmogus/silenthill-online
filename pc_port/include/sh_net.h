@@ -84,6 +84,11 @@ typedef struct
     short          rating;
     unsigned short phraseA, wordA, phraseB, wordB;
     char           owner[SHNET_NAME_MAX];
+    /* From a server with SHNET_SF_MEMO2; an older one leaves these zero. */
+    unsigned short likes, dislikes;
+    signed char    mine;  /* this player's vote on it: +1, -1, 0 none yet */
+    signed char    own;   /* this player left it */
+    char           text[SHNET_MEMO_TEXT_MAX]; /* the typed word, when wordA is SHNET_MEMO_NONE */
 } ShNetMemo;
 
 typedef struct
@@ -227,7 +232,20 @@ int ShNet_PlaceMarker(int kind, int x, int y, int z, short rotY,
 /* Called from the death path. Fire-and-forget; the server dedupes. */
 void ShNet_ReportDeath(int x, int y, int z, short rotY);
 
+/* A like (delta > 0) or a dislike on someone's message. One vote a message;
+ * the server sends the new totals back to everyone standing on the map. */
 void ShNet_RateMemo(unsigned int memoId, int delta);
+
+/* A message whose word was typed rather than picked. 0 when the server is
+ * one from before typed words, and then nothing is sent. emoji as wordB in
+ * ShNet_PlaceMarker. */
+int ShNet_PlaceMemoTyped(int x, int y, int z, short rotY, unsigned short phrase, const char* typed,
+                         unsigned short emoji);
+
+/* Ask the server to take a marker down, as its admin. Needs the server's
+ * admin key in the settings (online_admin_key, set by /admin); 0 without
+ * one. The answer arrives as a toast. */
+int ShNet_AdminRemove(unsigned int memoId);
 
 /* Ask for this map's markers again (map load, or the player pressed refresh). */
 void ShNet_RequestMemos(void);

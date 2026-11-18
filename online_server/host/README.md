@@ -72,7 +72,8 @@ the commands:
 | `kick <id or name> [reason]` | removes a player; they can reconnect |
 | `ban <id, name or IP> [minutes] [reason]` | no minutes means forever |
 | `unban <IP or uid>`, `bans` | lift a ban, list them |
-| `memos [name or uid]` | marker counts per player, or one player's markers |
+| `memos [name or uid]` | marker counts per player, or one player's markers with their likes, dislikes, days left and typed word |
+| `adminkey new`, `adminkey show`, `adminkey off` | the key that lets its holder remove markers from inside the game ([Messages](#messages-lifetimes-likes-and-removing-them)) |
 | `prune old <days>`, `prune user <name>`, `prune id <id>`, `prune deaths [days]` | delete markers |
 | `prune all` | delete every marker: a clean world |
 | `say <text>` | a message to everyone online |
@@ -87,10 +88,50 @@ the commands:
 
 The console only listens on the machine itself (127.0.0.1:27891), so it needs
 the ssh login. When the connection drops, press a key in the window to log in
-again. Markers live in `memos.db`, bans in `bans.txt` and the key behind the
-address tokens players' block lists hold in `addrkey.bin`, all in the service's
-working directory (`/root` by default). Keep `addrkey.bin`: a new one makes
-every player's saved blocks point at nobody.
+again. Markers live in `memos.db`, bans in `bans.txt`, the admin key in
+`admin.key` and the key behind the address tokens players' block lists hold in
+`addrkey.bin`, all in the service's working directory (`/root` by default).
+Keep `addrkey.bin`: a new one makes every player's saved blocks point at
+nobody.
+
+### Messages: lifetimes, likes and removing them
+
+A message a player leaves stays for seven days, and one day longer for every
+like it gets. Players like or dislike a message by standing on it and
+pressing accept or cancel; the server keeps one vote per address on each
+message and shows the totals to everyone standing there. A dislike is counted
+and takes no time away. Death markers go after a day, as before. The server
+does all of this by itself: there is nothing to run.
+
+The word in a message can be typed by the player. The server masks racial
+slurs in it, the same way it does in chat and in names, before it stores the
+message or shows it to anyone. `memos <name>` lists a player's messages with
+the typed word, and `prune id <marker id>` removes one; players standing
+there see it go at once.
+
+**The first start of this version** takes in the marker store of an older
+server once. Every marker in it starts its seven days at that moment, as if it
+had been left that day, and the old file is kept beside it as `memos.db.v1`.
+An older server cannot read the new `memos.db`, so keep that file if you may
+ever go back.
+
+**Removing markers from inside the game.** You do not have to open the
+console to take down a message you come across while playing:
+
+1. In the console, type `adminkey new`. It prints a key and keeps it in
+   `admin.key`.
+2. In the game, open chat and type `/admin KEY` once. The key is saved in the
+   game's settings.
+3. From then on `/remove` takes down the marker you are standing on, and
+   `/remove ID` any marker by its id. The server logs who removed what.
+
+The key is never sent, to this server or anyone else. Each remove carries a
+proof made from the key, that session and that one marker, so using your
+name, your player id or a copy of your traffic gets nobody anywhere. That is
+why it is a key and not a Steam id: a server cannot check a Steam id, so
+anyone could claim yours. Whoever has the key can remove markers, so keep it
+to yourself. `adminkey new` makes a new key and the old one stops working at
+once; `adminkey off` leaves the server with none.
 
 ### Log
 

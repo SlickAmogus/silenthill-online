@@ -47,6 +47,7 @@ typedef socklen_t TSockLen;
 #include <string.h>
 
 #include "sh_net_proto.h"
+#include "sh_net_chat_filter.h" /* what the server masks in a typed word */
 
 static int g_fail;
 
@@ -57,6 +58,7 @@ static int g_fail;
     } while (0)
 
 static unsigned short g_wsPort; /* --ws: talk WebSocket to this TCP port */
+static char           g_adminKey[SHNET_ADMIN_KEY_MAX + 1];
 
 typedef struct
 {
@@ -398,6 +400,127 @@ static void PeerChat(Peer* p, int scope, const char* text)
     PeerSend(p, buf, off);
 }
 
+/* A message whose word was typed: no word index, the text after the fixed part. */
+static void PeerPlaceTyped(Peer* p, int mapIdx, int x, int z, int phraseA, const char* typed)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 96];
+    int    off = SHNET_HDR_SIZE;
+
+    ShnPutU8(buf, &off, SHNET_MARK_MEMO);
+    ShnPutU8(buf, &off, (shn_u8)mapIdx);
+    ShnPutU16(buf, &off, (shn_u16)phraseA);
+    ShnPutU16(buf, &off, SHNET_MEMO_NONE);
+    ShnPutU16(buf, &off, 0xFFFF);
+    ShnPutU16(buf, &off, 0xFFFF);
+    ShnPutU16(buf, &off, 0);
+    ShnPutS32(buf, &off, x);
+    ShnPutS32(buf, &off, 0);
+    ShnPutS32(buf, &off, z);
+    ShnPutS16(buf, &off, 0);
+    ShnPutU16(buf, &off, 0);
+    ShnPutStr(buf, &off, typed, SHNET_MEMO_TEXT_MAX);
+    ShnPutHeader(buf, SHNET_MSG_MEMO_PLACE, (shn_u16)(off - SHNET_HDR_SIZE), p->session);
+    PeerSend(p, buf, off);
+}
+
+static void PeerRate(Peer* p, shn_u32 memoId, int delta)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 8];
+    int    off = SHNET_HDR_SIZE;
+    ShnPutU32(buf, &off, memoId);
+    ShnPutU8(buf, &off, (shn_u8)(signed char)delta);
+    ShnPutU8(buf, &off, 0);
+    ShnPutU16(buf, &off, 0);
+    ShnPutHeader(buf, SHNET_MSG_MEMO_RATE, (shn_u16)(off - SHNET_HDR_SIZE), p->session);
+    PeerSend(p, buf, off);
+}
+
+static void PeerAdmin(Peer* p, int op, shn_u32 arg, unsigned long long proof)
+{
+    shn_u8 buf[SHNET_HDR_SIZE + 16];
+    int    off = SHNET_HDR_SIZE;
+    ShnPutU8(buf, &off, (shn_u8)op);
+    ShnPutU8(buf, &off, 0);
+    ShnPutU16(buf, &off, 0);
+    ShnPutU32(buf, &off, arg);
+    ShnPutU32(buf, &off, (shn_u32)(proof & 0xFFFFFFFFu));
+    ShnPutU32(buf, &off, (shn_u32)(proof >> 32));
+    ShnPutHeader(buf, SHNET_MSG_ADMIN, (shn_u16)(off - SHNET_HDR_SIZE), p->session);
+    PeerSend(p, buf, off);
+}
+
+/* 1 when a toast holding this text arrives in time. Others (someone joining)
+ * come on the same type, so the first one is not necessarily it. */
+static int PeerWaitEventText(Peer* p, const char* text, int ms)
+{
+    shn_u8       pay[SHNET_MAX_PAYLOAD];
+    const size_t want = strlen(text);
+    int          tries;
+    for (tries = 0; tries < 8; tries++)
+    {
+        const int n = PeerWait(p, SHNET_MSG_EVENT, ms, pay, sizeof(pay));
+        int       i;
+        if (n < 0)
+        {
+            return 0;
+        }
+        for (i = 0; i + (int)want <= n; i++)
+        {
+            if (!memcmp(pay + i, text, want))
+            {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* One entry of a list or a push as a client that sent SHNET_CAP_MEMO2 reads it. */
+typedef struct
+{
+    shn_u32 id;
+    int     kind, wordA, likes, dislikes, mine, entryLen, count;
+    char    text[SHNET_MEMO_TEXT_MAX];
+} MemoRead;
+
+/* The entry with this id out of a MEMO_LIST payload; 0 when it is not there. */
+static int MemoFind(const shn_u8* pay, int n, shn_u32 id, MemoRead* out)
+{
+    int o = 2, i, count;
+    memset(out, 0, sizeof(*out));
+    if (n < 8)
+    {
+        return 0;
+    }
+    count = (int)ShnGetU16(pay, &o);
+    out->count    = count;
+    out->entryLen = count > 0 ? (n - 8) / count : 0;
+    for (i = 0; i < count; i++)
+    {
+        int at = 8 + i * out->entryLen;
+        if (ShnGetU32(pay, &at) != id)
+        {
+            continue;
+        }
+        out->id = id;
+        at += 4;
+        out->kind = (int)ShnGetU8(pay, &at);
+        at += 1 + 2 + 2;
+        out->wordA = (int)ShnGetU16(pay, &at);
+        if (out->entryLen >= SHNET_MEMO_ENTRY_V2)
+        {
+            at = 8 + i * out->entryLen + SHNET_MEMO_ENTRY_NAMED;
+            out->likes    = (int)ShnGetU16(pay, &at);
+            out->dislikes = (int)ShnGetU16(pay, &at);
+            out->mine     = (int)(signed char)ShnGetU8(pay, &at);
+            at++;
+            ShnGetStr(pay, &at, SHNET_MEMO_TEXT_MAX, out->text, SHNET_MEMO_TEXT_MAX);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static void PeerQueryMemos(Peer* p, int mapIdx)
 {
     shn_u8 buf[SHNET_HDR_SIZE + 8];
@@ -412,9 +535,12 @@ static void PeerQueryMemos(Peer* p, int mapIdx)
 
 int main(int argc, char** argv)
 {
-    if (argc > 2 && !strcmp(argv[1], "--ws"))
+    /* --adminkey KEY: the running server's admin key (its console's "adminkey
+     * new" prints one), to try a removal that should succeed. */
+    while (argc > 2 && (!strcmp(argv[1], "--ws") || !strcmp(argv[1], "--adminkey")))
     {
-        g_wsPort = (unsigned short)atoi(argv[2]);
+        if (!strcmp(argv[1], "--ws")) g_wsPort = (unsigned short)atoi(argv[2]);
+        else                          snprintf(g_adminKey, sizeof(g_adminKey), "%s", argv[2]);
         argc -= 2;
         argv += 2;
     }
@@ -684,6 +810,108 @@ int main(int argc, char** argv)
         PeerPlace(&a, SHNET_MARK_DEATH, 5, 30 << 12, 0, 30 << 12, 0xFFFF, 0xFFFF);
         n = PeerWait(&a, SHNET_MSG_MEMO_ACK, 600, pay, sizeof(pay));
         CHECK(n < 0, "a second death at the same spot is collapsed into the first");
+    }
+
+    /* Three more players on one map: two that read the newer entries and one
+     * that plays a game from before them. All share this machine's address,
+     * which is what the server counts votes by, so one vote is all the three
+     * have between them. */
+    printf("\nmessages: typed words, likes, removal\n");
+    {
+        Peer     c, d, e;
+        MemoRead r;
+        char     typed[SHNET_MEMO_TEXT_MAX], want[SHNET_MEMO_TEXT_MAX];
+        shn_u32  id = 0;
+        int      o;
+
+        CHECK(SHNET_HDR_SIZE + 8 + SHNET_MEMO_V2_MAX * SHNET_MEMO_ENTRY_V2 <= SHNET_MTU && SHNET_MEMO_V2_MAX >= 8,
+              "a page of the newer entries fits a datagram (%d of %d bytes)", SHNET_MEMO_V2_MAX, SHNET_MEMO_ENTRY_V2);
+        CHECK(SHNET_MEMO_V2_MAX <= SHNET_MEMO_MAX, "and holds no more than an older reader accepts");
+
+        PeerOpen(&c, host, port, "TestTyper");
+        PeerOpen(&d, host, port, "TestReader");
+        PeerOpen(&e, host, port, "TestOldGame");
+        c.caps = d.caps = SHNET_CAP_MEMO2;
+        CHECK(PeerHello(&c) && PeerHello(&d) && PeerHello(&e), "three more players joined");
+        PeerState(&c, 6, 10 << 12, 0, 10 << 12, 0, SHNET_PF_ALIVE);
+        PeerState(&d, 6, 11 << 12, 0, 10 << 12, 0, SHNET_PF_ALIVE);
+        PeerState(&e, 6, 12 << 12, 0, 10 << 12, 0, SHNET_PF_ALIVE);
+        T_SLEEP(150);
+
+        PeerPlaceTyped(&c, 6, 10 << 12, 10 << 12, 3, "     ");
+        CHECK(PeerWait(&c, SHNET_MSG_MEMO_ACK, 600, pay, sizeof(pay)) < 0, "a typed word of nothing but spaces is refused");
+
+        /* The first word of the game's own filter, so that no slur is written here. */
+        snprintf(typed, sizeof(typed), "  the %s here ", s_shnetBadWords[0].word);
+        snprintf(want, sizeof(want), "the %s here", s_shnetBadWords[0].word);
+        ShNetChat_Censor(want);
+        PeerPlaceTyped(&c, 6, 10 << 12, 10 << 12, 3, typed);
+        n = PeerWait(&c, SHNET_MSG_MEMO_ACK, 1500, pay, sizeof(pay));
+        CHECK(n >= 8, "a message with a typed word is accepted");
+        if (n >= 8)
+        {
+            o  = 0;
+            id = ShnGetU32(pay, &o);
+        }
+
+        n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r), "a player standing on the map is shown it at once");
+        CHECK(r.entryLen == SHNET_MEMO_ENTRY_V2, "in the newer entry (%d bytes)", r.entryLen);
+        CHECK(r.wordA == SHNET_MEMO_NONE, "with no word index");
+        CHECK(!strcmp(r.text, want) && strchr(r.text, '*') != NULL,
+              "and the word trimmed and slur-masked by the server (\"%s\")", r.text);
+        CHECK(r.likes == 0 && r.dislikes == 0 && r.mine == 0, "it starts with no votes");
+
+        CHECK(PeerWait(&e, SHNET_MSG_MEMO_LIST, 500, pay, sizeof(pay)) < 0,
+              "a game from before typed words is not sent it");
+        PeerQueryMemos(&e, 6);
+        n = PeerWait(&e, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && !MemoFind(pay, n, id, &r), "nor finds it when it asks for the map");
+
+        PeerRate(&c, id, 1);
+        CHECK(PeerWait(&d, SHNET_MSG_MEMO_LIST, 500, pay, sizeof(pay)) < 0, "its author cannot like it");
+
+        PeerRate(&d, id, 1);
+        n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r) && r.likes == 1 && r.dislikes == 0 && r.mine == 1,
+              "a like comes back to the voter as the new total and as its own vote (%d for, %d against, own %d)",
+              r.likes, r.dislikes, r.mine);
+        n = PeerWait(&c, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r) && r.likes == 1, "and reaches the author standing there too");
+
+        PeerRate(&d, id, -1);
+        CHECK(PeerWait(&c, SHNET_MSG_MEMO_LIST, 500, pay, sizeof(pay)) < 0, "a second vote from the same address changes nothing");
+        PeerQueryMemos(&d, 6);
+        n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r) && r.likes == 1 && r.dislikes == 0, "the totals stand at one like");
+
+        PeerAdmin(&d, SHNET_ADMIN_REMOVE, id, 0x1122334455667788ULL);
+        CHECK(PeerWaitEventText(&d, "admin key", 1500), "a remove without the admin key is refused, and says so");
+        PeerQueryMemos(&d, 6);
+        n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+        CHECK(n > 0 && MemoFind(pay, n, id, &r), "and the message is still there");
+
+        if (g_adminKey[0])
+        {
+            PeerAdmin(&d, SHNET_ADMIN_REMOVE, id, ShnAdminProof(g_adminKey, d.session, d.playerId, SHNET_ADMIN_REMOVE, id));
+            n = PeerWait(&c, SHNET_MSG_MEMO_GONE, 1500, pay, sizeof(pay));
+            o = 0;
+            CHECK(n >= 8 && ShnGetU32(pay, &o) == id && pay[5] == SHNET_GONE_REMOVED,
+                  "with the key it is removed, and a player standing there is told it went");
+            CHECK(PeerWaitEventText(&d, "removed", 1500), "the admin is told it was done");
+            PeerQueryMemos(&d, 6);
+            n = PeerWait(&d, SHNET_MSG_MEMO_LIST, 1500, pay, sizeof(pay));
+            CHECK(n > 0 && !MemoFind(pay, n, id, &r), "and it is gone from the map");
+            PeerAdmin(&c, SHNET_ADMIN_REMOVE, id, ShnAdminProof(g_adminKey, d.session, d.playerId, SHNET_ADMIN_REMOVE, id));
+            CHECK(PeerWaitEventText(&c, "admin key", 1500), "one player's proof is no use to another");
+        }
+        else
+        {
+            printf("  (no --adminkey given: removal with the key not tried)\n");
+        }
+        PeerSimple(&c, SHNET_MSG_BYE);
+        PeerSimple(&d, SHNET_MSG_BYE);
+        PeerSimple(&e, SHNET_MSG_BYE);
     }
 
     printf("\nchat\n");

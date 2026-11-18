@@ -2,15 +2,21 @@
 /*
  * sh_net_memo.h - the messages players leave for each other.
  *
- * TEMPLATED, NOT TYPED. A memo is a phrase index plus a word index, and the
- * wire carries only those two numbers (sh_net_proto.h). Nobody can type
- * anything, so there is nothing to moderate, nothing to translate at runtime,
- * and a memo costs four bytes. It is the Dark Souls arrangement and it is the
- * right one for a game with no keyboard UI and no moderation team.
+ * A TEMPLATE WITH ONE WORD IN IT. A memo is a phrase index plus a word, and
+ * the word is either an index into the table or, on a server that takes them
+ * (SHNET_SF_MEMO2), up to SHNET_MEMO_TEXT_MAX typed characters. The phrase is
+ * always from the table, so a message stays a sentence about the place it was
+ * left in, and the one typed word is slur-masked by the game and again by the
+ * server (sh_net_chat_filter.h), which is the same moderation chat has.
  *
- * The tables live here rather than on the server for the same reason: the
- * server stores indices, so a client with a translated table shows the same
- * memo in another language without the server knowing anything about it.
+ * The tables live here rather than on the server: the server stores indices,
+ * so a client with a translated table shows the same memo in another language
+ * without the server knowing anything about it. A typed word is shown as it
+ * was typed.
+ *
+ * Messages do not last: seven days, and one more for each like (the server's
+ * rule, SHNET_MEMO_LIFE_S). Accept likes the one under the player's feet and
+ * cancel dislikes it.
  *
  * No GL in this file. The composer is a state machine the UI draws
  * (sh_net_ui.c) and the game thread drives.
@@ -90,6 +96,29 @@ int         ShNetMemo_ComposerCount(int col);
 void        ShNetMemo_ComposerSet(int col, int idx);
 void        ShNetMemo_ComposerStep(int col, int delta);
 void        ShNetMemo_ComposerPlace(void);
+/* Confirm on a column: the next one, the keyboard on "type your own", or the
+ * message left from the last. */
+void        ShNetMemo_ComposerAdvance(int col);
+
+/* The typed word. The word column lists it first when the server takes typed
+ * words: Base is then 1 and the column's entry n is table word n - 1, with
+ * entry 0 the typed one; 0 on a server from before them. */
+int         ShNetMemo_ComposerWordBase(void);
+const char* ShNetMemo_ComposerTyped(void);  /* as it stands, while typing too */
+int         ShNetMemo_ComposerTyping(void); /* the keyboard is up for it */
+void        ShNetMemo_ComposerType(void);
+
+/* ------------------------------------------------------------------ */
+/* Likes and dislikes                                                  */
+/* ------------------------------------------------------------------ */
+
+/* 1 when this player may still vote on that marker: someone else's message,
+ * not voted on yet, on a server that counts votes. */
+int ShNetMemo_Votable(const ShNetMemo* m);
+/* One frame's accept and cancel presses during play. A message underfoot that
+ * can be voted on takes one of them as a like or a dislike; returns 1 or 2
+ * for the press it used up, which the caller removes from the pad. */
+int ShNetMemo_VoteInput(int accept, int cancel);
 
 int         ShNetMemo_JustPlaced(void);
 void        ShNetMemo_Tick(void);
