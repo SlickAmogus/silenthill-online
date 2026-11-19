@@ -75,8 +75,13 @@ static s32 g_MainMenu_SelectedEntry     = MainMenuEntry_Start;
 /* The port adds a Multiplayer row and an Exit row, always available alongside
  * Option. Multiplayer must be in the base set: the "selected row went hidden"
  * reselect below runs before anything else could add it, and would push the
- * cursor off the row every frame. */
+ * cursor off the row every frame. No Exit row in the browser: exit() there
+ * halts the game inside a page that stays open, and the tab is closed instead. */
+#ifdef __EMSCRIPTEN__
+#define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Multiplayer) | (1 << MainMenuEntry_Option))
+#else
 #define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Multiplayer) |                                    (1 << MainMenuEntry_Option) | (1 << MainMenuEntry_Exit))
+#endif
 #else
 #define MAINMENU_BASE_ENTRY_FLAGS ((1 << MainMenuEntry_Start) | (1 << MainMenuEntry_Option))
 #endif

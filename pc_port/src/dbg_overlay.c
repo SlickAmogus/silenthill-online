@@ -2245,7 +2245,11 @@ void DbgOverlay_Update(void)
                     Pc_CoopMenu_Update(1, 0, 0, 0, 0, 0);
                 }
             } else if (g_GameWork.gameState == GameState_MainMenu) {
+                /* Not in the browser: exit() there halts the game inside a
+                 * page that stays open, and the tab is closed instead. */
+#ifndef __EMSCRIPTEN__
                 exit(0);
+#endif
             } else if (g_PcCoopGame) {
                 /* In a co-op GAME only, Escape must not warm-reset (leaving a
                  * shared world on a stray key is hostile; exit via the M menu).
