@@ -3,13 +3,12 @@
  * pc_coop_music.c - music for the multiplayer front end.
  *
  * The title screen is silent (the theme belongs to the opening movie), so
- * the multiplayer menu and a room being waited in play a BGM track, driven
- * the way a map drives its track (Bgm_Init's stop/load, then Bgm_Update
- * each frame with every layer up). The results-screen piece (track 5) by
- * default; the menu's Music row picks any of the game's tracks and keeps
- * the pick in config. Stopped the moment the menu closes or a game boots,
- * with the loaded-track index cleared so the map's own Bgm_Init loads its
- * track as usual.
+ * the multiplayer menu plays a BGM track, driven the way a map drives its
+ * track (Bgm_Init's stop/load, then Bgm_Update each frame with every layer
+ * up). The results-screen piece (track 5) by default; the menu's Music row
+ * picks any of the game's tracks and keeps the pick in config. Stopped the
+ * moment the menu closes or a game boots, with the loaded-track index cleared
+ * so the map's own Bgm_Init loads its track as usual.
  */
 #include "game.h"
 #include "bodyprog/bodyprog.h"
@@ -18,7 +17,6 @@
 #include "main/fsqueue.h"
 #include "pc_config.h"
 #include "pc_coop_menu.h"
-#include "sh_net_session.h"
 #include "sh_log.h"
 
 #define RESULTS_TRACK BgmTrackIdx_5
@@ -35,10 +33,13 @@ enum { LM_OFF = 0, LM_STOPPING, LM_PLAYING };
 
 static int s_step;
 
+/* Under the multiplayer menu and nowhere else. A room outlives the menu: its
+ * host can close the menu with the room still up, and a game that ends comes
+ * back to the title with the room still up and the menu shut. While the room
+ * counted too, the track played on over the plain title menu both times. */
 static int Music_Wanted(void)
 {
-    return g_GameWork.gameState == GameState_MainMenu &&
-           (Pc_CoopMenu_IsOpen() || ShSession_Active());
+    return g_GameWork.gameState == GameState_MainMenu && Pc_CoopMenu_IsOpen();
 }
 
 static void Music_Stop(const char* why)
