@@ -245,7 +245,13 @@ void ShSession_Init(void)
      * "join a friend" path is unavailable -- server rooms still work. */
     CoopUdp_Init();
 
-    s_enabled = ShSteam_Init((unsigned int)g_PcConfig.onlineSteamAppId);
+    /* Not in Player 2's window of a split: one Steam client per PC, and Steam
+     * hides the controllers from a second copy under the same app id while
+     * reading them through Steam there gets nothing (pc_split_proc.c). */
+    {
+        extern int Pc_Split_Role(void);
+        s_enabled = (Pc_Split_Role() == 2) ? 0 : ShSteam_Init((unsigned int)g_PcConfig.onlineSteamAppId);
+    }
     if (!s_enabled)
     {
         SDL_strlcpy(s_pub.status, "Steam unavailable (server co-op still works)",
