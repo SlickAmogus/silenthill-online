@@ -2615,6 +2615,10 @@ void MainLoop(void) // 0x80032EE0
                                                      (g_Controller0->clickedBtnFlags & cc->cancel) != 0);
                 if (used == 1) g_Controller0->clickedBtnFlags &= ~cc->enter;
                 if (used == 2) g_Controller0->clickedBtnFlags &= ~cc->cancel;
+                {
+                    extern void ShNetUi_VoteTouch(void);
+                    ShNetUi_VoteTouch();
+                }
             }
         }
 

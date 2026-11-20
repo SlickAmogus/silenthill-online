@@ -513,6 +513,12 @@ int ShNetMemo_VoteInput(int accept, int cancel)
     return accept ? 1 : 2;
 }
 
+unsigned int ShNetMemo_VoteButton(int like)
+{
+    const s_ControllerConfig* cc = &g_GameWorkPtr->config.controllerConfig;
+    return like ? cc->enter : cc->cancel;
+}
+
 /* Left/Right jumps a whole group in the word column. Sixty-odd words one at a
  * time is not a menu anyone will use twice. */
 static void ShNetMemo_WordGroupStep(int dir)
