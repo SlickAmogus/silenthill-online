@@ -56,6 +56,13 @@
 #include "pc_coop_menu.h"
 #include "pc_mouse_cursor.h"
 #include "pc_config.h"
+#include "pc_bind_panel.h" /* the vote prompt names the bound key or button */
+#if defined(__ANDROID__) || defined(SH_IOS) || defined(__EMSCRIPTEN__)
+#include "pc_touch.h"
+#define NU_TOUCH 1
+#else
+#define NU_TOUCH 0
+#endif
 #include "pc_discord.h" /* Pc_MapAreaName */
 #include "sh_log.h"
 
@@ -1555,6 +1562,92 @@ void ShNetUi_ComposerPointer(void)
 /* The marker under your feet                                          */
 /* ------------------------------------------------------------------ */
 
+/* Where the thumbs a finger can tap were drawn (viewport pixels, y down). */
+static struct
+{
+    int          valid;
+    unsigned int ms;
+    float        x[2], y, w[2], h;
+} s_vote;
+
+/* Touch votes with the thumbs beside the message; a pad or keyboard player
+ * reads which button does it. */
+static int Nu_TouchVoting(void)
+{
+#if NU_TOUCH
+    return Pc_Touch_UsedRecently();
+#else
+    return 0;
+#endif
+}
+
+/* The key or pad button for the game's accept or cancel, by the input used
+ * last, through the active control scheme's binds. "" when unbound. */
+static void Nu_VoteKey(int like, char* out, int cap)
+{
+    extern int         g_DebugThirdPersonCam;
+    extern int         PsyX_Pad_LastInputWasPad(void);
+    extern int         PsyX_Pad_ConnectedControllerType(void);
+    /* Accept is Start and Cross (or Circle), cancel up to three face buttons:
+     * name a face button, Cross first, then Circle, the two a player expects. */
+    static const unsigned short order[] = { 1u << 14, 1u << 13, 1u << 12, 1u << 15, 1u << 11,
+                                            1u << 10, 1u << 9,  1u << 8,  1u << 3,  1u << 0 };
+    const unsigned int btns = ShNetMemo_VoteButton(like);
+    const int          pad  = PsyX_Pad_LastInputWasPad();
+    unsigned short     bit  = 0;
+    const char*        b;
+    size_t             i;
+
+    for (i = 0; i < sizeof(order) / sizeof(order[0]) && !bit; i++)
+        if (btns & order[i])
+            bit = order[i];
+    b = PcConfig_BindName(bit, pad, g_DebugThirdPersonCam ? 1 : 0, 0);
+    if (!b[0])
+        out[0] = '\0';
+    else
+        snprintf(out, (size_t)cap, "%s", pad ? Pc_BindPanel_PadLabel(b, PsyX_Pad_ConnectedControllerType())
+                                             : Pc_BindPanel_KeyLabel(b));
+}
+
+static void Nu_VoteHint(char* out, int cap)
+{
+    char k[32], up[48], down[48];
+
+    Nu_VoteKey(1, k, (int)sizeof(k));
+    if (k[0]) snprintf(up, sizeof(up), "Like (%s)", k);
+    else      snprintf(up, sizeof(up), "Like");
+    Nu_VoteKey(0, k, (int)sizeof(k));
+    if (k[0]) snprintf(down, sizeof(down), "Dislike (%s)", k);
+    else      snprintf(down, sizeof(down), "Dislike");
+    snprintf(out, (size_t)cap, NU_UP " %s       " NU_DOWN " %s", up, down);
+}
+
+/* A finger lifted over a thumb drawn beside the message votes, the way accept
+ * and cancel do on a pad. From the game loop, next to the pad's vote. */
+void ShNetUi_VoteTouch(void)
+{
+#if NU_TOUCH
+    float nx, ny, mx, my;
+    int   x, y, i;
+
+    if (!s_vote.valid || SDL_GetTicks() - s_vote.ms > 250u)
+        return;
+    if (!Pc_MouseCursor_TouchReleased(&x, &y) || !Pc_MouseCursor_TouchViewportPos(&nx, &ny))
+        return;
+    mx = nx * s_vpW;
+    my = ny * s_vpH;
+    for (i = 0; i < 2; i++)
+    {
+        if (mx >= s_vote.x[i] && mx < s_vote.x[i] + s_vote.w[i] && my >= s_vote.y && my < s_vote.y + s_vote.h)
+        {
+            ShNetMemo_VoteInput(i == 0, i == 1);
+            s_vote.valid = 0;
+            return;
+        }
+    }
+#endif
+}
+
 static void Nu_DrawNearbyMemo(int px)
 {
     const int        idx = ShNetMemo_NearestReadable();
@@ -1562,10 +1655,18 @@ static void Nu_DrawNearbyMemo(int px)
     char             text[128];
     char             sub[128];
     const char*      hint = "";
+    char             hintBuf[128];
+    int              thumbs = 0; /* touch: tappable thumbs in place of the hint line */
     int              big = (int)((float)px * 1.4f);
     const int        small = (int)((float)px * 0.9f);
+    const float      tsz = (float)small * 2.2f; /* a thumb a fingertip finds */
+    const float      tgap = (float)small * 0.4f;
+    const float      tw0 = tsz + tgap + Nu_TextWidth("Like", small);
+    const float      tw1 = tsz + tgap + Nu_TextWidth("Dislike", small);
+    const float      tspan = tw0 + (float)small * 3.0f + tw1;
     float            y;
 
+    s_vote.valid = 0;
     if (idx < 0)
     {
         return;
@@ -1588,7 +1689,16 @@ static void Nu_DrawNearbyMemo(int px)
                      (int)m->likes, (int)m->dislikes);
         else
             snprintf(sub, sizeof(sub), "- %s   (%+d)", m->owner[0] ? m->owner : "someone", (int)m->rating);
-        if (ShNetMemo_Votable(m))  hint = "Accept: " NU_UP "       Cancel: " NU_DOWN;
+        if (ShNetMemo_Votable(m))
+        {
+            if (Nu_TouchVoting())
+                thumbs = 1;
+            else
+            {
+                Nu_VoteHint(hintBuf, (int)sizeof(hintBuf));
+                hint = hintBuf;
+            }
+        }
         else if (m->mine > 0)      hint = "Your vote: " NU_UP;
         else if (m->mine < 0)      hint = "Your vote: " NU_DOWN;
     }
@@ -1612,9 +1722,11 @@ static void Nu_DrawNearbyMemo(int px)
         hw = Nu_MixedLine(hint, 0.0f, 0.0f, small, 0.0f, 0.0f, 0.0f, 0);
         bw = tw > sw ? tw : sw;
         if (hw > bw) bw = hw;
+        if (thumbs && tspan > bw) bw = tspan;
         bx = (s_vpW - bw) * 0.5f - (float)px;
         Nu_Panel(bx, y - (float)px * 0.5f, bw + (float)px * 2.0f,
-                 (float)big * 2.6f + (float)small * 0.3f + (hint[0] ? (float)small * 1.8f : 0.0f), 0.85f);
+                 (float)big * 2.6f + (float)small * 0.3f +
+                     (thumbs ? tsz + (float)small * 0.8f : hint[0] ? (float)small * 1.8f : 0.0f), 0.85f);
     }
 
     {
@@ -1633,6 +1745,30 @@ static void Nu_DrawNearbyMemo(int px)
     {
         Nu_DrawMixedCentered(hint, s_vpW * 0.5f, y + (float)big * 1.3f + (float)small * 1.8f, small,
                              0.62f, 0.60f, 0.48f);
+    }
+    if (thumbs)
+    {
+        const float top = y + (float)big * 1.3f + (float)small * 1.6f;
+        const float x0  = s_vpW * 0.5f - tspan * 0.5f;
+        const float x1  = x0 + tw0 + (float)small * 3.0f;
+        const float ty  = top + (tsz - (float)small) * 0.5f;
+
+        if (Nu_EmojiReady())
+        {
+            Nu_DrawEmoji(SHNET_EMOJI_THUMBS_UP, x0, top, tsz, 1.0f);
+            Nu_DrawEmoji(SHNET_EMOJI_THUMBS_DOWN, x1, top, tsz, 1.0f);
+        }
+        Nu_DrawText("Like", x0 + tsz + tgap, ty, small, 0.62f, 0.60f, 0.48f, 1.0f);
+        Nu_DrawText("Dislike", x1 + tsz + tgap, ty, small, 0.62f, 0.60f, 0.48f, 1.0f);
+        /* Half a line of slack round each, for a fingertip. */
+        s_vote.x[0]  = x0 - (float)small * 0.5f;
+        s_vote.w[0]  = tw0 + (float)small;
+        s_vote.x[1]  = x1 - (float)small * 0.5f;
+        s_vote.w[1]  = tw1 + (float)small;
+        s_vote.y     = top - (float)small * 0.5f;
+        s_vote.h     = tsz + (float)small;
+        s_vote.ms    = SDL_GetTicks();
+        s_vote.valid = 1;
     }
 }
 

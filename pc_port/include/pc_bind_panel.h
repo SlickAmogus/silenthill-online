@@ -36,4 +36,9 @@ int  Pc_BindPanel_Update(void);
 
 void Pc_BindPanel_Draw(void);
 
+/* A bind name (config value) as printed on the keyboard / on a pad of SDL
+ * controller type padType. Valid until the next call. */
+const char* Pc_BindPanel_KeyLabel(const char* bind);
+const char* Pc_BindPanel_PadLabel(const char* bind, int padType);
+
 #endif /* PC_BIND_PANEL_H */
