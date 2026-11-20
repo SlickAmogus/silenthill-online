@@ -526,13 +526,13 @@ public partial class Form1 : Form
     /// show the identified serial/region in lblDisc; warn only when no
     /// recognizable .bin exists at all. Any filename is accepted — discs are
     /// identified by their ISO boot serial exactly like the game does. Gated
-    /// on SilentHillPC.exe being present so dev runs from bin\Release don't
+    /// on the game exe being present so dev runs from bin\Release don't
     /// nag or scaffold stray folders.
     /// </summary>
     private void CheckDiscImage()
     {
         string dir = AppDomain.CurrentDomain.BaseDirectory;
-        if (!File.Exists(Path.Combine(dir, "SilentHillPC.exe"))) return;
+        if (!GamePaths.HasGameExe(dir)) return;
 
         string gamedata = Path.Combine(dir, "gamedata");
         try { if (!Directory.Exists(gamedata)) Directory.CreateDirectory(gamedata); }
@@ -1167,7 +1167,7 @@ public partial class Form1 : Form
     }
 
     /// <summary>
-    /// If config.cfg is missing, regenerate it from the embedded copy of
+    /// If the config is missing, regenerate it from the embedded copy of
     /// pc_port/config.cfg (linked into the project as an EmbeddedResource,
     /// so it is always the current detailed template with full comments).
     /// </summary>
@@ -1315,7 +1315,7 @@ public partial class Form1 : Form
 
     private void LoadConfig()
     {
-        string cfgPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.cfg");
+        string cfgPath = GamePaths.ConfigPath(GamePaths.Dir);
         EnsureConfigExists(cfgPath);
         config = new ConfigManager(cfgPath);
 
@@ -1947,11 +1947,11 @@ public partial class Form1 : Form
         SaveConfig();
         WarnIfResidentTexturesOff();
 
-        string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SilentHillPC.exe");
+        string exePath = GamePaths.GameExePath(GamePaths.Dir);
 
         if (!File.Exists(exePath))
         {
-            MessageBox.Show(Loc.T("SilentHillPC.exe not found."));
+            MessageBox.Show(Loc.T("SilentHillOnline.exe not found."));
             return;
         }
         if (!await UpdateBeforePlayAsync()) return;
@@ -2005,7 +2005,7 @@ public partial class Form1 : Form
         }
         catch (Exception ex)
         {
-            MessageBox.Show(Loc.F("Failed to launch SilentHillPC.exe: {0}", ex.Message));
+            MessageBox.Show(Loc.F("Failed to launch SilentHillOnline.exe: {0}", ex.Message));
             return;
         }
 
@@ -2209,7 +2209,7 @@ public partial class Form1 : Form
                 else { sb.AppendLine("  • " + Loc.F("... and {0} more", others.Count - 10)); break; }
             }
             sb.AppendLine();
-            bool hasExisting = File.Exists(Path.Combine(installDir, "SilentHillPC.exe"));
+            bool hasExisting = GamePaths.HasGameExe(installDir);
             string promptTitle;
             MessageBoxIcon promptIcon;
             if (hasExisting)
@@ -3010,7 +3010,7 @@ public partial class Form1 : Form
         if (result != DialogResult.Yes)
             return;
 
-        string cfgPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.cfg");
+        string cfgPath = GamePaths.ConfigPath(GamePaths.Dir);
         try
         {
             var asm = System.Reflection.Assembly.GetExecutingAssembly();

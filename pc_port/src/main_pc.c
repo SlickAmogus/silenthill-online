@@ -836,7 +836,7 @@ static void Sh_LogSessionHeader(void)
     }
     /* The user's actual settings, verbatim. Costs one pass over a small
      * file at boot and removes the guesswork from every bug report. */
-    PcConfig_LogEffective("config.cfg");
+    PcConfig_LogEffective(PC_CONFIG_FILE);
     /* One-line render-config fingerprint: these are the axes every remote
      * corruption report gets bisected on — stop having to ask for the cfg. */
     SH_DBG("[CONFIG] flashlight_mode=%d use_pgxp=%d resident_textures=%d global_chara_pool=%d",
@@ -917,8 +917,9 @@ int main(int argc, char* argv[])
     ParseArgs(argc, argv);
 
     /* Load config file */
-    PcConfig_Load("config.cfg");
-    PcAudioConfig_Load("config.cfg");
+    PcConfig_AdoptLegacy();
+    PcConfig_Load(PC_CONFIG_FILE);
+    PcAudioConfig_Load(PC_CONFIG_FILE);
     Pc_Split_AfterConfigLoad(); /* Player 2's window: its half of the screen, no intros, no Steam, read-only config */
 
     /* The relaunch after a lost Vulkan/D3D11 device passes "-renderer gl";

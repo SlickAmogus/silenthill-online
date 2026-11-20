@@ -450,11 +450,11 @@ void Pc_CharaGlobal_Open(void)
     /* Own handle, never closed: MapOverlay_Load's single-slot handle would
      * FreeLibrary it on the next transition, killing live fn ptrs. */
 #if defined(_WIN32)
-    dll = DllLoader_Open("maps/chara_global.dll");
+    dll = DllLoader_Open("maps_online/chara_global.dll");
 #elif defined(__APPLE__)
-    dll = DllLoader_Open("maps/chara_global.dylib");
+    dll = DllLoader_Open("maps_online/chara_global.dylib");
 #else
-    dll = DllLoader_Open("maps/chara_global.so");
+    dll = DllLoader_Open("maps_online/chara_global.so");
 #endif
     if (dll == NULL)
     {

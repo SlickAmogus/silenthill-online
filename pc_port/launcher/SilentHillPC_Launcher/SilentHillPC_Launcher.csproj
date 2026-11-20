@@ -7,7 +7,7 @@
     <ProjectGuid>{E4F67033-83AF-4DAE-9DCE-5CC62E6B1F6D}</ProjectGuid>
     <OutputType>WinExe</OutputType>
     <RootNamespace>SilentHillPC_Launcher</RootNamespace>
-    <AssemblyName>SilentHillPC_Launcher</AssemblyName>
+    <AssemblyName>SilentHillOnline_Launcher</AssemblyName>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
@@ -77,6 +77,7 @@
     <Compile Include="OnlineForm.cs" />
     <Compile Include="DiscProbe.cs" />
     <Compile Include="FfmpegCheck.cs" />
+    <Compile Include="GamePaths.cs" />
     <Compile Include="BinExtractor.cs" />
     <Compile Include="TimConverter.cs" />
     <Compile Include="ClutComposer.cs" />

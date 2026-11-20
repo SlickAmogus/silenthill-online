@@ -94,15 +94,17 @@ jobs:
           set -euo pipefail
           STAGE="$(cygpath -u "$RUNNER_TEMP")/SHOnline-windows-x64"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/maps"
-          cp pc_port/build/SilentHillPC.exe "$STAGE/"
-          cp pc_port/build/maps/*.dll       "$STAGE/maps/"
-          cp pc_port/config.cfg             "$STAGE/config.cfg"
-          cp -r pc_port/assets/.            "$STAGE/"
-          cp pc_port/launcher/SilentHillPC_Launcher/bin/Release/SilentHillPC_Launcher.exe "$STAGE/"
+          # Online names, so the build can share a folder with the single-player one
+          # (SilentHillPC.exe, maps/, config.cfg, SilentHillPC_Launcher.exe).
+          mkdir -p "$STAGE/maps_online"
+          cp pc_port/build/SilentHillOnline.exe "$STAGE/"
+          cp pc_port/build/maps_online/*.dll    "$STAGE/maps_online/"
+          cp pc_port/config.cfg                 "$STAGE/onlineconfig.cfg"
+          cp -r pc_port/assets/.                "$STAGE/"
+          cp pc_port/launcher/SilentHillPC_Launcher/bin/Release/SilentHillOnline_Launcher.exe "$STAGE/"
           # The exe and map DLLs link against this toolchain's runtime, so ship
           # the MinGW-prefix DLLs they import (recursively), never another build's.
-          queue=("$STAGE/SilentHillPC.exe" "$STAGE"/maps/*.dll)
+          queue=("$STAGE/SilentHillOnline.exe" "$STAGE"/maps_online/*.dll)
           while [ ${#queue[@]} -gt 0 ]; do
             pe="${queue[0]}"; queue=("${queue[@]:1}")
             for dll in $(objdump -p "$pe" | sed -n 's/^\s*DLL Name: //p'); do
@@ -123,7 +125,7 @@ jobs:
       - name: Record the launcher version
         shell: pwsh
         run: |
-          $v = (Get-Item pc_port/launcher/SilentHillPC_Launcher/bin/Release/SilentHillPC_Launcher.exe).VersionInfo.FileVersion
+          $v = (Get-Item pc_port/launcher/SilentHillPC_Launcher/bin/Release/SilentHillOnline_Launcher.exe).VersionInfo.FileVersion
           Set-Content -NoNewline -Encoding ascii -Path "$env:RUNNER_TEMP/SHOnline-windows-x64/launcher_version.txt" -Value $v
           "Launcher $v"
 

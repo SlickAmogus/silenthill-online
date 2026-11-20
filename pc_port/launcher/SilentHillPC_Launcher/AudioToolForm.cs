@@ -57,7 +57,7 @@ namespace SilentHillPC_Launcher
 
         private static string ConfigPath
         {
-            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.cfg"); }
+            get { return GamePaths.ConfigPath(GamePaths.Dir); }
         }
 
         /// <summary>The clean SND/ folder the user picked earlier, if it still holds banks.</summary>

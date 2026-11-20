@@ -43,7 +43,12 @@ import zipfile
 
 INDEX_NAME = "realtime.json"
 CHANGELOG_NAME = "CHANGELOG_REALTIME.md"
-LAUNCHER_NAME = "SilentHillPC_Launcher.exe"
+LAUNCHER_NAME = "SilentHillOnline_Launcher.exe"
+GAME_EXE = "SilentHillOnline.exe"
+# The default config is in the zip for a fresh install, but never in the manifest:
+# a launcher from before the rename installs every listed file it lacks, and the
+# game's first run would then find this one and not copy the player's config.cfg.
+CONFIG_NAME = "onlineconfig.cfg"
 # Newest-only builds other workflows replace in place (build-linux/-macos on
 # pc-port, build-ios on ios-port, build-android on android-port). Never pruned.
 # Newest-only builds the mobile workflows replace in place (online-ios.yml on
@@ -59,13 +64,18 @@ LAUNCHER_VERSION_FILE = "launcher_version.txt"
 # Folders the game expects that hold no shipped files.
 EMPTY_DIRS = ["gamedata/save/", "gamedata/coopsaves/"]
 
-# Never carried: the single-player changelog and config.cfg (it comes from source).
-CARRY_EXCLUDE = {"CHANGELOG.md", "config.cfg", LAUNCHER_NAME}
+# Never carried: the single-player changelog, config, exe, launcher and map DLLs
+# (online builds its own, under its own names; carrying them would put the
+# single-player game into the online zip).
+CARRY_EXCLUDE = {"CHANGELOG.md", "config.cfg", CONFIG_NAME, LAUNCHER_NAME,
+                 "SilentHillPC.exe", "SilentHillPC_Launcher.exe"}
+CARRY_EXCLUDE_DIRS = ("maps/", "maps_online/")
 
 RELEASE_NOTES = """Silent Hill Online, built automatically from every push. Older builds are under [Realtime history]({history_url}).
 
 **Newest build: {version}** (`{commit}`, {date} UTC)
-- Windows: [{zip_name}]({zip_url}): unzip into a folder and run `SilentHillPC_Launcher.exe`. Put your `Silent Hill (USA).bin` in `gamedata/`.
+- Windows: [{zip_name}]({zip_url}): unzip into a folder and run `SilentHillOnline_Launcher.exe`. Put your `Silent Hill (USA).bin` in `gamedata/`. It can share a folder with the single-player build.
+- Coming from an older online build: after this update, start `SilentHillOnline_Launcher.exe` instead of `SilentHillPC_Launcher.exe`. Your settings carry over to `onlineconfig.cfg`. The old `SilentHillPC.exe`, `SilentHillPC_Launcher.exe` and `maps/` can then be deleted, unless the single-player build uses that folder too.
 - Android: `SilentHillOnline-android.apk` (newest `android` build). The app offers each new build itself.
 - iOS: `SilentHillOnline-ios-unsigned.ipa` (newest `ios` build). Sideload it with Sideloadly, or add `altstore-source.json` from this release to AltStore or SideStore to be offered every new build.
 - Browser: https://sh1pc.com/playonline/
@@ -169,7 +179,8 @@ def carry_files(nightly, staged_paths, out_dir):
         raise RuntimeError(f"{tag} has no version.json")
     manifest = json.loads(http_get(vurl))
     wanted = [f for f in manifest.get("files", [])
-              if f["path"] not in staged_paths and f["path"] not in CARRY_EXCLUDE]
+              if f["path"] not in staged_paths and f["path"] not in CARRY_EXCLUDE
+              and not f["path"].startswith(CARRY_EXCLUDE_DIRS)]
     log(f"Carry: {len(wanted)} file(s) from {tag} ({manifest.get('mode') or 'loose'} release)")
 
     local = {}
@@ -294,8 +305,8 @@ def main():
         for name in names:
             full = os.path.join(root, name)
             files[os.path.relpath(full, a.stage).replace(os.sep, "/")] = full
-    if "SilentHillPC.exe" not in files:
-        raise RuntimeError(f"SilentHillPC.exe missing from {a.stage}")
+    if GAME_EXE not in files:
+        raise RuntimeError(f"{GAME_EXE} missing from {a.stage}")
     files.pop(CHANGELOG_NAME, None)
 
     lv_path = files.pop(LAUNCHER_VERSION_FILE, None)
@@ -346,7 +357,7 @@ def main():
         "zip_name": zip_name,
         "zip_url": base_url + zip_name,
         "launcher_version": launcher_version,
-        "files": [{"path": p, "sha256": sha256_of(files[p])} for p in sorted(files)],
+        "files": [{"path": p, "sha256": sha256_of(files[p])} for p in sorted(files) if p != CONFIG_NAME],
     }
     index["builds"] = ([build] + index["builds"])[:a.keep]
     index["carry_source"] = carry_source

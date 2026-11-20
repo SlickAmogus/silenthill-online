@@ -238,9 +238,9 @@ function(add_map_overlay MAP_NAME MAP_DEFINE)
     if(NOT SH_STATIC_MAPS)
     set_target_properties(${MAP_NAME} PROPERTIES
         PREFIX ""                        # No "lib" prefix
-        OUTPUT_NAME "${MAP_NAME}"        # maps/map0_s01.dll | maps/map0_s01.so
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/maps"
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/maps"
+        OUTPUT_NAME "${MAP_NAME}"        # maps_online/map0_s01.dll | maps_online/map0_s01.so
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/maps_online"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/maps_online"
     )
     endif()
     if(WIN32 AND NOT SH_STATIC_MAPS)

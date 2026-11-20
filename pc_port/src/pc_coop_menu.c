@@ -1142,7 +1142,7 @@ static void Coop_StartSplit(void)
     }
     if (s_splitOnline == COOP_SPLIT_SERVER && !g_PcConfig.onlineServer[0])
     {
-        snprintf(s_msg, sizeof(s_msg), "No server is configured (online_server in config.cfg).");
+        snprintf(s_msg, sizeof(s_msg), "No server is configured (online_server in onlineconfig.cfg).");
         return;
     }
     SH_DBG("[COOP] split screen: pad %d, character %d, layout %d, p2 audio %d, online %d",

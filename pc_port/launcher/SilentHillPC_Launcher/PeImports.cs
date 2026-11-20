@@ -42,7 +42,7 @@ namespace SilentHillPC_Launcher
         // given build links, keeping it version-proof.
         static readonly string[] Baseline =
         {
-            "silenthillpc.exe", "kernel32.dll", "msvcrt.dll", "ucrtbase.dll",
+            "silenthillpc.exe", "silenthillonline.exe", "kernel32.dll", "msvcrt.dll", "ucrtbase.dll",
             "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libssp-0.dll",
             "libstdc++-6.dll",
             // The port's actual direct dependency set (objdump of the exe):

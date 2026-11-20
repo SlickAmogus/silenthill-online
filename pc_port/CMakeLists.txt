@@ -285,6 +285,12 @@ add_executable(SilentHillPC
 if(NOT SH_STATIC_MAPS)
 set_target_properties(SilentHillPC PROPERTIES ENABLE_EXPORTS ON)
 endif()
+# The online build's own names, so it can share a folder with the single-player
+# build (SilentHillPC.exe, maps/, config.cfg): SilentHillOnline.exe, its map DLLs
+# in maps_online/ (they import the exe by this name), onlineconfig.cfg.
+if(WIN32)
+    set_target_properties(SilentHillPC PROPERTIES OUTPUT_NAME SilentHillOnline)
+endif()
 if(MINGW)
     if(NOT SH_STATIC_MAPS)
         target_link_options(SilentHillPC PRIVATE "-Wl,--export-all-symbols")

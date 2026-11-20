@@ -189,7 +189,7 @@ namespace SilentHillPC_Launcher
 
         private static readonly string[] s_containerPatterns = { "*.mp4", "*.mkv", "*.webm", "*.mov" };
 
-        private const string GameExeName   = "SilentHillPC.exe";
+        private const string GameExeName   = GamePaths.GameExe;
         private const string BackupDirName = "ffmpeg-backup";
 
         // BtbN publishes explicit win64 + lgpl + shared archives pinned to a release
