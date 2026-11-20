@@ -124,6 +124,8 @@ int ShNetMemo_Votable(const ShNetMemo* m);
  * can be voted on takes one of them as a like or a dislike; returns 1 or 2
  * for the press it used up, which the caller removes from the pad. */
 int ShNetMemo_VoteInput(int accept, int cancel);
+/* The pad bits that vote: the game's accept (like = 1) or cancel (like = 0). */
+unsigned int ShNetMemo_VoteButton(int like);
 
 int         ShNetMemo_JustPlaced(void);
 void        ShNetMemo_Tick(void);

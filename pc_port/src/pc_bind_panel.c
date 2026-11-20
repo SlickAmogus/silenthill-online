@@ -1073,3 +1073,15 @@ restore:
     glBindVertexArray((GLuint)prevVao);
     glBindBuffer(GL_ARRAY_BUFFER, (GLuint)prevBuf);
 }
+
+/* A bind as printed on the keyboard or on the connected pad, for prompts
+ * outside this panel (the online message votes). */
+const char* Pc_BindPanel_KeyLabel(const char* bind)
+{
+    return bp_pretty_key(bind);
+}
+
+const char* Pc_BindPanel_PadLabel(const char* bind, int padType)
+{
+    return bp_pretty_pad(bind, padType);
+}
