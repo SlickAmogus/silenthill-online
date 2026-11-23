@@ -1684,7 +1684,12 @@ void DbgOverlay_Update(void)
      * command would fire whatever its letters are bound to. */
     {
         extern int g_PcQuickOptionsActive;
-        if (!s_console_open && !g_PcQuickOptionsActive && !textWasOpen)
+        /* Not under the screens that bind keys: the key being tried there
+         * would run whatever it is already bound to. */
+        extern int Pc_BindPanel_IsOpen(void);
+        extern int Pc_ControlsScreen_IsOpen(void);
+        if (!s_console_open && !g_PcQuickOptionsActive && !textWasOpen && !Pc_BindPanel_IsOpen() &&
+            !Pc_ControlsScreen_IsOpen())
             PcBinds_Update(ks);
     }
 

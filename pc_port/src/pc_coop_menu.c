@@ -792,7 +792,7 @@ static int Coop_OnlineInOurGame(unsigned int id)
     for (i = 0; i < n; i++)
     {
         const ShSessionMember* m = ShSession_Member(i);
-        if (m && (unsigned int)m->steamId == id) return 1;
+        if (m && ShSession_WorldIdOf(m) == id) return 1;
     }
     return 0;
 }
@@ -1142,7 +1142,7 @@ static void Coop_StartSplit(void)
     }
     if (s_splitOnline == COOP_SPLIT_SERVER && !g_PcConfig.onlineServer[0])
     {
-        snprintf(s_msg, sizeof(s_msg), "No server is configured (online_server in config.cfg).");
+        snprintf(s_msg, sizeof(s_msg), "No server is configured (online_server in onlineconfig.cfg).");
         return;
     }
     SH_DBG("[COOP] split screen: pad %d, character %d, layout %d, p2 audio %d, online %d",
@@ -2379,6 +2379,28 @@ static int Coop_Adjust(int dir)
     default:
         return 0;
     }
+}
+
+/* Title screen, every frame. Becoming a guest by any route lands on the lobby
+ * page: an invite accepted in the Steam overlay joins the lobby whatever page
+ * the menu is on, or with the menu shut, and the only pages that used to
+ * follow the session were the two Join ones, so the guest sat on a menu that
+ * said nothing about the room they were now in. */
+void Pc_CoopMenu_FollowSession(void)
+{
+    static int s_wasGuest;
+    const int  guest = ShSession_Active() && !ShSession_IsHost();
+
+    if (guest && !s_wasGuest)
+    {
+        if (!s_open)
+        {
+            Pc_CoopMenu_Open();
+        }
+        s_page = COOP_PAGE_HOST;
+        s_sel  = 0;
+    }
+    s_wasGuest = guest;
 }
 
 void Pc_CoopMenu_Update(int cancel, int up, int down, int confirm, int left, int right)

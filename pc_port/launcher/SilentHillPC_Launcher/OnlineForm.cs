@@ -519,14 +519,14 @@ namespace SilentHillPC_Launcher
 
         /// <summary>
         /// The build id the game sends: the first 23 hex characters of the
-        /// SHA-256 of SilentHillPC.exe, so a server with a build allow-list
+        /// SHA-256 of the game exe, so a server with a build allow-list
         /// treats the test like the game itself.
         /// </summary>
         private static string BuildId()
         {
             try
             {
-                string exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SilentHillPC.exe");
+                string exe = GamePaths.GameExePath(GamePaths.Dir);
                 if (!File.Exists(exe)) return "launcher";
                 using (var sha = SHA256.Create())
                 using (var f = File.OpenRead(exe))

@@ -17,7 +17,8 @@
 
 static char s_errorBuf[256] = {0};
 
-/* True only for a mod DLL under maps/ -- the sole channel the security audit
+/* True only for a mod DLL under maps/ or maps_online/ (the online build's) -- the
+ * sole channel the security audit
  * screens. The game also opens first-party bundled runtime DLLs through here
  * (FFmpeg: avformat/avcodec/... by bare name from the exe dir), which
  * legitimately import system/networking libraries the game itself does not;
@@ -31,7 +32,8 @@ static int DllLoader_IsModPath(const char* path)
     {
         if ((p[0] | 0x20) == 'm' && (p[1] | 0x20) == 'a' &&
             (p[2] | 0x20) == 'p' && (p[3] | 0x20) == 's' &&
-            (p[4] == '/' || p[4] == '\\'))
+            (p[4] == '/' || p[4] == '\\' ||
+             (strncmp(p + 4, "_online", 7) == 0 && (p[11] == '/' || p[11] == '\\'))))
         {
             return 1;
         }

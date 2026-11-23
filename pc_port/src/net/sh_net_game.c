@@ -327,6 +327,37 @@ static int ShNetG_ShareableCount(int id, int cnt)
 
 static unsigned short s_snap[256]; /* per-id totals last frame */
 static int            s_snapInit;
+/* Area maps are flags in the save, not inventory items, so the item share
+ * above never saw them: whoever picked a map up was the only one with it. */
+static unsigned int   s_mapSnap;
+static unsigned int   s_mapSentMs;
+
+static void ShNetG_SendMaps(unsigned int flags)
+{
+    unsigned char b[5];
+
+    b[0] = SHNET_CTRL_MAPS;
+    b[1] = (unsigned char)flags;
+    b[2] = (unsigned char)(flags >> 8);
+    b[3] = (unsigned char)(flags >> 16);
+    b[4] = (unsigned char)(flags >> 24);
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 5, 0, 1);
+    s_mapSentMs = SDL_GetTicks();
+}
+
+static void ShNetG_MapsIn(unsigned int flags)
+{
+    unsigned int gained = flags & ~(unsigned int)g_SavegamePtr->paperMapFlags;
+
+    if (gained == 0)
+    {
+        return;
+    }
+    g_SavegamePtr->paperMapFlags |= (s32)gained;
+    /* Kept in step so the gain is not read as our own pickup and sent back. */
+    s_mapSnap |= gained;
+    SH_DBG("[COOP] a partner picked up a map (flags 0x%08X); ours now too", gained);
+}
 
 /* Keys, puzzle pieces and the like: one playthrough's set, so using one up
  * uses up everyone's copy. Health, ammo and weapons stay each player's own. */
@@ -431,6 +462,23 @@ static void ShNetG_SyncItems(void)
                 SH_DBG("[COOP] used key item %d; telling the others", i);
             }
         }
+    }
+    {
+        unsigned int maps = (unsigned int)g_SavegamePtr->paperMapFlags;
+
+        if (s_snapInit && (maps & ~s_mapSnap) != 0)
+        {
+            SH_DBG("[COOP] picked up a map (flags 0x%08X); sharing it", maps & ~s_mapSnap);
+            ShNetG_SendMaps(maps);
+        }
+        /* Everything held, again every ten seconds: a player who joined after
+         * the pickup, or whose copy of the host's save never arrived, catches
+         * up without anyone picking a map up twice. */
+        else if (maps != 0 && SDL_GetTicks() - s_mapSentMs >= 10000u)
+        {
+            ShNetG_SendMaps(maps);
+        }
+        s_mapSnap = maps;
     }
     memcpy(s_snap, cur, sizeof(s_snap));
     s_snapInit = 1;
@@ -1145,6 +1193,10 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
             if (len < 3) return;
             ShNetG_ItemUsedIn(p[1], p[2]);
             break;
+        case SHNET_CTRL_MAPS:
+            if (len < 5) return;
+            ShNetG_MapsIn((unsigned int)p[1] | ((unsigned int)p[2] << 8) | ((unsigned int)p[3] << 16) | ((unsigned int)p[4] << 24));
+            break;
         case SHNET_CTRL_RESTART:
             if (!fromHost || ShSession_IsHost() || len < 4 + (int)sizeof(s_Savegame)) return;
             {
@@ -1600,6 +1652,8 @@ void ShNet_OnMapChanged(int mapIdx)
      * boots (or re-boots) into the same area. Only the host dictates the world. */
     {
         extern int g_PcCoopGame;
+        SH_DBG("[COOP] now on map %d (co-op game %d, session %d, host %d)", mapIdx, g_PcCoopGame, ShSession_Active(),
+               ShSession_IsHost());
         if (g_PcCoopGame && ShSession_IsHost())
         {
             ShSession_RequestWorld(mapIdx);

@@ -27,12 +27,13 @@ namespace SilentHillPC_Launcher
     ///
     /// The launcher will replace its OWN exe, but ONLY when the incoming build's
     /// launcher_version is strictly newer than the running one (so pinning an old
-    /// build never downgrades the launcher). config.cfg and gamedata/save are
+    /// build never downgrades the launcher). The config (onlineconfig.cfg, and
+    /// config.cfg, which older online builds used) and gamedata/save are
     /// treated as user data: never counted as updates, never overwritten.
     /// </summary>
     public static class UpdateChecker
     {
-        public const string LauncherFileName = "SilentHillPC_Launcher.exe";
+        public const string LauncherFileName = "SilentHillOnline_Launcher.exe";
 
         // Cross-platform release assets (release-nightly.ps1's Add-CrossPlatformAssets
         // attaches these under fixed names to every release, when available). They
@@ -877,7 +878,8 @@ namespace SilentHillPC_Launcher
         private static bool IsUserDataPath(string relPath)
         {
             var p = (relPath ?? "").Replace('\\', '/');
-            return p.Equals("config.cfg", StringComparison.OrdinalIgnoreCase)
+            return p.Equals(GamePaths.ConfigFile, StringComparison.OrdinalIgnoreCase)
+                || p.Equals(GamePaths.LegacyConfigFile, StringComparison.OrdinalIgnoreCase)
                 || p.StartsWith("gamedata/save/", StringComparison.OrdinalIgnoreCase);
         }
 

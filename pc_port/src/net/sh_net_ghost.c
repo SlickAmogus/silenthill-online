@@ -1332,7 +1332,7 @@ void ShNet_DrawWorld(GsOT* ot)
                     for (k = 0; k < mc2; k++)
                     {
                         const ShSessionMember* mm = ShSession_Member(k);
-                        if (mm && (unsigned int)mm->steamId == g->playerId) { dup = 1; break; }
+                        if (mm && ShSession_WorldIdOf(mm) == g->playerId) { dup = 1; break; }
                     }
                     if (dup) continue;
                 }

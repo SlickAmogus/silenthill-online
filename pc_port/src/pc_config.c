@@ -115,6 +115,7 @@ s_PcConfig g_PcConfig = {
     .onlineSteamMaxPlayers = 4,
     .onlineSteamPublic     = 1,   /* rooms and lobbies listed (the host setup's Room List row) unless the host hid them last time */
     .onlineSteamAutoHost   = 0,
+    .onlineSteamInput      = 1,
     .keyOnlinePlayers = "F11",
     .keyOnlineMemo    = "M",
     .keyChatGame      = "Y",
@@ -472,7 +473,33 @@ static const struct { const char* key; size_t off; } s_GlobalBinds[] = {
 };
 
 /* Remembered at load time so PcConfig_SaveMapName writes the same file. */
-static char s_configPath[512] = "config.cfg";
+static char s_configPath[512] = PC_CONFIG_FILE;
+
+/* The first run of a build that names its config onlineconfig.cfg starts from
+ * config.cfg when that is all there is: an older online build's settings, or
+ * the single-player build's in a folder the two share. */
+void PcConfig_AdoptLegacy(void)
+{
+    FILE*  in;
+    FILE*  out;
+    char   buf[16384];
+    size_t n;
+
+    if ((in = fopen(PC_CONFIG_FILE, "rb")) != NULL)
+    {
+        fclose(in);
+        return;
+    }
+    if ((in = fopen(PC_CONFIG_LEGACY_FILE, "rb")) == NULL)
+        return;
+    if ((out = fopen(PC_CONFIG_FILE, "wb")) != NULL)
+    {
+        while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+            fwrite(buf, 1, n, out);
+        fclose(out);
+    }
+    fclose(in);
+}
 
 int g_PcConfigReadOnly;
 
@@ -1066,6 +1093,10 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_steam_public") == 0)
         {
             g_PcConfig.onlineSteamPublic = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_steam_input") == 0)
+        {
+            g_PcConfig.onlineSteamInput = (atoi(value) != 0);
         }
         else if (strcmp(key, "online_steam_autohost") == 0)
         {

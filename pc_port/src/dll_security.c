@@ -125,7 +125,7 @@ static void BuildExeAllowlist(void)
 static int MapImportAllowed(const char* dllName)
 {
     static const char* s_baseline[] = {
-        "silenthillpc.exe", "kernel32.dll", "msvcrt.dll", "ucrtbase.dll",
+        "silenthillpc.exe", "silenthillonline.exe", "kernel32.dll", "msvcrt.dll", "ucrtbase.dll",
         "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libssp-0.dll",
         "libstdc++-6.dll", NULL
     };
