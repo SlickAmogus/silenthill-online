@@ -2576,12 +2576,9 @@ static void Skin_LoadSettings(PcSkinChara* ch, const char* base)
     ch->gunRaise = ch->gunOut = ch->gunFwd = 0;
     ch->gunTwist = ch->gunPitch = ch->gunYaw = 0;
     ch->handRelax = 0;
-<<<<<<< HEAD
     ch->voice[0] = '\0';
-=======
     ch->armOut = 0;
     ch->gunSet = 0;
->>>>>>> 11b0be32c (Skinned characters: palm side from the hand's flat, default gun fit, arm_out)
     snprintf(path, sizeof(path), "%s.ini", base);
     f = fopen(path, "r");
     if (f == NULL)
