@@ -37,6 +37,7 @@ extern int           PcProc_ExePath(char* out, int cap);
 /* PsyCross */
 extern SDL_Window* g_window;
 extern void        PsyX_Pad_SetDeviceFilter(int mode, int deviceId);
+extern int         PsyX_Pad_SplitXInputStandIn(void);
 extern void        PsyX_ApplyWindowState(int width, int height, int fullscreen);
 extern int         g_PsyX_NoKeyboardMouse;
 
@@ -164,12 +165,16 @@ void Pc_Split_AfterConfigLoad(void)
 
 /* The device index Player 1 named, unless the GUID says the indices differ
  * between the two processes (a pad plugged in between the two enumerations),
- * in which case the first pad with that GUID. */
+ * in which case the first pad with that GUID. Then a pad of the same make
+ * (vendor and product, carried in the GUID): Player 1 can name Steam's
+ * stand-in for a pad, which exists only in Player 1's process. Then the one
+ * pad this window sees, if it sees exactly one. -1 = none of those. */
 static int Split_ResolveP2Device(void)
 {
-    int  n = SDL_NumJoysticks();
-    int  j;
-    char g[64];
+    int    n = SDL_NumJoysticks();
+    int    j, only = -1, pads = 0;
+    char   g[64];
+    Uint16 vid = 0, pid = 0;
 
     if (s_argPad >= 0 && s_argPad < n && SDL_IsGameController(s_argPad))
     {
@@ -187,7 +192,18 @@ static int Split_ResolveP2Device(void)
         if (s_argGuid[0] && strcmp(g, s_argGuid) == 0)
             return j;
     }
-    return s_argPad;
+    if (s_argGuid[0])
+        SDL_GetJoystickGUIDInfo(SDL_JoystickGetGUIDFromString(s_argGuid), &vid, &pid, NULL, NULL);
+    for (j = 0; j < n; j++)
+    {
+        if (!SDL_IsGameController(j))
+            continue;
+        if ((vid || pid) && SDL_JoystickGetDeviceVendor(j) == vid && SDL_JoystickGetDeviceProduct(j) == pid)
+            return j;
+        only = j;
+        pads++;
+    }
+    return (pads == 1) ? only : -1;
 }
 
 void Pc_Split_AfterWindow(void)
@@ -206,6 +222,10 @@ void Pc_Split_AfterWindow(void)
     }
 
     dev = Split_ResolveP2Device();
+    if (dev < 0)
+        dev = PsyX_Pad_SplitXInputStandIn();
+    if (dev < 0)
+        dev = s_argPad; /* nothing here yet: the pad Player 1 named, if it is plugged in later */
     PsyX_Pad_SetDeviceFilter(1, dev);
     SH_DBG("[SPLIT] Player 2 window: pad device %d (%s), window %d,%d %dx%d, port %d, parent %lu",
            dev, (dev >= 0 && dev < SDL_NumJoysticks() && SDL_GameControllerNameForIndex(dev))
@@ -223,7 +243,28 @@ void Pc_Split_AfterPlayAsInit(void)
 /* Controllers                                                         */
 /* ------------------------------------------------------------------ */
 
-/* The k-th attached game controller's SDL device index, -1 when there is none. */
+/* A pad Player 2 can be given. Not Steam's stand-in for a pad that is also on
+ * the list itself: the same controller twice, under two names, and only the
+ * real one can be opened by Player 2's window. */
+static int Split_PadListed(int j, int n)
+{
+    int    i;
+    Uint16 vid, pid;
+
+    if (!SDL_IsGameController(j))
+        return 0;
+    if (!SDL_JoystickIsVirtual(j))
+        return 1;
+    vid = SDL_JoystickGetDeviceVendor(j);
+    pid = SDL_JoystickGetDeviceProduct(j);
+    for (i = 0; i < n; i++)
+        if (i != j && SDL_IsGameController(i) && !SDL_JoystickIsVirtual(i) &&
+            SDL_JoystickGetDeviceVendor(i) == vid && SDL_JoystickGetDeviceProduct(i) == pid)
+            return 0;
+    return 1;
+}
+
+/* The k-th listed game controller's SDL device index, -1 when there is none. */
 static int Split_PadDevice(int k)
 {
     int n = SDL_NumJoysticks();
@@ -231,7 +272,7 @@ static int Split_PadDevice(int k)
 
     for (j = 0; j < n; j++)
     {
-        if (!SDL_IsGameController(j))
+        if (!Split_PadListed(j, n))
             continue;
         if (c == k)
             return j;
@@ -246,7 +287,7 @@ int Pc_Split_PadCount(void)
     int j, c = 0;
 
     for (j = 0; j < n; j++)
-        if (SDL_IsGameController(j))
+        if (Split_PadListed(j, n))
             c++;
     return c;
 }

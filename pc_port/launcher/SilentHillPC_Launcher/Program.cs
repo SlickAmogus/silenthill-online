@@ -21,7 +21,7 @@ internal static class Program
         {
             try
             {
-                var cfg = new ConfigManager(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.cfg"));
+                var cfg = new ConfigManager(GamePaths.ConfigPath(GamePaths.Dir));
                 Loc.Current = LauncherSettings.Load(cfg).Language;
             }
             catch { }

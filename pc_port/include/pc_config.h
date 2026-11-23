@@ -631,6 +631,7 @@ typedef struct {
     int  onlineSteamMaxPlayers;/* lobby size cap, 2..8 (online_steam_max_players) */
     int  onlineSteamPublic;    /* 1 = public lobby, 0 = friends only (online_steam_public) */
     int  onlineSteamAutoHost;  /* 1 = open a lobby at startup (online_steam_autohost) */
+    int  onlineSteamInput;     /* 1 = read controllers through Steam Input while Steam is up (online_steam_input) */
 
     char keyOnlinePlayers[24]; /* who-is-online panel hotkey (key_online_players); default F11 */
     char keyOnlineMemo[24];    /* leave-a-message composer hotkey (key_online_memo); default M */
@@ -750,6 +751,17 @@ void Pc_FlashlightModeApply(int mode, int persist);
 const char* Pc_FlashlightModeLabel(int mode);
 
 /* Parse config.cfg from the executable's directory. Uses defaults if not found. */
+/* The online build keeps its own config on Windows, so it can share a folder
+ * with the single-player build, whose config is config.cfg. The phone and
+ * browser apps have storage of their own, and their Java/JS side reads
+ * config.cfg by name. */
+#if defined(_WIN32)
+#define PC_CONFIG_FILE        "onlineconfig.cfg"
+#else
+#define PC_CONFIG_FILE        "config.cfg"
+#endif
+#define PC_CONFIG_LEGACY_FILE "config.cfg"
+void PcConfig_AdoptLegacy(void);
 void PcConfig_Load(const char* path);
 
 /* Echo the config file into the log (ra_token redacted). Call after the log is

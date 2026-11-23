@@ -107,7 +107,7 @@ namespace SilentHillPC_Launcher
             string archiveTip = Loc.T(
                 "Download the Linux or macOS build of the selected branch/build into the launcher folder " +
                 "(you'll be asked before an existing archive is overwritten). Windows keeps playing from " +
-                "SilentHillPC.exe. Only available once that platform's build is attached to the release.");
+                "SilentHillOnline.exe. Only available once that platform's build is attached to the release.");
             _tips.SetToolTip(lblArchives, archiveTip);
             _tips.SetToolTip(_btnDownloadMac, archiveTip);
             _tips.SetToolTip(_btnDownloadLinux, archiveTip);

@@ -18,6 +18,7 @@ extern int Pc_QolMods_IsOpen(void);
 #include "pc_mouse_cursor.h"
 #include "pc_native_menu_draw.h"
 #include "pc_pause_menu_core.h"
+#include "pc_qol_update.h"
 #include "pc_retroachievements.h"
 #endif
 
@@ -317,9 +318,13 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
      * Nor under the Exit confirmation. */
     {
         extern int ShSession_Active(void);
+        {
+            extern void Pc_CoopMenu_FollowSession(void);
+            Pc_CoopMenu_FollowSession();
+        }
         int coopHoldsTitle = (Pc_CoopMenu_IsOpen() || ShSession_Active());
         playInGameDemo = g_PcConfig.attractDemos && g_MainMenuState != MenuState_Achievements &&
-                         !coopHoldsTitle && !s_ExitConfirm.open &&
+                         !coopHoldsTitle && !s_ExitConfirm.open && !Pc_QolUpdate_IsOpen() &&
                          (((g_Demo_ReproducedCount + 1) % 3) != 0);
     }
 #else
@@ -452,6 +457,24 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
             {
                 char coopSave[COOP_SAVE_KEY_MAX];
                 int  coopReq = Pc_CoopMenu_TakeStartRequest(coopSave, sizeof(coopSave));
+                /* -hoststeam: host a Steam lobby and start its game with no menu
+                 * input, so the host path can be exercised alone and unattended. */
+                {
+                    extern int  g_PcDebugHostSteam;
+                    extern void ShSession_RequestHost(void);
+                    extern int  ShSession_IsHost(void);
+
+                    if (g_PcDebugHostSteam == 1)
+                    {
+                        ShSession_RequestHost();
+                        g_PcDebugHostSteam = 2;
+                    }
+                    else if (g_PcDebugHostSteam == 2 && ShSession_Active() && ShSession_IsHost())
+                    {
+                        g_PcDebugHostSteam = 0;
+                        coopReq            = 1;
+                    }
+                }
                 extern int ShSession_TakeWorldRequest(void);
                 int  guestMap = ShSession_TakeWorldRequest();
                 if (coopReq == 1)
@@ -520,6 +543,11 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                             extern void ShNet_CoopFilterHostSave(void* save);
                             ShNet_CoopFilterHostSave(&g_GameWork.autosave);
                         }
+                        /* The switch position in the host's save is the host's:
+                         * one who walks with the light off handed every joiner
+                         * a dark map with theirs off too. A joiner's own light
+                         * starts on. */
+                        g_GameWork.autosave.itemToggleFlags &= ~ItemToggleFlag_FlashlightOff;
                         g_MainMenu_SelectedEntry        = MainMenuEntry_Continue;
                         g_Controller0->clickedBtnFlags |= g_GameWorkPtr->config.controllerConfig.enter;
                     }
@@ -594,9 +622,16 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 
                 NmInput_FromGame(&in);
                 hoverAnswer = MainMenu_ExitConfirmHover();
-                c           = PmConfirm_ApplyHover(&s_ExitConfirm, &in, hoverAnswer);
+                {
+                    const int wasYes = (s_ExitConfirm.yes != 0);
 
-                res = NmConfirm_Update(&s_ExitConfirm, &c);
+                    c   = PmConfirm_ApplyHover(&s_ExitConfirm, &in, hoverAnswer);
+                    res = NmConfirm_Update(&s_ExitConfirm, &c);
+                    if (s_ExitConfirm.open && wasYes != (s_ExitConfirm.yes != 0))
+                    {
+                        SD_Call(Sfx_MenuMove);
+                    }
+                }
                 if (res == NM_CONFIRM_YES)
                 {
                     SH_DBG("[MENU] Exit selected — closing game");
@@ -611,6 +646,24 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
 
                 g_Controller0->pulsedBtnFlags  = 0;
                 g_Controller0->clickedBtnFlags = 0;
+            }
+            else if (!coopMenuOpen)
+            {
+                /* A mod update waiting to be offered (pc_qol_update.c). While its
+                 * question is up the menu under it takes no input, the same way
+                 * the exit question holds it. Never over the co-op menus, and
+                 * never while in a room: a guest there is waiting for the host. */
+                extern int ShSession_Active(void);
+                NmInput    in;
+
+                NmInput_FromGame(&in);
+                if ((Pc_QolUpdate_IsOpen() || !ShSession_Active()) &&
+                    Pc_QolUpdate_TitleFrame(in.left, in.right, in.confirm, in.cancel))
+                {
+                    exitConfirmActive              = true;
+                    g_Controller0->pulsedBtnFlags  = 0;
+                    g_Controller0->clickedBtnFlags = 0;
+                }
             }
 #endif
 
@@ -934,6 +987,12 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
                 {
                     int mapId = MapRegistry_FindByName(g_PcConfig.mapName);
                     if (mapId < 0) mapId = 0;
+                    /* A room's New Game is the story's first map. The Map option
+                     * is a single-player test setting that saves as it is browsed;
+                     * left on another map it sent a hosted game there, and one
+                     * with no stage of its own (map1_s04) put the host in a void
+                     * reading NO STAGE. */
+                    if (g_PcCoopGame) mapId = 0;
                     /* A co-op guest starts in the host's map, not the config map. */
                     if (coopGuestMap >= 0) { mapId = coopGuestMap; coopGuestMap = -1; }
                     GameBoot_SavegameInitialize(mapId, newGameSelectedDifficultyIdx - 1);
@@ -1099,7 +1158,7 @@ void GameState_MainMenu_Update(void) // 0x8003AB28
      * held-button reset above never sees the player using it. */
     {
         extern int Pc_QolMods_IsOpen(void);
-        if (g_MainMenuState == MenuState_Achievements || Pc_QolMods_IsOpen() || s_ExitConfirm.open)
+        if (g_MainMenuState == MenuState_Achievements || Pc_QolMods_IsOpen() || s_ExitConfirm.open || Pc_QolUpdate_IsOpen())
         {
             g_SysWork.counters_1C[1] = 0;
         }

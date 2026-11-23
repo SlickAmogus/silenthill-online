@@ -12,6 +12,61 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <wchar.h>
+
+/* Starting Steam puts its app id into this process's environment (SteamAppId,
+ * SteamGameId), and a copy that inherits it is taken by Steam for the same
+ * Steam Input game: Steam hides the controllers from it, Player 2's pad
+ * included, and that copy cannot read them through Steam either. So Player 2
+ * starts without Steam's variables, and without the controller lists Steam
+ * gives the games it launches. */
+static int Proc_IsSteamVar(const wchar_t* e)
+{
+    static const wchar_t* const prefix[] = {
+        L"Steam", L"STEAM_", L"SDL_GAMECONTROLLER", L"EnableConfiguratorSupport", L"ENABLE_VK_LAYER_VALVE_steam"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(prefix) / sizeof(prefix[0]); i++)
+        if (_wcsnicmp(e, prefix[i], wcslen(prefix[i])) == 0)
+            return 1;
+    return 0;
+}
+
+/* This process's environment block without those; free() it. NULL = could
+ * not be made, inherit it as it is. */
+static wchar_t* Proc_EnvWithoutSteam(void)
+{
+    wchar_t*       src = GetEnvironmentStringsW();
+    const wchar_t* p;
+    size_t         total = 0;
+    wchar_t*       out;
+    wchar_t*       w;
+
+    if (!src)
+        return NULL;
+    for (p = src; *p; p += wcslen(p) + 1)
+        total += wcslen(p) + 1;
+    out = (wchar_t*)malloc((total + 2) * sizeof(wchar_t));
+    if (!out)
+    {
+        FreeEnvironmentStringsW(src);
+        return NULL;
+    }
+    w = out;
+    for (p = src; *p; p += wcslen(p) + 1)
+    {
+        const size_t len = wcslen(p) + 1;
+        if (Proc_IsSteamVar(p))
+            continue;
+        memcpy(w, p, len * sizeof(wchar_t));
+        w += len;
+    }
+    w[0] = L'\0';
+    w[1] = L'\0';
+    FreeEnvironmentStringsW(src);
+    return out;
+}
 
 void* PcProc_Spawn(const char* cmdline)
 {
@@ -19,6 +74,8 @@ void* PcProc_Spawn(const char* cmdline)
     PROCESS_INFORMATION pi;
     char*               buf;
     size_t              n;
+    wchar_t*            env;
+    BOOL                ok;
 
     if (!cmdline || !cmdline[0])
         return NULL;
@@ -35,12 +92,13 @@ void* PcProc_Spawn(const char* cmdline)
 
     /* CREATE_NO_WINDOW: the game is a console program, and the second copy
      * would otherwise flash a console over the first one's window. */
-    if (!CreateProcessA(NULL, buf, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
-    {
-        free(buf);
-        return NULL;
-    }
+    env = Proc_EnvWithoutSteam();
+    ok  = CreateProcessA(NULL, buf, NULL, NULL, FALSE, CREATE_NO_WINDOW | (env ? CREATE_UNICODE_ENVIRONMENT : 0),
+                         env, NULL, &si, &pi);
+    free(env);
     free(buf);
+    if (!ok)
+        return NULL;
     CloseHandle(pi.hThread);
     return (void*)pi.hProcess;
 }
