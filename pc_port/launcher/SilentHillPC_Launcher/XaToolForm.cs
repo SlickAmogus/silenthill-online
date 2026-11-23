@@ -202,7 +202,7 @@ namespace SilentHillPC_Launcher
             string want = null;
             try
             {
-                string cfg = Path.Combine(_gameRoot, "config.cfg");
+                string cfg = GamePaths.ConfigPath(_gameRoot);
                 if (File.Exists(cfg))
                 {
                     foreach (var line in File.ReadAllLines(cfg))

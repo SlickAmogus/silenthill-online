@@ -100,8 +100,9 @@ s_MapOverlayHdr* MapOverlay_Load(e_MapIdx id)
         return NULL;
     }
 #else
-    /* Build DLL path: maps/<mapname>.dll */
-    snprintf(dllPath, sizeof(dllPath), "maps/%s%s", mapName, DLL_EXT);
+    /* maps_online/<mapname>.dll: the online build's map DLLs import SilentHillOnline.exe,
+     * so they cannot share maps/ with the single-player build's. */
+    snprintf(dllPath, sizeof(dllPath), "maps_online/%s%s", mapName, DLL_EXT);
 
     /* Load the DLL */
     s_currentDll = DllLoader_Open(dllPath);
