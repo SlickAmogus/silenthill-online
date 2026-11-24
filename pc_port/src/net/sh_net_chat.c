@@ -650,6 +650,11 @@ static void Chat_SendCoop(const char* piece)
     Chat_PushSaid(SHNET_CHAT_COOP, ShSession_SelfId(), name, piece);
 }
 
+void ShNetChat_SayCoop(const char* text)
+{
+    if (ShSession_Active() && text && text[0]) Chat_SendCoop(text);
+}
+
 static void Chat_Submit(void)
 {
     if (s_prompt)

@@ -795,6 +795,47 @@ static int ShSession_IsKicked(unsigned long long id)
     return 0;
 }
 
+static int ShSession_IndexOf(unsigned long long id);
+
+static void ShSession_SetRename(unsigned long long id, const char* name)
+{
+    int idx = ShSession_IndexOf(id);
+    if (idx < 0 || !name[0])
+    {
+        return;
+    }
+    SDL_strlcpy(s_members[idx].rename, name, SHSESSION_NAME_MAX);
+    SDL_strlcpy(s_members[idx].name, name, SHSESSION_NAME_MAX);
+}
+
+void ShSession_OnRename(unsigned long long from, const unsigned char* p, int len)
+{
+    char nm[SHSESSION_NAME_MAX];
+    int  n = len - 1;
+    if (len < 2)
+    {
+        return;
+    }
+    if (n > SHSESSION_NAME_MAX - 1) n = SHSESSION_NAME_MAX - 1;
+    memcpy(nm, p + 1, (size_t)n);
+    nm[n] = '\0';
+    ShnSanitizeText(nm);
+    ShNetChat_Censor(nm);
+    ShSession_SetRename(from, nm);
+}
+
+void ShSession_SendRename(const char* name)
+{
+    unsigned char b[1 + SHSESSION_NAME_MAX];
+    int           n = (int)strlen(name);
+    if (n > SHSESSION_NAME_MAX - 1) n = SHSESSION_NAME_MAX - 1;
+    b[0] = SHNET_CTRL_NAME;
+    memcpy(b + 1, name, (size_t)n);
+    b[1 + n] = '\0';
+    ShSession_SendGame(SHNET_MSG_S_CTRL, b, 2 + n, 0, 1);
+    ShSession_SetRename(ShSession_SelfId(), name);
+}
+
 static int ShSession_IndexOf(unsigned long long id)
 {
     int i;
@@ -861,6 +902,10 @@ static void ShSession_SyncMembers(void)
         {
             SDL_strlcpy(fresh[count].name, nm, SHSESSION_NAME_MAX);
             ShNetChat_Censor(fresh[count].name);
+        }
+        if (fresh[count].rename[0])
+        {
+            SDL_strlcpy(fresh[count].name, fresh[count].rename, SHSESSION_NAME_MAX);
         }
         else if (!fresh[count].name[0])
         {

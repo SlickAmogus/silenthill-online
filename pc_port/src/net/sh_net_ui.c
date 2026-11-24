@@ -2858,7 +2858,7 @@ void ShNetUi_Draw(void)
 
     if (ShNetChat_DisplayActive())
     {
-        Nu_DrawChat((int)((float)px * 0.82f));
+        Nu_DrawChat((int)((float)px * 0.82f * (float)(g_PcConfig.onlineChatScale > 0 ? g_PcConfig.onlineChatScale : 100) / 100.0f));
     }
 
     if (!drawComposer && ShNet_CoopLivingWorld())
