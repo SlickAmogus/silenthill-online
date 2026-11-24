@@ -154,7 +154,15 @@ typedef struct
     unsigned int       sfxNextSerial;
     int                sfxSeqOk;
     unsigned char      sfxLastSeq;
+    /* A name the member took while in the room (SHNET_CTRL_NAME); shown in
+     * place of the one the transport lists them under, which is fixed at the join. */
+    char               rename[SHSESSION_NAME_MAX];
 } ShSessionMember;
+
+/* A member (or we) took a new name in the room: p is the SHNET_CTRL_NAME payload. */
+void ShSession_OnRename(unsigned long long from, const unsigned char* p, int len);
+/* Tell the room our new name, and show it here. */
+void ShSession_SendRename(const char* name);
 
 /* The living-world player this member also is, 0 if none. A server-room member
  * id IS their world id; a Steam member is a SteamID, which says nothing about

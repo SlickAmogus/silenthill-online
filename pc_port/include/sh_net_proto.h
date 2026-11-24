@@ -585,6 +585,7 @@ enum
     SHNET_CTRL_PICKUP    = 16, /* member -> all: u8 item, u8 taken; I answered the pickup prompt (a sound and a note for the room) */
     SHNET_CTRL_GAMEOVER  = 13, /* host -> all: u16 gen; nobody is left alive, the game over plays for everyone */
     SHNET_CTRL_FOLLOW    = 17, /* split-screen Player 1 -> Player 2: u16 room code, u8 lobby; join it with me */
+    SHNET_CTRL_NAME      = 19, /* member -> all: I changed my name; the new one, NUL-terminated (SHNET_NAME_MAX) */
     SHNET_CTRL_MAPS      = 18, /* member -> all: u32 paper map flags I just gained; they are yours too */
     SHNET_CTRL_SKIN      = 12  /* member -> all: the Harry swap worn, as its file name without extension
                                 * ("HERO_CJ", NUL-terminated, at most 95; empty = none; games before

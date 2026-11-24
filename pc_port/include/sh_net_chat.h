@@ -62,6 +62,8 @@ int  ShNetChat_Hidden(void);
 
 /* A locally-generated line (a system notice), shown like any chat line. */
 void ShNetChat_AddSystem(const char* text);
+/* Say a line on the co-op room's channel (no-op outside a room). */
+void ShNetChat_SayCoop(const char* text);
 /* A private message line ("From X: ..." / "To X: ..."), shown on every channel. */
 #define SHNETCHAT_PM 4
 void ShNetChat_AddWhisper(const char* text);

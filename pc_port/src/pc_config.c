@@ -77,6 +77,7 @@ s_PcConfig g_PcConfig = {
     .onlineGhostStyle = 2, /* SHNET_GS_BOTH: the contour plus a floor ring */
     .onlineGhostRange = 40,
     .onlineNameplates = 1, /* names float over other players' heads */
+    .onlineChatScale  = 100,
     .onlineGhostModel = 1, /* living-world players draw as translucent bodies */
     .onlineEvents     = 1,
     .onlineUiScale    = 1.0f,
@@ -932,6 +933,11 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "online_chat_hidden") == 0)
         {
             g_PcConfig.onlineChatHidden = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "online_chat_scale") == 0)
+        {
+            int v = atoi(value);
+            g_PcConfig.onlineChatScale = v < 50 ? 50 : (v > 250 ? 250 : v);
         }
         else if (strcmp(key, "online_joins_hidden") == 0)
         {
