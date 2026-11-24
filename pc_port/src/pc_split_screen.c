@@ -37,7 +37,9 @@ extern int           PcProc_ExePath(char* out, int cap);
 /* PsyCross */
 extern SDL_Window* g_window;
 extern void        PsyX_Pad_SetDeviceFilter(int mode, int deviceId);
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(SH_IOS)
 extern int         PsyX_Pad_SplitXInputStandIn(void);
+#endif
 extern void        PsyX_ApplyWindowState(int width, int height, int fullscreen);
 extern int         g_PsyX_NoKeyboardMouse;
 
@@ -222,8 +224,12 @@ void Pc_Split_AfterWindow(void)
     }
 
     dev = Split_ResolveP2Device();
+    /* The XInput stand-in is the desktop PsyCross's (Steam Input hides the
+     * second pad there); the web and phone builds have no such pad layer. */
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(SH_IOS)
     if (dev < 0)
         dev = PsyX_Pad_SplitXInputStandIn();
+#endif
     if (dev < 0)
         dev = s_argPad; /* nothing here yet: the pad Player 1 named, if it is plugged in later */
     PsyX_Pad_SetDeviceFilter(1, dev);
