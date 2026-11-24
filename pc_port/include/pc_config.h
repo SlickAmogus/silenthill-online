@@ -605,6 +605,7 @@ typedef struct {
     int  onlineDeaths;        /* 1 = draw and report death markers (online_deaths) */
     int  onlineJoinsHidden;   /* 1 = living-world join and leave notices are not shown (Multiplayer Settings) (online_joins_hidden) */
     int  onlineChatHidden;    /* 1 = the chat feed is hidden (M menu Chat row, console `chat hide`) (online_chat_hidden) */
+    int  onlineChatScale;     /* chat text size, percent of the normal size, 50..250 (M menu Chat Size row) (online_chat_scale) */
     int  onlineGhostStyle;    /* SHNET_GS_*: contour, floor ring, or both (online_ghost_style) */
     int  onlineGhostRange;    /* metres past which a ghost is not drawn (online_ghost_range) */
     int  onlineNameplates;    /* 1 = float each other player's name over their head (online_nameplates) */

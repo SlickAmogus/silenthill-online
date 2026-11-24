@@ -18,6 +18,7 @@
 #include "pc_coop_menu.h"
 #include "sh_net.h"
 #include "sh_net_chat.h"
+#include "sh_net_chat_filter.h"
 #include "sh_net_invite.h"
 #include "sh_net_proto.h"
 #include "sh_net_session.h"
@@ -354,6 +355,7 @@ static const struct { const char* name; const char* usage; const char* help; } k
     { "unblock",   "/unblock <name or number>", "Lifts a block. The number is the one /blocklist shows." },
     { "report",    "/report <name> \"reason\"", "Reports a player to the server admin, with your private messages with them." },
     { "color",     "/color [name] <color>",     "Changes the colour a name shows in on your screen: red, orange, yellow, lime, green, teal, cyan, sky, blue, purple, magenta, pink, gold, peach, mint, lavender, white, silver, or #RRGGBB. Only you see it." },
+    { "name",      "/name <new name>",          "Changes your name. In a game you can do it once every 5 minutes, and the others are told." },
     { "accept",    "/accept",                   "Accepts the invite waiting for you." },
     { "decline",   "/decline",                  "Declines the invite waiting for you." },
     { "help",      "/help [command]",           "Lists the commands, or explains one." },
@@ -708,6 +710,7 @@ int ShSocial_Command(const char* line)
 
     if (!SDL_strcasecmp(cmd, "help") || !strcmp(cmd, "?")) { Soc_Help(p); return 1; }
     if (!SDL_strcasecmp(cmd, "blocklist")) { Soc_BlockList(); return 1; }
+    if (!SDL_strcasecmp(cmd, "name") || !SDL_strcasecmp(cmd, "nick")) { ShSocial_Rename(p); return 1; }
     if (!SDL_strcasecmp(cmd, "unblock"))   { Soc_Unblock(p); return 1; }
     if (!SDL_strcasecmp(cmd, "kick"))      { Soc_Kick(p); return 1; }
     if (!SDL_strcasecmp(cmd, "remove"))    { Soc_Remove(p); return 1; }
@@ -832,12 +835,121 @@ static void Soc_Finish(int kind, const char* query, const char* arg, const ShNet
     }
 }
 
+/* ---- changing name ------------------------------------------------- */
+
+#define SOC_RENAME_GAP_MS (5u * 60u * 1000u)
+
+static int          s_renamedOnce;   /* a rename was made in a game this run */
+static unsigned int s_renameMs;      /* when */
+static int          s_applyLater;    /* the server learns the name once we are out of the room */
+static unsigned int s_announceAt;    /* when to tell the server's chat, 0 = nothing owed */
+static unsigned int s_announceBy;
+static char         s_announce[SHNET_CHAT_MAX];
+
+int ShSocial_Rename(const char* text)
+{
+    char         name[SHNET_NAME_MAX], old[SHNET_NAME_MAX];
+    const int    inGame = g_GameWork.gameState != GameState_MainMenu;
+    unsigned int now = SDL_GetTicks();
+    int          n;
+
+    while (text && *text == ' ') text++;
+    SDL_strlcpy(name, text ? text : "", sizeof(name));
+    ShnSanitizeText(name);
+    ShNetChat_Censor(name);
+    n = (int)strlen(name);
+    while (n > 0 && name[n - 1] == ' ') name[--n] = '\0';
+    if (n <= 0)
+    {
+        Soc_Say("Usage: /name <new name>");
+        return 0;
+    }
+    if (!strcmp(name, g_PcConfig.onlineName))
+    {
+        Soc_Say("That is already your name.");
+        return 0;
+    }
+    /* In a game the others see the name change over their heads and in chat:
+     * one change every five minutes keeps it from being used to confuse them. */
+    if (inGame && s_renamedOnce && now - s_renameMs < SOC_RENAME_GAP_MS)
+    {
+        const unsigned int left = (SOC_RENAME_GAP_MS - (now - s_renameMs) + 999u) / 1000u;
+        Soc_Say("You can change your name again in %u min %u s.", left / 60u, left % 60u);
+        return 0;
+    }
+    SDL_strlcpy(old, g_PcConfig.onlineName[0] ? g_PcConfig.onlineName : "Wanderer", sizeof(old));
+    SDL_strlcpy(g_PcConfig.onlineName, name, sizeof(g_PcConfig.onlineName));
+    PcConfig_SaveKeyValue("online_name", g_PcConfig.onlineName);
+    SH_DBG("[SOCIAL] name \"%s\" -> \"%s\"%s", old, name, inGame ? " (in game)" : "");
+    if (ShSession_Active())
+    {
+        /* A room on the server rides our one connection to it, and the server
+         * learns a name only at the connect: reconnecting now would drop us
+         * out of the room. The room is told directly, the server once we leave. */
+        char line[SHNET_CHAT_MAX];
+        ShSession_SendRename(name);
+        s_applyLater = 1;
+        if (inGame)
+        {
+            snprintf(line, sizeof(line), "(changed name: %s is now %s)", old, name);
+            ShNetChat_SayCoop(line);
+            if (ShNet_Status() == SHNET_ST_CONNECTED)
+            {
+                ShNet_SendChat(SHNET_CHAT_GLOBAL, line);
+                ShSocial_GlobalSent();
+            }
+        }
+    }
+    else
+    {
+        ShNet_ApplySettings();
+        if (inGame)
+        {
+            /* Said under the new name, once the server has taken it. */
+            snprintf(s_announce, sizeof(s_announce), "(changed name: %s is now %s)", old, name);
+            s_announceAt = now + 2500u;
+            s_announceBy = now + 30000u;
+        }
+    }
+    if (inGame)
+    {
+        s_renamedOnce = 1;
+        s_renameMs    = now;
+    }
+    Soc_Say("Your name is now %s.", name);
+    return 1;
+}
+
+static void Soc_RenameTick(unsigned int now)
+{
+    if (s_applyLater && !ShSession_Active())
+    {
+        s_applyLater = 0;
+        ShNet_ApplySettings();
+    }
+    if (s_announceAt && (int)(now - s_announceAt) >= 0)
+    {
+        if (ShNet_Status() == SHNET_ST_CONNECTED)
+        {
+            ShNet_SendChat(SHNET_CHAT_GLOBAL, s_announce);
+            ShSocial_GlobalSent();
+            s_announceAt = 0;
+        }
+        else if ((int)(now - s_announceBy) >= 0)
+        {
+            s_announceAt = 0;
+        }
+    }
+}
+
 void ShSocial_Tick(void)
 {
     ShNetLookup  l;
     ShNetWhisper w;
     const unsigned int now = SDL_GetTicks();
     int i;
+
+    Soc_RenameTick(now);
 
     /* Again every few seconds: the session layer may not be up on the first
      * frames, and the room link sends only when the list really changed. */

@@ -32,6 +32,9 @@ int  ShSocial_Command(const char* line);
 /* Global chat is one message per 10 seconds: seconds still to wait, 0 = go. */
 int  ShSocial_GlobalWaitSec(void);
 void ShSocial_GlobalSent(void);
+/* Change the player's name (the /name command, the menus' Name rows). In a game
+ * it is allowed once every five minutes and announced; 1 when the name changed. */
+int  ShSocial_Rename(const char* text);
 
 /* "Harry" or "Harry#2048" (showTag and a tag known). */
 void ShSocial_FormatName(const char* name, unsigned int tag, int showTag, char* out, int cap);

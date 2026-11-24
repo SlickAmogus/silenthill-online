@@ -1147,6 +1147,9 @@ void ShNet_CoopCtrlIn(unsigned long long from, const unsigned char* p, int len)
         case SHNET_CTRL_CHAT:
             ShNetChat_CoopIn(from, p, len);
             break;
+        case SHNET_CTRL_NAME:
+            ShSession_OnRename(from, p, len);
+            break;
         case SHNET_CTRL_SKIN:
         {
             extern void ShNetG_SetMemberSkin(unsigned long long id, const char* token);
@@ -1839,7 +1842,7 @@ void ShNet_GameTick(void)
             unsigned long long from;
             while ((len = ShSession_TakeGame(&type, &from, buf, (int)sizeof(buf))) >= 0)
             {
-                if (type == SHNET_MSG_S_CTRL && len >= 1 && (buf[0] == SHNET_CTRL_CHAT || buf[0] == SHNET_CTRL_SKIN))
+                if (type == SHNET_MSG_S_CTRL && len >= 1 && (buf[0] == SHNET_CTRL_CHAT || buf[0] == SHNET_CTRL_SKIN || buf[0] == SHNET_CTRL_NAME))
                 {
                     ShNet_CoopCtrlIn(from, buf, len);
                 }

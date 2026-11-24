@@ -395,12 +395,11 @@ static void Coop_CommitEdit(void)
         SDL_strlcpy(name, p, sizeof(name));
         n = (int)strlen(name);
         while (n > 0 && name[n - 1] == ' ') name[--n] = '\0';
-        if (n > 0)
+        /* One rule for every way of changing it (the /name command too): in a
+         * game, once every five minutes and announced. */
+        if (n > 0 && strcmp(name, g_PcConfig.onlineName) != 0)
         {
-            SDL_strlcpy(g_PcConfig.onlineName, name, sizeof(g_PcConfig.onlineName));
-            PcConfig_SaveKeyValue("online_name", g_PcConfig.onlineName);
-            ShNet_ApplySettings();
-            SH_DBG("[COOP] name set to \"%s\"", g_PcConfig.onlineName);
+            ShSocial_Rename(name);
         }
     }
     Coop_EndEdit();
@@ -567,6 +566,19 @@ static void Coop_StepScale(int* pct, const char* key, int dir)
     if (*pct < 25)  *pct = 400;
     snprintf(v, sizeof(v), "%d", *pct);
     PcConfig_SaveKeyValue(key, v);
+}
+
+/* Chat text size, 50% to 250% in steps of 25. Left and right stop at the
+ * ends; Enter (wrap) goes round. */
+static void Coop_StepChatSize(int dir, int wrap)
+{
+    char v[8];
+    int  s = g_PcConfig.onlineChatScale + dir * 25;
+    if (s > 250) s = wrap ? 50 : 250;
+    if (s < 50)  s = wrap ? 250 : 50;
+    g_PcConfig.onlineChatScale = s;
+    snprintf(v, sizeof(v), "%d", s);
+    PcConfig_SaveKeyValue("online_chat_scale", v);
 }
 
 static void Coop_CloseSaves(void)
@@ -1225,9 +1237,9 @@ enum
     COOP_IG_RESUME = 0, COOP_IG_MESSAGE, COOP_IG_SAVE, COOP_IG_CHARACTER, COOP_IG_NAMEPLATES,
     COOP_IG_HEALTHBARS, COOP_IG_FRIENDLY, COOP_IG_CHEATS, COOP_IG_TELEPORT, COOP_IG_PLAYERS, COOP_IG_LEAVE,
     COOP_IG_INVITE, COOP_IG_INVITE_CANCEL, COOP_IG_ACCEPT, COOP_IG_DECLINE, COOP_IG_CHAT, COOP_IG_LOAD,
-    COOP_IG_PLAYERLIST
+    COOP_IG_PLAYERLIST, COOP_IG_CHATSIZE, COOP_IG_NAME
 };
-#define COOP_IG_MAX 20
+#define COOP_IG_MAX 24
 
 static int Coop_InGameRows(int* rows)
 {
@@ -1251,6 +1263,8 @@ static int Coop_InGameRows(int* rows)
         rows[n++] = COOP_IG_PLAYERLIST;
     }
     rows[n++] = COOP_IG_CHAT;
+    rows[n++] = COOP_IG_CHATSIZE;
+    rows[n++] = COOP_IG_NAME;
     /* Outside a co-op game (the living world alone) that is the whole menu:
      * the rest belongs to a shared game. */
     if (!g_PcCoopGame)
@@ -1524,6 +1538,8 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_IG_CHARACTER:  snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current())); break;
         case COOP_IG_NAMEPLATES: snprintf(out, cap, "Nameplates:  %s", g_PcConfig.onlineNameplates ? "On" : "Off"); break;
         case COOP_IG_CHAT:       snprintf(out, cap, "Chat:  %s", ShNetChat_Hidden() ? "Hidden" : "Shown"); break;
+        case COOP_IG_CHATSIZE:   snprintf(out, cap, "Chat Size:  < %d%% >", g_PcConfig.onlineChatScale); break;
+        case COOP_IG_NAME:       snprintf(out, cap, "Name:  %s", g_PcConfig.onlineName); break;
         case COOP_IG_HEALTHBARS:
         {
             static const char* const hb[4] = { "Off", "Mine", "Partners", "Everyone" };
@@ -2070,6 +2086,8 @@ static void Coop_Confirm(void)
         case COOP_IG_CHARACTER:  Pc_PlayAs_Cycle(1); break; /* reloads the body in place */
         case COOP_IG_NAMEPLATES: g_PcConfig.onlineNameplates = !g_PcConfig.onlineNameplates; break;
         case COOP_IG_CHAT:       ShNetChat_SetHidden(!ShNetChat_Hidden()); break;
+        case COOP_IG_CHATSIZE:   Coop_StepChatSize(1, 1); break;
+        case COOP_IG_NAME:       Coop_BeginEdit(COOP_EDIT_NAME); break;
         case COOP_IG_HEALTHBARS:
         {
             char v[4];
@@ -2343,6 +2361,7 @@ static int Coop_Adjust(int dir)
         if (Coop_RootRow(s_sel) == COOP_ROOT_MUSIC) { Pc_CoopMusic_Step(dir); return 1; }
         return 0;
     case COOP_PAGE_INGAME:
+        if (Coop_InGameRow(s_sel) == COOP_IG_CHATSIZE) { Coop_StepChatSize(dir, 0); return 1; }
         return 0;
     case COOP_PAGE_HOST_SETUP:
         switch (Coop_SetupRow(s_sel))
