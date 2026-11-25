@@ -250,8 +250,8 @@ namespace SilentHillPC_Launcher
             var launcherEntry = plan.LauncherEntry;
             if (launcherEntry != null && plan.IsRealtime && string.IsNullOrEmpty(manifest.LauncherVersion))
             {
-                // The launcher is the updater: it only ever comes from a scripted
-                // release, so an automatic build can never strand anyone.
+                // A build that does not say which launcher it carries cannot be
+                // compared with this one, so it never replaces it.
                 plan.Changed.Remove(launcherEntry);
             }
             else if (launcherEntry != null)
