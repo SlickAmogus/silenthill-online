@@ -146,8 +146,8 @@ static int s_setLiving     = 0; /* part of the living world, or private */
 #define COOP_DEFAULT_SERVER "server.sh1pc.com"
 
 enum { COOP_ROOT_HOST, COOP_ROOT_JOIN, COOP_ROOT_SPLIT, COOP_ROOT_SETTINGS, COOP_ROOT_MUSIC, COOP_ROOT_BACK,
-       COOP_ROOT_ACCEPT, COOP_ROOT_DECLINE, COOP_ROOT_PLAYERLIST, COOP_ROOT_CHARACTER };
-#define COOP_ROOT_MAX 12
+       COOP_ROOT_ACCEPT, COOP_ROOT_DECLINE, COOP_ROOT_PLAYERLIST, COOP_ROOT_CHARACTER, COOP_ROOT_CHAT };
+#define COOP_ROOT_MAX 13
 
 /* The title-menu rows this platform shows, in order. */
 static int Coop_RootRows(int* rows)
@@ -168,6 +168,8 @@ static int Coop_RootRows(int* rows)
     rows[n++] = COOP_ROOT_CHARACTER;
     if (!COOP_MOBILE && !COOP_WEB) rows[n++] = COOP_ROOT_SPLIT;
     if (COOP_HAS_SETTINGS) rows[n++] = COOP_ROOT_SETTINGS;
+    /* The way to the chat box where there is no key for it (a phone). */
+    if (ShNetChat_Available()) rows[n++] = COOP_ROOT_CHAT;
     rows[n++] = COOP_ROOT_MUSIC;
     rows[n++] = COOP_ROOT_BACK;
     return n;
@@ -1328,7 +1330,7 @@ int Pc_CoopMenu_RowCount(void)
     case COOP_PAGE_LOBBY_SAVE:  return 3; /* Save First, Continue Without Saving, Back */
     case COOP_PAGE_SPLIT:      return s_splitOnline ? 9 : 8; /* Pad, Character, Layout, Sound, Load, Online, [Online Settings,] Start, Back */
     case COOP_PAGE_SPLIT_ONLINE: return 5; /* Players, Visibility, Living World, FPS, Back */
-    case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 3 : 5; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
+    case COOP_PAGE_HOST:       return (ShSession_Active() && !ShSession_IsHost()) ? 4 : 6; /* guest: Character, Leave, Back; host: Invite/Code, Character, Start, Close, Back */
     case COOP_PAGE_JOIN:       return 5; /* Browse, Join by IP, Enter code, Steam, Back */
     case COOP_PAGE_ROOMS:      return ShSession_RoomCount() + 2; /* rooms + Refresh + Back */
     case COOP_PAGE_INGAME:     { int r[COOP_IG_MAX]; return Coop_InGameRows(r); }
@@ -1414,6 +1416,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         case COOP_ROOT_SETTINGS: snprintf(out, cap, "Multiplayer Settings"); break;
         case COOP_ROOT_PLAYERLIST: snprintf(out, cap, "Player List"); break;
         case COOP_ROOT_CHARACTER:  snprintf(out, cap, "Character Select"); break;
+        case COOP_ROOT_CHAT:     snprintf(out, cap, "Open Chat"); break;
         case COOP_ROOT_MUSIC:    Pc_CoopMusic_RowText(out, cap); break;
         case COOP_ROOT_ACCEPT:
         {
@@ -1512,6 +1515,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
             /* Guest lobby: pick a character, wait or leave. */
             if (i == 0)      snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current()));
             else if (i == 1) snprintf(out, cap, "Leave Room");
+            else if (i == 2) snprintf(out, cap, "Open Chat");
             else             snprintf(out, cap, "Back");
             break;
         }
@@ -1528,6 +1532,7 @@ void Pc_CoopMenu_RowText(int i, char* out, int cap)
         else if (i == 1) snprintf(out, cap, "Character:  %s", Pc_PlayAs_Label(Pc_PlayAs_Current()));
         else if (i == 2) snprintf(out, cap, "Start Game");
         else if (i == 3) snprintf(out, cap, "Close Room");
+        else if (i == 4) snprintf(out, cap, "Open Chat");
         else snprintf(out, cap, "Back");
         break;
 
@@ -1887,6 +1892,13 @@ static void Coop_Confirm(void)
             Pc_CharaSelect_Open();
             break;
         }
+        case COOP_ROOT_CHAT:
+        {
+            extern void ShNetChat_OpenTouch(void);
+            ShNetChat_SetHidden(0);
+            ShNetChat_OpenTouch();
+        }
+            break;
         case COOP_ROOT_MUSIC:    Pc_CoopMusic_Step(1); break; /* a tap or Enter: the next track */
         case COOP_ROOT_ACCEPT:   s_page = COOP_PAGE_INVITE; s_sel = 0; s_msg[0] = '\0'; break;
         case COOP_ROOT_DECLINE:  ShNetInvite_Decline(); s_sel = 0; break;
@@ -2058,6 +2070,13 @@ static void Coop_Confirm(void)
         if (ShSession_Active() && !ShSession_IsHost())
         {
             if (s_sel == 0)      { Pc_PlayAs_Cycle(1); break; }           /* Character */
+            else if (s_sel == 2)
+            {
+                extern void ShNetChat_OpenTouch(void);
+                ShNetChat_SetHidden(0);
+                ShNetChat_OpenTouch();
+            }
+            if (s_sel == 2) break;
             else if (s_sel == 1) { ShSession_RequestLeave(); }            /* Leave Room */
             s_page = COOP_PAGE_ROOT; s_sel = 0;
             break;
@@ -2066,6 +2085,12 @@ static void Coop_Confirm(void)
         else if (s_sel == 1) { Pc_PlayAs_Cycle(1); }                      /* Character */
         else if (s_sel == 2) { Coop_RequestStart(); }                     /* Start Game */
         else if (s_sel == 3) { ShSession_RequestLeave(); Pc_Split_Stop(); s_page = COOP_PAGE_ROOT; s_sel = 0; } /* Close Room */
+        else if (s_sel == 4)
+        {
+            extern void ShNetChat_OpenTouch(void);
+            ShNetChat_SetHidden(0);
+            ShNetChat_OpenTouch();
+        }
         else                 { s_page = COOP_PAGE_ROOT; s_sel = 0; }
         break;
 
