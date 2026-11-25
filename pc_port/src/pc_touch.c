@@ -78,9 +78,15 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
      * this aspect against 240 tall. */
     [TB_START] = { 0.920f, 0.158f, 0.055f, 0 },
     [TB_RUN] = { 0.665f, 0.760f, 0.065f, 0 },
-    /* TB_BACK is only ever drawn in the corner escape slot, so its own
-     * position is never used -- it exists to carry a glyph and a binding. */
+    /* The escape button of the menu screens. On Android it has a place of
+     * its own, further into the corner than Start: at Start's spot it sat
+     * on the Options screen's first row, and a press took both (reported).
+     * Elsewhere it is drawn in the corner slot, Start's position. */
+#if defined(__ANDROID__)
+    [TB_BACK] = { 0.955f, 0.085f, 0.050f, 0 },
+#else
     [TB_BACK] = { 0.920f, 0.158f, 0.055f, 0 },
+#endif
     /* Mirror of Aim on the other thumb, and only while Aim is held: firing
      * meant tapping the steering half of the screen, which fights the stick
      * the same thumb is holding. Hidden the rest of the time so it never eats
@@ -350,7 +356,10 @@ int g_PcTapPuzzleFrame = -100;
 static int Tc_ChatButtonOn(void)
 {
     extern int ShNetChat_Available(void);
-    return ShNetChat_Available() && Tc_MenuAllowed();
+    /* Over the game the box is opened from the multiplayer menu (Open
+     * Chat): the button up there was one more thing on the screen. At the
+     * main menu and in a lobby there is no such menu row, so it stays. */
+    return ShNetChat_Available() && Tc_MenuAllowed() && g_GameWork.gameState == GameState_MainMenu;
 }
 
 static int Tc_Mode(void)
@@ -967,8 +976,10 @@ static int Tc_SoloButton(int mode)
         return TB_NO;      /* Yes is a tap anywhere; No needs the button */
     if (mode == TC_MODE_ADVANCE && Tc_CutsceneSkip())
         return TB_SKIP;    /* a scene can be skipped; text only advances */
-    if (mode == TC_MODE_CHAT || mode == TC_MODE_LOBBY)
-        return TB_CHAT;    /* the chat button closes the box it opened; at the menus it opens it */
+    if (mode == TC_MODE_LOBBY)
+        return TB_CHAT;    /* at the menus the chat button opens the box and closes it */
+    if (mode == TC_MODE_CHAT)
+        return (g_GameWork.gameState == GameState_MainMenu) ? TB_CHAT : TB_BACK; /* in play: Back closes it */
 
     return -1;
 }
@@ -1157,6 +1168,10 @@ static int Tc_ExtraButton(int b, int mode)
  * up in different places. */
 static int Tc_SoloOwnPos(int b)
 {
+#if defined(__ANDROID__)
+    if (b == TB_BACK)
+        return 1;
+#endif
     return b == TB_NO || b == TB_CHAT;
 }
 
@@ -2207,7 +2222,10 @@ void Pc_Touch_Update(void)
             extern void ShNetChat_Close(void);
             extern void ShNetChat_CycleScope(void);
             static int  s_chatWas, s_chanWas;
-            const int   chatNow = (s_Buttons[TB_CHAT].holdFrames > 0);
+            /* Typing over the game, the corner Back is what closes the box. */
+            const int   chatNow = (s_Buttons[TB_CHAT].holdFrames > 0) ||
+                                  (ShNetChat_IsOpen() && g_GameWork.gameState != GameState_MainMenu &&
+                                   s_Buttons[TB_BACK].holdFrames > 0);
             const int   chanNow = (s_Buttons[TB_CHANNEL].holdFrames > 0);
 
             if (chatNow && !s_chatWas)
