@@ -1696,6 +1696,10 @@ else if (strcmp(key, "enable_plugins") == 0)
             if (v > 4.0f) v = 4.0f;
             g_PcConfig.controllerSensitivity = v;
         }
+        else if (strcmp(key, "simple_mode") == 0)
+        {
+            g_PcConfig.simpleMode = (atoi(value) != 0);
+        }
         else if (strcmp(key, "unlimited_enemies") == 0)
         {
             g_PcConfig.unlimitedEnemies = (atoi(value) != 0);
@@ -1992,6 +1996,141 @@ else if (strcmp(key, "enable_plugins") == 0)
     fprintf(stderr, "[CONFIG] Resolution: %dx%d, Fullscreen: %d, DisableCulling: %d, Map: %s\n",
             g_PcConfig.windowWidth, g_PcConfig.windowHeight,
             g_PcConfig.fullscreen, g_PcConfig.disableCulling, g_PcConfig.mapName);
+}
+
+/* ---- quality presets (simple mode) ----
+ * The launcher has the same table (Form1.Simple.cs): keep the two alike. */
+typedef struct { int native, vsync, fps, filter, msaa, pgxp, flash, shadow, decals, town; float fog; } SimplePreset;
+
+static void PcConfig_SimplePresetValues(int p, SimplePreset* v)
+{
+    const s_PcConfig* d = &s_PcConfigDefaults;
+
+    /* Ultra alone thins the fog and draws the whole town through it. */
+    v->town = (p == PC_SIMPLE_ULTRA);
+    v->fog  = v->town ? 0.95f : d->fogStrength;
+
+    if (p == PC_SIMPLE_ORIGINAL)
+    {
+        v->native = 1;                 v->vsync  = d->vsync;         v->fps    = d->fpsCap;
+        v->filter = d->textureFilter;  v->msaa   = 0;                v->pgxp   = d->usePgxp;
+        v->flash  = 0;                 v->shadow = d->shadowMapSize; v->decals = d->bulletDecals;
+    }
+    else
+    {
+        static const struct { int filter, msaa, flash, shadow; } q[PC_SIMPLE_COUNT] = {
+            { 0, 0, 0, 1024 },
+            { 1, 0, 0, 512  },   /* Low Spec: bilinear, classic flashlight */
+            { 4, 2, 1, 2048 },   /* Normal: 4x anisotropic, classic + shadows */
+            { 4, 4, 3, 4096 },   /* High: modern + shadows */
+            { 4, 8, 3, 8192 },   /* Ultra */
+        };
+        v->native = 0;           v->vsync  = 1;           v->fps    = 0;
+        v->filter = q[p].filter; v->msaa   = q[p].msaa;   v->pgxp   = 1;
+        v->flash  = q[p].flash;  v->shadow = q[p].shadow; v->decals = 1;
+    }
+}
+
+int PcConfig_SimplePresetDetect(void)
+{
+    int p;
+
+    /* What every preset shares: the whole map loaded and nothing culled by
+     * view angle. The post effect, the tone map and the render scale are the
+     * player's to set under any preset. */
+    if (!g_PcConfig.disableCulling || !g_PcConfig.preloadChunks)
+    {
+        return PC_SIMPLE_CUSTOM;
+    }
+    for (p = 0; p < PC_SIMPLE_COUNT; p++)
+    {
+        SimplePreset v;
+        PcConfig_SimplePresetValues(p, &v);
+        /* The render size is the Resolution row's: a preset sets it when it
+         * is picked, and the player may change it without leaving the preset. */
+        if (g_PcConfig.vsync != v.vsync ||
+            g_PcConfig.fpsCap != v.fps || g_PcConfig.textureFilter != v.filter ||
+            g_PcConfig.msaaSamples != v.msaa || g_PcConfig.usePgxp != v.pgxp ||
+            g_PcConfig.flashlightMode != v.flash || g_PcConfig.shadowMapSize != v.shadow ||
+            g_PcConfig.bulletDecals != v.decals ||
+            g_PcConfig.fogStrength > v.fog + 0.005f || g_PcConfig.fogStrength < v.fog - 0.005f ||
+            (v.town && (!g_PcConfig.worldVisibility || !g_PcConfig.wholeMapExteriors)))
+        {
+            continue;
+        }
+        /* Menus Only pillarboxing is part of the enhanced presets alone. */
+        if (p != PC_SIMPLE_ORIGINAL && (g_PcConfig.widescreenMode != 1 || g_PcConfig.menuPillarbox != 1))
+            continue;
+        return p;
+    }
+    return PC_SIMPLE_CUSTOM;
+}
+
+void PcConfig_SimplePresetApply(int p)
+{
+    const s_PcConfig* d = &s_PcConfigDefaults;
+    SimplePreset      v;
+    const char*       keys[24];
+    const char*       vals[24];
+    char              buf[24][16];
+    int               n = 0;
+
+    if (p < 0 || p >= PC_SIMPLE_COUNT)
+        return;
+    PcConfig_SimplePresetValues(p, &v);
+
+    g_PcConfig.nativeResolution   = v.native;
+    g_PcConfig.vsync              = v.vsync;
+    g_PcConfig.fpsCap             = v.fps;
+    g_PcConfig.textureFilter      = v.filter;
+    g_PcConfig.msaaSamples        = v.msaa;
+    g_PcConfig.usePgxp            = v.pgxp;
+    g_PcConfig.flashlightMode     = v.flash;
+    g_PcConfig.perPixelFlashlight = (v.flash != 0);
+    g_PcConfig.flashlightShadows  = (v.flash == 1 || v.flash == 3);
+    g_PcConfig.shadowMapSize      = v.shadow;
+    g_PcConfig.bulletDecals       = v.decals;
+    g_PcConfig.disableCulling     = 1;
+    g_PcConfig.preloadChunks      = 1;
+    g_PcConfig.fogStrength        = v.fog;
+    g_PcConfig.wholeMapExteriors  = v.town ? 1 : d->wholeMapExteriors;
+    if (v.town)
+        g_PcConfig.worldVisibility = 1;
+    if (p != PC_SIMPLE_ORIGINAL)
+    {
+        g_PcConfig.widescreenMode = 1;
+        g_PcConfig.menuPillarbox  = 1;
+    }
+
+#define PRESET_KEY(k, value) \
+    do { snprintf(buf[n], sizeof(buf[n]), "%d", (int)(value)); keys[n] = (k); vals[n] = buf[n]; n++; } while (0)
+    PRESET_KEY("native_resolution",    g_PcConfig.nativeResolution);
+    PRESET_KEY("vsync",                g_PcConfig.vsync);
+    PRESET_KEY("fps_cap",              g_PcConfig.fpsCap);
+    PRESET_KEY("texture_filter",       g_PcConfig.textureFilter);
+    PRESET_KEY("msaa",                 g_PcConfig.msaaSamples);
+    PRESET_KEY("use_pgxp",             g_PcConfig.usePgxp);
+    PRESET_KEY("flashlight_mode",      g_PcConfig.flashlightMode);
+    PRESET_KEY("per_pixel_flashlight", g_PcConfig.perPixelFlashlight);
+    PRESET_KEY("flashlight_shadows",   g_PcConfig.flashlightShadows);
+    PRESET_KEY("shadow_resolution",    g_PcConfig.shadowMapSize);
+    PRESET_KEY("bullet_decals",        g_PcConfig.bulletDecals);
+    PRESET_KEY("disable_culling",      1);
+    PRESET_KEY("preload_chunks",       1);
+    PRESET_KEY("whole_map_exteriors",  g_PcConfig.wholeMapExteriors);
+    if (v.town)
+        PRESET_KEY("world_visibility", 1);
+    if (p != PC_SIMPLE_ORIGINAL)
+    {
+        PRESET_KEY("widescreen_mode", 1);
+        PRESET_KEY("menu_pillarbox",  1);
+    }
+#undef PRESET_KEY
+    snprintf(buf[n], sizeof(buf[n]), "%.2f", g_PcConfig.fogStrength);
+    keys[n] = "fog_strength";
+    vals[n] = buf[n];
+    n++;
+    PcConfig_SaveKeyValues(keys, vals, n);
 }
 
 /* Rewrite (or append) a single `key = value` line in the loaded config file,
