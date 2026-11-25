@@ -80,11 +80,11 @@ static s_TouchButton s_Buttons[TB_COUNT] = {
      * this aspect against 240 tall. */
     [TB_START] = { 0.920f, 0.158f, 0.055f, 0 },
     [TB_RUN] = { 0.665f, 0.760f, 0.065f, 0 },
-    /* The escape button of the menu screens. On Android it has a place of
+    /* The escape button of the menu screens. On a phone it has a place of
      * its own, further into the corner than Start: at Start's spot it sat
      * on the Options screen's first row, and a press took both (reported).
      * Elsewhere it is drawn in the corner slot, Start's position. */
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(SH_IOS)
     [TB_BACK] = { 0.955f, 0.085f, 0.050f, 0 },
 #else
     [TB_BACK] = { 0.920f, 0.158f, 0.055f, 0 },
@@ -346,13 +346,15 @@ static int Tc_CoopButtonOn(void)
 int g_PcTapPuzzleFrame = -100;
 
 /* The chat button: anywhere there is a channel to talk on, in play. */
+static int s_TcBackClosedChat;
+
 static int Tc_ChatButtonOn(void)
 {
     extern int ShNetChat_Available(void);
-    /* Over the game the box is opened from the multiplayer menu (Open
-     * Chat): the button up there was one more thing on the screen. At the
-     * main menu and in a lobby there is no such menu row, so it stays. */
-    return ShNetChat_Available() && Tc_MenuAllowed() && g_GameWork.gameState == GameState_MainMenu;
+    /* No button: the box is opened from the multiplayer menu (Open Chat,
+     * on its root, lobby and in-game pages) and closed with Back. */
+    (void)ShNetChat_Available;
+    return 0;
 }
 
 static int Tc_Mode(void)
@@ -956,10 +958,8 @@ static int Tc_SoloButton(int mode)
         return TB_NO;      /* Yes is a tap anywhere; No needs the button */
     if (mode == TC_MODE_ADVANCE && Tc_CutsceneSkip())
         return TB_SKIP;    /* a scene can be skipped; text only advances */
-    if (mode == TC_MODE_LOBBY)
-        return TB_CHAT;    /* at the menus the chat button opens the box and closes it */
-    if (mode == TC_MODE_CHAT)
-        return (g_GameWork.gameState == GameState_MainMenu) ? TB_CHAT : TB_BACK; /* in play: Back closes it */
+    if (mode == TC_MODE_CHAT || mode == TC_MODE_LOBBY)
+        return TB_BACK;    /* typing: Back closes the box */
 
     return -1;
 }
@@ -1157,7 +1157,7 @@ static int Tc_ExtraButton(int b, int mode)
  * up in different places. */
 static int Tc_SoloOwnPos(int b)
 {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(SH_IOS)
     if (b == TB_BACK)
         return 1;
 #endif
@@ -2189,10 +2189,13 @@ void Pc_Touch_Update(void)
             extern void ShNetChat_Close(void);
             extern void ShNetChat_CycleScope(void);
             static int  s_chatWas, s_chanWas;
-            /* Typing over the game, the corner Back is what closes the box. */
-            const int   chatNow = (s_Buttons[TB_CHAT].holdFrames > 0) ||
-                                  (ShNetChat_IsOpen() && g_GameWork.gameState != GameState_MainMenu &&
-                                   s_Buttons[TB_BACK].holdFrames > 0);
+            /* While typing, the corner Back is what closes the box. That
+             * press belongs to the box alone: s_TcBackClosedChat keeps it
+             * from also backing out of the menu underneath. */
+            const int   backNow = (s_Buttons[TB_BACK].holdFrames > 0);
+            const int   chatNow = (s_Buttons[TB_CHAT].holdFrames > 0) || (ShNetChat_IsOpen() && backNow);
+            if (ShNetChat_IsOpen() && backNow) s_TcBackClosedChat = 1;
+            else if (!backNow)                 s_TcBackClosedChat = 0;
             const int   chanNow = (s_Buttons[TB_CHANNEL].holdFrames > 0);
 
             if (chatNow && !s_chatWas)
@@ -2221,7 +2224,7 @@ void Pc_Touch_Update(void)
             s_saveWas = saveNow;
             s_loadWas = loadNow;
         }
-        if (s_Buttons[TB_BACK].holdFrames  > 0) Tc_PressAction(&s_PadWord, cfg->cancel);
+        if (s_Buttons[TB_BACK].holdFrames  > 0 && !s_TcBackClosedChat) Tc_PressAction(&s_PadWord, cfg->cancel);
 
         if (s_Running || s_Buttons[TB_RUN].holdFrames > 0)
             Tc_PressAction(&s_PadWord, cfg->run);
