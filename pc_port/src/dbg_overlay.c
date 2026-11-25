@@ -498,6 +498,8 @@ int Pc_EscapeOwnedByOverlay(void)
     extern int Pc_AchScreen_IsOpen(void);
     extern int Pc_TitleAchievementsActive(void);
     extern int Pc_CharaSelect_IsOpen(void);
+    extern int Pc_TextInputActive(void);
+    extern int Pc_CoopMenu_IsOpen(void);
     static int   s_owned = 0;
     const Uint8* ks      = SDL_GetKeyboardState(NULL);
     const int    held    = ks != NULL && ks[SDL_SCANCODE_ESCAPE];
@@ -506,7 +508,7 @@ int Pc_EscapeOwnedByOverlay(void)
     {
         if (g_PcConsoleInputActive || g_PcQuickOptionsActive || Pc_BindPanel_IsOpen() ||
             Pc_ControlsScreen_IsOpen() || Pc_AchScreen_IsOpen() || Pc_TitleAchievementsActive() ||
-            Pc_CharaSelect_IsOpen())
+            Pc_CharaSelect_IsOpen() || Pc_TextInputActive() || Pc_CoopMenu_IsOpen())
         {
             s_owned = 2;
         }
