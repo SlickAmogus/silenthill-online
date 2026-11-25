@@ -671,10 +671,12 @@ static void Pc_TpsCamera_Apply(void)
          * holds still while the menu has the mouse. The voice wheel too: the
          * pointer is picking a line, not looking. A presented freeze-frame
          * (pickup prompt, map message, pause) is a frozen view too: turning
-         * the camera under it moved the world the player then came back to. */
+         * the camera under it moved the world the player then came back to.
+         * The quick menu likewise, live world or not: the mouse is on its rows,
+         * and the view span round under it in every camera but the classic one. */
         extern int g_PsxPresentLastFrame;
-        int frozen = ((g_PcConsoleInputActive || g_PcQuickOptionsActive) &&
-                      !ShNet_LiveWorld()) || g_PsxPresentLastFrame || Pc_CoopMenu_InGame() || ShNetVoice_MenuOpen();
+        int frozen = (g_PcConsoleInputActive && !ShNet_LiveWorld()) || g_PcQuickOptionsActive ||
+                     g_PsxPresentLastFrame || Pc_CoopMenu_InGame() || ShNetVoice_MenuOpen();
 
         SDL_GetRelativeMouseState(&mdx, &mdy);
         if (frozen) { mdx = 0; mdy = 0; }
