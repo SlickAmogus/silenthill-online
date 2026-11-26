@@ -122,8 +122,7 @@ extern float g_PcFmvVolume;
 
 s32 g_PcOptionsMenu_SelectedEntry     = 0;
 s32 g_PcOptionsMenu_PrevSelectedEntry = 0;
-static s32 g_PcOptionsMenu_Page       = 0; /* 0 = Graphics, 1 = System, 2 = Controls, 3 = Camera, 4 = HUD */
-#define PCOPT_PAGE_COUNT 5
+static s32 g_PcOptionsMenu_Page       = 0; /* index into PCOPT_PAGES */
 
 /* Mouse hover moves the selection WITHOUT resetting g_Options_SelectionHighlightTimer:
  * a reset re-arms the LINE_CURSOR_TIMER_MAX gate, which then swallows the click that
@@ -342,6 +341,8 @@ static const s_PcOpt PCOPT_H[] = {
 static const s_PcOpt PCOPT_SG[] = {
     { "Quality",        NULL,                           NULL,                   NULL,      0, NULL,      NULL,                          1, PCK_PRESET  },
     { "Resolution",     NULL,                           NULL,                   NULL,      0, NULL,      NULL,                          0, PCK_RES    },
+    /* Windowed, fullscreen or borderless: the player's, under any preset. */
+    { "Window_Mode",    &g_PcConfig.fullscreen,         "fullscreen",           VAL_WIN,   3, LBL_WIN,   NULL,                          1, PCK_WINMODE },
     { "Dithering",      NULL,                           NULL,                   NULL,      0, NULL,      NULL,                          1, PCK_SDITHER },
     { "Post_Process",   &g_PcConfig.postProcess,        "post_process",         VAL_POST,  9, LBL_POST,  &g_cfg_postProcess,            1, PCK_INT    },
     { "Tone_Mapping",   &g_PcConfig.tonemap,            "tonemap",              VAL_TONE,  4, LBL_TONE,  &g_cfg_tonemap,                1, PCK_INT    },
@@ -439,22 +440,18 @@ static void PcMouse_InjectDir(int dir)
 
 const s_PcOpt* PcOpt_PageByIndex(int page, int* count)
 {
-    if (page == 0) { *count = (int)(sizeof(PCOPT_G) / sizeof(PCOPT_G[0])); return PCOPT_G; }
-    if (page == 1) { *count = (int)(sizeof(PCOPT_S) / sizeof(PCOPT_S[0])); return PCOPT_S; }
-    if (page == 2) { *count = (int)(sizeof(PCOPT_C) / sizeof(PCOPT_C[0])); return PCOPT_C; }
-    if (page == 3) { *count = (int)(sizeof(PCOPT_T) / sizeof(PCOPT_T[0])); return PCOPT_T; }
-    *count = (int)(sizeof(PCOPT_H) / sizeof(PCOPT_H[0]));
-    return PCOPT_H;
+    /* From the page list, which simple mode swaps: the pages were once five
+     * fixed ones named here, and neither the preset page nor the characters
+     * and mods page could ever be shown. */
+    if (page < 0 || page >= PCOPT_PAGE_COUNT)
+        page = PCOPT_PAGE_COUNT - 1;
+    *count = PCOPT_PAGES[page].count;
+    return PCOPT_PAGES[page].rows;
 }
 
 static const s_PcOpt* PcOpt_Page(int* count)
 {
-    if (g_PcOptionsMenu_Page == 0) { *count = (int)(sizeof(PCOPT_G) / sizeof(PCOPT_G[0])); return PCOPT_G; }
-    if (g_PcOptionsMenu_Page == 1) { *count = (int)(sizeof(PCOPT_S) / sizeof(PCOPT_S[0])); return PCOPT_S; }
-    if (g_PcOptionsMenu_Page == 2) { *count = (int)(sizeof(PCOPT_C) / sizeof(PCOPT_C[0])); return PCOPT_C; }
-    if (g_PcOptionsMenu_Page == 3) { *count = (int)(sizeof(PCOPT_T) / sizeof(PCOPT_T[0])); return PCOPT_T; }
-    *count = (int)(sizeof(PCOPT_H) / sizeof(PCOPT_H[0]));
-    return PCOPT_H;
+    return PcOpt_PageByIndex(g_PcOptionsMenu_Page, count);
 }
 
 /* ---- Dithering row ----
@@ -2094,7 +2091,8 @@ static void Options_PcOptionsMenu_ConfigDraw(void)
      * 109px) must still end before the 320px clip (its labels end by ~196, so
      * 204 clears both ways). Controls and Camera hold only short values (numbers
      * and On/Off), so they can afford 240. */
-    int            valX = (g_PcOptionsMenu_Page == 0) ? 196 : (g_PcOptionsMenu_Page == 1) ? 204 : 240;
+    int            valX = PCOPT_PAGES[(g_PcOptionsMenu_Page >= 0 && g_PcOptionsMenu_Page < PCOPT_PAGE_COUNT)
+                                          ? g_PcOptionsMenu_Page : 0].valX;
 
     valX = PC_AR_USA(320 - valX, valX);
 
