@@ -2135,15 +2135,12 @@ static float PcConfig_SimplePresetScale(int p)
 
 static int s_presetScalePending = -1; /* the preset whose scale waits for the display */
 
+/* The online build has no render scale (the single-player port's Render_Scale
+ * option was never brought over), so a preset's scale has nowhere to go here.
+ * Kept as the one place to wire it up when that option arrives. */
 static void PcConfig_SimpleSetScale(float scale)
 {
-    extern float g_cfg_renderScale;
-    char         buf[16];
-
-    g_PcConfig.renderScale = scale;
-    g_cfg_renderScale      = scale;
-    snprintf(buf, sizeof(buf), "%.2f", scale);
-    PcConfig_SaveKeyValue("render_scale", buf);
+    (void)scale;
 }
 
 void PcConfig_SimpleAfterVideo(void)
