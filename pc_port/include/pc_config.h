@@ -239,6 +239,10 @@ typedef struct {
                             * since denser fog hides it anyway. Requires preload_chunks and
                             * resident_textures. (config key: whole_map_exteriors) */
     int usePgxp;         /* 1 = enable PGXP precision/perspective-correct textures (work-in-progress) */
+    /* 1 = with PGXP on, snow flakes take its sub-pixel placement (thin tilted
+     * slivers, as an emulator with PGXP shows them); 0 = they keep the look
+     * they have with PGXP off. (config key: pgxp_snow) */
+    int pgxpSnow;
     int itemDepthProbe;  /* DIAGNOSTIC, default 0: one-shot [ITEMDEPTH] dump per item-screen entry
                           * (pickup take-screen / inventory carousel / puzzle). Logs, per item
                           * primitive, its submission index, GTE SZ, IR0, OT bucket, whether
@@ -808,6 +812,9 @@ int  PcConfig_SimplePresetDetect(void);
 /* Set the graphics settings to a preset and save them. Window mode and size
  * are not part of a preset. */
 void PcConfig_SimplePresetApply(int preset);
+/* A preset applied before the window existed (a new player's) sets its render
+ * scale here, once the display's size is known. Call after PsyX_Initialise. */
+void PcConfig_SimpleAfterVideo(void);
 /* Builds with no launcher (phones, the browser): 1 while a player whose config
  * is from before the presets has yet to be told about them, once ever. */
 extern int g_PcSimpleOfferPending;

@@ -293,13 +293,40 @@ s32 g_Player_WallRayHitDist, g_Player_WallRayAngleDelta, g_Player_WallRayGroundH
  * |leftY| for a straight push, so keyboard/d-pad synthesis (full-scale axes)
  * is untouched. Direction thresholds stay on the raw axes -- only magnitudes
  * are substituted. */
+/* 1 while the PC movement shim (2D control, TPS/OTS/FPS) drives Harry. Its
+ * stick zones differ from the PSX machine's: the PSX walks from half tilt and
+ * runs only on the button, but the shim also sprints from the stick, so its
+ * slow-to-normal walk ramp has to finish well before the sprint radius or a
+ * normal walk is unreachable (light push = slow walk, more = sprint). */
+static int s_pcShimMoving;
+
+#define PC_STICK_SHIM_DEADZONE 24
+/* Many pads stop short of the rim (worn Xbox sticks read ~85% straight
+ * ahead), so a sprint radius near 127 left a full push walking. */
+#define PC_STICK_WALK_RADIUS   72
+#define PC_STICK_SPRINT_RADIUS 96
+
 static s32 Pc_StickMoveDeflection(void)
 {
     s32 sx  = g_Controller0->sticks_20.sticks_0.leftX;
     s32 sy  = g_Controller0->sticks_20.sticks_0.leftY;
     s32 mag = SquareRoot0((sx * sx) + (sy * sy));
 
+    if (s_pcShimMoving)
+    {
+        /* Below the deadzone the move came from keys or the d-pad. */
+        if (mag < PC_STICK_SHIM_DEADZONE || mag >= PC_STICK_WALK_RADIUS)
+            return 127;
+        return 64 + ((mag - PC_STICK_SHIM_DEADZONE) * 63) / (PC_STICK_WALK_RADIUS - PC_STICK_SHIM_DEADZONE);
+    }
     return (mag > 127) ? 127 : mag;
+}
+
+/* Same slow-walk floor as the PSX walk (func_80070B84: about half speed at
+ * the lightest walking push). */
+static q19_12 Pc_ShimWalkSpeed(q19_12 fullSpeed)
+{
+    return (fullSpeed / 2) + ((fullSpeed / 2) * (Pc_StickMoveDeflection() - 64)) / 63;
 }
 #endif
 
@@ -381,7 +408,12 @@ q19_12 Player_VariableAnimDurationGet(s_Model* model) // 0x800706E4
             switch (model->anim.status)
             {
                 case ANIM_STATUS(HarryAnim_WalkForward, true):
+#ifdef SH_PC_PORT
+                    /* The shim walks forward for a push in any direction. */
+                    if (s_pcShimMoving || g_Controller0->sticks_20.sticks_0.leftY < -63)
+#else
                     if (g_Controller0->sticks_20.sticks_0.leftY < -63)
+#endif
                     {
 #ifdef SH_PC_PORT
                         duration = (ABS(64 - Pc_StickMoveDeflection()) * Q12(0.65f) / 64) * 16 + Q12(12.0f);
@@ -427,7 +459,11 @@ q19_12 Player_VariableAnimDurationGet(s_Model* model) // 0x800706E4
                     break;
 
                 case ANIM_STATUS(HarryAnim_WalkBackward, true):
+#ifdef SH_PC_PORT
+                    if (s_pcShimMoving || g_Controller0->sticks_20.sticks_0.leftY >= 64)
+#else
                     if (g_Controller0->sticks_20.sticks_0.leftY >= 64)
+#endif
                     {
 #ifdef SH_PC_PORT
                         duration = ((ABS(Pc_StickMoveDeflection() - 64) * Q12(0.4f) / 64) * Q12(1.0f) / 200) + Q12(15.36f);
@@ -1978,6 +2014,7 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                 (g_PcConfig.movementOriginal && !g_DebugThirdPersonCam &&
                  !(g_PcConfig.control2d && !g_PcFpsCam && !g_SysWork.playerCombat.isAiming)))
             {
+                s_pcShimMoving = 0;
                 /* 2D screen-relative control (classic camera, not aiming) takes the
                  * shim path below so it can drive Harry from the camera basis. While
                  * aiming, or with 2D off, the native lower-body machine runs (vanilla
@@ -2034,6 +2071,8 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                  * Was previously hardcoded Q12_ANGLE(2.0f) which made 30fps
                  * feel half as responsive as 60fps. */
                 q3_12 turnSpeed = TIMESTEP_SCALE_30_FPS(g_DeltaTime, Q12_ANGLE(4.0f));
+
+                s_pcShimMoving = 1;
 
                 /* 2D screen-relative control: input maps to camera-relative
                  * directions and Harry turns to face the move direction. Active
@@ -2296,7 +2335,7 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                          * magnitude stops mattering. Applies to 2D control under
                          * ANY camera, classic included. */
                         int stickSprint = !g_PcConfig.altButtonSprint &&
-                                          (lx * lx + ly * ly) >= (96 * 96);
+                                          (lx * lx + ly * ly) >= (PC_STICK_SPRINT_RADIUS * PC_STICK_SPRINT_RADIUS);
                         g_Player_IsRunning = cfgRun || stickSprint;
                     }
                     /* Travel along the MOVE vector (stick relative to the camera), NOT
@@ -2404,7 +2443,7 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                                 /* altcam_button_sprint: only the bound run control
                                  * sprints; a full stick push stays a walk. */
                                 int stickSprint = !g_PcConfig.altButtonSprint &&
-                                                  (lx * lx + ly * ly) >= (96 * 96);
+                                                  (lx * lx + ly * ly) >= (PC_STICK_SPRINT_RADIUS * PC_STICK_SPRINT_RADIUS);
                                 g_Player_IsRunning = cfgRun || stickSprint;
                             }
                             else
@@ -2671,12 +2710,16 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                                              : PC_SHIM_RUN_SPEED(Map_SpeedZoneTypeGet(player->position.vx,
                                                                                       player->position.vz));
                         else
-                            D_800C4550 = Q12(1.5f);
+                            D_800C4550 = Pc_ShimWalkSpeed(Q12(1.5f));
 #else
                         D_800C4550 = g_Player_IsRunning ? Q12(3.0f) : Q12(1.5f);
 #endif
                     } else if (g_Player_IsMovingBackward) {
+#ifdef SH_PC_PORT
+                        D_800C4550 = Pc_ShimWalkSpeed(Q12(-1.5f));
+#else
                         D_800C4550 = Q12(-1.5f);
+#endif
                     } else {
                         D_800C4550 = Q12(0.0f);
                     }
