@@ -1860,6 +1860,8 @@ int main(int argc, char* argv[])
      * on for itself (dbg_overlay.c). */
     SDL_StopTextInput();
 
+    PcConfig_SimpleAfterVideo();
+
     /* Needs the GL context, so it runs here rather than beside the system-RAM
      * clamp above. Same rule as that one: only ever lowers. */
     HiresOverride_ClampBudgetToVram();
@@ -1982,6 +1984,7 @@ int main(int argc, char* argv[])
      * perspective-correct projection via Projection3D + cache lookups.
      * (declared in PsyX/PsyX_public.h, defined in PsyX_render.cpp) */
     g_PsxUsePgxp = g_PcConfig.usePgxp ? 1 : 0;
+    g_PsyX_PgxpSnow = g_PcConfig.pgxpSnow ? 1 : 0;
     SH_LOG("PGXP: %s", g_PsxUsePgxp ? "ON (perspective-correct, WIP)" : "off (affine)");
 
     /* [ITEMDEPTH] one-shot item-model depth probe. Diagnostic only — the probe

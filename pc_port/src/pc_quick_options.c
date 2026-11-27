@@ -81,7 +81,7 @@ enum { QO_X_SHADOW = 0, QO_X_SPEAKERS, QO_X_BGM, QO_X_SFX,
        QO_X_CAMSTYLE, QO_X_OTSSIDE, QO_X_CROSSHAIRSTYLE,
        QO_X_LINEGAP, QO_X_CHARALIGHT, QO_X_PPLIGHT, QO_X_HEROLIGHT, QO_X_HEROLIGHTFL, QO_X_FACEANIM,
        QO_X_CROSSHAIRMELEE, QO_X_AUTORELOAD, QO_X_WORLDVIS, QO_X_FLASHAIM,
-       QO_X_PRESET, QO_X_SDITHER, QO_X_CFGMODE };
+       QO_X_PRESET, QO_X_SDITHER, QO_X_CFGMODE, QO_X_BUTTONSPRINT, QO_X_PGXPSNOW };
 extern const char* PcOpt_QuickExtraLabel(int which, char* buf, int bufsz);
 extern void        PcOpt_QuickExtraAdjust(int which, int dir);
 extern void        PcOpt_QuickViewReset(int mode);
@@ -206,6 +206,8 @@ static const QoRowDef s_page0[] = {
     { ROW_OPT,   "texture_filter",       0, NULL },  /* Texture_Filter */
     /* Was the "Dither" step of Texture_Filter before the two rows split. */
     { ROW_OPT,   "dithering",            0, NULL },  /* Dithering */
+    { ROW_OPT,   "use_pgxp",             0, NULL },  /* PGXP */
+    { ROW_EXTRA, NULL, QO_X_PGXPSNOW,       "PGXP Affects Snow" },  /* PGXP on only: qo_page0_rows */
     { ROW_OPT,   "msaa",                 0, NULL },  /* Antialiasing (restart) */
     { ROW_OPT,   "post_process",         0, NULL },
     { ROW_OPT,   "tonemap",              0, NULL },
@@ -313,6 +315,7 @@ static const QoRowDef s_page5[] = {
     { ROW_OPT,   "aim_assist",             0, NULL },
     { ROW_EXTRA, NULL, QO_X_QUICK_WEAPONS, "Quick Weapon Switching" },
     { ROW_EXTRA, NULL, QO_X_DPADMOVE,        "Disable D-pad for Movement" },
+    { ROW_EXTRA, NULL, QO_X_BUTTONSPRINT,    "Always use button based sprinting" },
     { ROW_EXTRA, NULL, QO_X_AUTORELOAD,      "Auto Reload" },
     { ROW_PAGE,  NULL, 0,                   "Next page  (Graphics)" },
     { ROW_CLOSE, NULL, 0,                   "Close" },
@@ -544,6 +547,7 @@ static const QoRowDef s_pageControls[] = {
      * the touch overlay's own D-pad bits are merged after the controller read,
      * so the Gamepad style still navigates menus with it. */
     { ROW_EXTRA, NULL, QO_X_DPADMOVE,         "Disable D-pad for Movement" },
+    { ROW_EXTRA, NULL, QO_X_BUTTONSPRINT,     "Always use button based sprinting" },
     { ROW_OPT,   "touch_quicksave_buttons", 0, "Quick Save/Load Buttons" },
     /* Asks before it acts; see QO_A_TOTITLE. */
     { ROW_ACTION, NULL, QO_A_TOTITLE,         "Return to Main Menu" },
@@ -562,7 +566,10 @@ static const QoRowDef* qo_page0_rows(int* count)
 {
     static QoRowDef s_noWv[sizeof(s_page0) / sizeof(s_page0[0])];
     static int      s_noWvCount = 0, s_lastShow = -1;
-    int             show = g_PcConfig.fogStrength < 1.0f;
+    extern int      g_PsxUsePgxp;
+    /* bit 0: World Visibility shows (fog below 1.0); bit 1: PGXP Affects Snow shows (PGXP on). */
+    int             show = (g_PcConfig.fogStrength < 1.0f ? 1 : 0) | (g_PsxUsePgxp ? 2 : 0);
+    static int      s_builtFor = -1;
     int             i;
 
     {
@@ -583,16 +590,23 @@ static const QoRowDef* qo_page0_rows(int* count)
         s_lastShow      = show;
         s_viewRowsDirty = 1;
     }
-    if (show)
+    if (show == 3)
     {
         *count = (int)(sizeof(s_page0) / sizeof(s_page0[0]));
         return s_page0;
     }
-    if (s_noWvCount == 0)
+    if (s_builtFor != show)
     {
+        s_builtFor  = show;
+        s_noWvCount = 0;
         for (i = 0; i < (int)(sizeof(s_page0) / sizeof(s_page0[0])); i++)
-            if (!(s_page0[i].kind == ROW_EXTRA && s_page0[i].extra == QO_X_WORLDVIS))
-                s_noWv[s_noWvCount++] = s_page0[i];
+        {
+            if (s_page0[i].kind == ROW_EXTRA && s_page0[i].extra == QO_X_WORLDVIS && !(show & 1))
+                continue;
+            if (s_page0[i].kind == ROW_EXTRA && s_page0[i].extra == QO_X_PGXPSNOW && !(show & 2))
+                continue;
+            s_noWv[s_noWvCount++] = s_page0[i];
+        }
     }
     *count = s_noWvCount;
     return s_noWv;
